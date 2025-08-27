@@ -44,15 +44,18 @@ class Mock(Base):
     __tablename__ = "mocks"
     id = Column(String, primary_key=True, index=True)
     folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    # поля для условия запроса
     method = Column(String, nullable=False)
     path = Column(String, nullable=False)
     headers = Column(SAJSON, default={})
     body_contains = Column(String, nullable=True)
+    # поля для ответа
     status_code = Column(Integer, nullable=False)
     response_headers = Column(SAJSON, default={})
     response_body = Column(SAJSON, nullable=False)
     sequence_next_id = Column(String, nullable=True)
     active = Column(Boolean, default=True)
+
     folder_obj = relationship("Folder", back_populates="mocks")
 
 # Создаем таблицы
@@ -67,6 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pydantic-модели для API
 class MockRequestCondition(BaseModel):
     method: str
     path: str
@@ -121,15 +125,16 @@ def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Папка '{name}' и все её моки удалены"}
 
-@app.get("/api/mocks/folders")
+@app.get("/api/mocks/folders", response_model=List[str])
 def list_folders(db: Session = Depends(get_db)):
     names = [f.name for f in db.query(Folder).all()]
+    # default всегда первый
     if "default" in names:
         names.remove("default")
         names.insert(0, "default")
     return names
 
-@app.post("/api/mocks")
+@app.post("/api/mocks", response_model=Dict[str, Optional[MockEntry]])
 def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
@@ -139,6 +144,7 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     if not mock:
         mock = Mock(id=entry.id)
         db.add(mock)
+    # сохраняем поля
     mock.folder_name = entry.folder
     mock.method = entry.request_condition.method
     mock.path = entry.request_condition.path
@@ -149,15 +155,37 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     mock.response_body = entry.response_config.body
     mock.sequence_next_id = entry.sequence_next_id
     mock.active = entry.active if entry.active is not None else True
+
     db.commit()
     return {"message": "mock saved", "mock": entry}
 
-@app.get("/api/mocks")
+@app.get("/api/mocks", response_model=List[MockEntry])
 def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Mock)
     if folder:
         q = q.filter_by(folder_name=folder)
-    return q.all()
+    results = []
+    for m in q.all():
+        results.append(
+            MockEntry(
+                id=m.id,
+                folder=m.folder_name,
+                request_condition=MockRequestCondition(
+                    method=m.method,
+                    path=m.path,
+                    headers=m.headers,
+                    body_contains=m.body_contains,
+                ),
+                response_config=MockResponseConfig(
+                    status_code=m.status_code,
+                    headers=m.response_headers,
+                    body=m.response_body,
+                ),
+                sequence_next_id=m.sequence_next_id,
+                active=m.active,
+            )
+        )
+    return results
 
 @app.delete("/api/mocks")
 def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
@@ -168,7 +196,7 @@ def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": "mock deleted"}
 
-@app.patch("/api/mocks/{mock_id}/toggle")
+@app.patch("/api/mocks/{mock_id}/toggle", response_model=Dict[str, object])
 def toggle_mock(
     mock_id: str = Path(...),
     active: bool = Body(..., embed=True),
@@ -191,34 +219,38 @@ def deactivate_all(folder: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"All mocks in folder '{folder}' deactivated"}
 
-async def match_condition(req: Request, condition: MockRequestCondition):
-    path = req.url.path.lstrip("/")
+async def match_condition(req: Request, m: Mock) -> bool:
+    # сравниваем метод
+    if req.method.upper() != m.method.upper():
+        return False
+    # полный путь с query
+    path = req.url.path
     full = f"{path}{f'?{req.url.query}' if req.url.query else ''}"
-    if req.method.upper() != condition.method.upper():
+    if full != m.path:
         return False
-    if full != condition.path.lstrip("/"):
-        return False
-    if condition.headers:
-        for hk, hv in condition.headers.items():
+    # заголовки
+    if m.headers:
+        for hk, hv in m.headers.items():
             if req.headers.get(hk) != hv:
                 return False
-    if condition.body_contains:
+    # содержимое тела
+    if m.body_contains:
         body = (await req.body()).decode("utf-8")
-        if condition.body_contains not in body:
+        if m.body_contains not in body:
             return False
     return True
 
 @app.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH"])
 async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
-    for m in db.query(Mock).all():
-        if m.active and await match_condition(request, m.request_condition):
+    for m in db.query(Mock).filter_by(active=True).all():
+        if await match_condition(request, m):
             resp = JSONResponse(
-                content=m.response_config.body,
-                status_code=m.response_config.status_code
+                content=m.response_body,
+                status_code=m.status_code
             )
-            if m.response_config.headers:
-                for k, v in m.response_config.headers.items():
-                    resp.headers[k] = v
+            # добавляем заголовки ответа
+            for k, v in (m.response_headers or {}).items():
+                resp.headers[k] = v
             if m.sequence_next_id:
                 resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
