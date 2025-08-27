@@ -376,12 +376,10 @@ export default function App() {
                     flexDirection: "column", 
                     gap: 12 
                   }}>
-                    <Typography.Text style={{ fontWeight: 700, fontSize: 18 }}>
-                      Папки
-                    </Typography.Text>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <Button size="small" onClick={openAddFolder} icon={<PlusOutlined />}>Добавить папку</Button>
-                      <Button size="small" type="primary" onClick={openAddMock} icon={<PlusOutlined />}>Создать мок</Button>
+
+                    <div style={{ display: "flex", gap: 20 }}>
+                      <Button size="small" onClick={openAddFolder} icon={<PlusOutlined />}>Добавить страницу</Button>
+                      <Button size="small" type="primary" onClick={openAddMock} icon={<PlusOutlined />}>Создать mock</Button>
                     </div>
                   </div>
                   <div style={{ flexGrow: 1, overflowY: "auto", padding: "8px 16px" }}>
@@ -420,7 +418,7 @@ export default function App() {
                   flexShrink: 0
                 }}>
                   <Typography.Title level={4} style={{ margin: 0 }}>
-                    Моки в папке: {selectedFolder === "default" ? "Главная" : selectedFolder}
+                    Mock на странице: {selectedFolder === "default" ? "Главная" : selectedFolder}
                   </Typography.Title>
                   <Button 
                     danger 
@@ -441,7 +439,7 @@ export default function App() {
                       { 
                         title: "UUID", 
                         dataIndex: "id", 
-                        width: 120, 
+                        width: 90, 
                         ellipsis: true,
                         render: (text) => (
                           <Tooltip title="Нажмите чтобы скопировать">
@@ -450,7 +448,7 @@ export default function App() {
                               size="small"
                               icon={<CopyOutlined />}
                               onClick={() => copyToClipboard(text)}
-                              style={{ padding: '0 4px' }}
+                              style={{ padding: '1 4px' }}
                             >
                               {text.substring(0, 8)}...
                             </Button>
@@ -458,7 +456,7 @@ export default function App() {
                         )
                       },
                       { 
-                        title: "Активен", 
+                        title: "Статус", 
                         dataIndex: "active", 
                         width: 80,
                         render: (active, record) => (
@@ -469,7 +467,7 @@ export default function App() {
                           />
                         )
                       },
-                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
+                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 65 },
                       { title: "Путь с параметрами", dataIndex: ["request_condition", "path"], ellipsis: true },
                       { title: "Статус ответа", dataIndex: ["response_config", "status_code"], width: 110 },
                       {
@@ -586,28 +584,28 @@ export default function App() {
                 <TextArea rows={8} placeholder='{"message": "ok"}' />
               </Form.Item>
 
-              <Form.Item name="sequence_next_id" label="UUID следующего мока в цепочке (опционально)">
+              <Form.Item name="sequence_next_id" label="UUID следующего мока в цепочке (В разработке)">
                 <Input placeholder="UUID следующего мок-запроса" />
               </Form.Item>
             </Form>
           </Modal>
 
           <Modal
-            title="Создание новой папки"
+            title="Создание новой страницы"
             open={isFolderModalOpen}
             onCancel={() => setFolderModalOpen(false)}
             footer={null}
             destroyOnClose
           >
             <Form form={folderForm} onFinish={addFolder} layout="vertical">
-              <Form.Item name="name" label="Имя папки" rules={[
-                { required: true, message: 'Введите имя папки' },
-                { validator: (_, val) => folders.includes(val) ? Promise.reject('Папка уже существует') : Promise.resolve() }
+              <Form.Item name="name" label="Имя страницы" rules={[
+                { required: true, message: 'Введите имя страницы' },
+                { validator: (_, val) => folders.includes(val) ? Promise.reject('Страница уже существует') : Promise.resolve() }
               ]}>
-                <Input placeholder="Например: new-folder" />
+                <Input placeholder="Например: lost" />
               </Form.Item>
               <Form.Item>
-                <Button type="primary" htmlType="submit" block>Создать папку</Button>
+                <Button type="primary" htmlType="submit" block>Создать страницу</Button>
               </Form.Item>
             </Form>
           </Modal>
