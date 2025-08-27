@@ -1,16 +1,47 @@
+import os
 import json
-from fastapi import FastAPI, HTTPException, Request, Query, Body, Path
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Optional, List
-from pathlib import Path as FSPath
+from sqlalchemy import (
+    create_engine, Column, String, Integer, Boolean, JSON, Text, ForeignKey
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session, relationship
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL env var required")
+
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
+
+class Folder(Base):
+    __tablename__ = "folders"
+    name = Column(String, primary_key=True)
+    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete")
+
+class Mock(Base):
+    __tablename__ = "mocks"
+    id = Column(String, primary_key=True, index=True)
+    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    method = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    headers = Column(JSON, default={})
+    body_contains = Column(String, nullable=True)
+    status_code = Column(Integer, nullable=False)
+    response_headers = Column(JSON, default={})
+    response_body = Column(JSON, nullable=False)
+    sequence_next_id = Column(String, nullable=True)
+    active = Column(Boolean, default=True)
+    folder_obj = relationship("Folder", back_populates="mocks")
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
-DATA_FILE = FSPath(__file__).parent / "mocks_data.json"
-FOLDER_FILE = FSPath(__file__).parent / "folders_data.json"
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,6 +54,7 @@ class MockRequestCondition(BaseModel):
     method: str
     path: str
     headers: Optional[Dict[str, str]] = None
+    body_contains: Optional[str] = None
 
 class MockResponseConfig(BaseModel):
     status_code: int
@@ -37,115 +69,105 @@ class MockEntry(BaseModel):
     sequence_next_id: Optional[str] = None
     active: Optional[bool] = True
 
-mocks: Dict[str, MockEntry] = {}
-folders: List[str] = []
-
-def load_mocks():
-    global mocks
-    if DATA_FILE.exists():
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            mocks = {m["id"]: MockEntry(**m) for m in data}
-    else:
-        mocks = {}
-
-def save_mocks():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump([m.dict() for m in mocks.values()], f, ensure_ascii=False, indent=2)
-
-def load_folders():
-    global folders
-    if FOLDER_FILE.exists():
-        with open(FOLDER_FILE, "r", encoding="utf-8") as f:
-            folders = json.load(f)
-    else:
-        folders = ["default"]
-
-def save_folders():
-    with open(FOLDER_FILE, "w", encoding="utf-8") as f:
-        json.dump(folders, f, ensure_ascii=False, indent=2)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 @app.on_event("startup")
-def startup_event():
-    load_mocks()
-    load_folders()
+def ensure_default_folder():
+    db = SessionLocal()
+    if not db.query(Folder).filter_by(name="default").first():
+        db.add(Folder(name="default"))
+        db.commit()
+    db.close()
 
 @app.post("/api/folders")
-def create_folder(name: str = Body(..., embed=True)):
-    global folders
+def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_db)):
     name = name.strip()
-    if not name or name in folders:
+    if not name or db.query(Folder).filter_by(name=name).first():
         raise HTTPException(400, "Некорректное или уже существующее имя папки")
-    folders.append(name)
-    save_folders()
-    return {"message": "Папка добавлена", "folders": folders}
+    db.add(Folder(name=name))
+    db.commit()
+    return {"message": "Папка добавлена"}
 
 @app.delete("/api/folders")
-def delete_folder(name: str = Query(...)):
-    global folders, mocks
+def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
-    if name not in folders:
+    folder = db.query(Folder).filter_by(name=name).first()
+    if not folder:
         raise HTTPException(404, "Папка не найдена")
-    mocks = {k: v for k, v in mocks.items() if v.folder != name}
-    folders = [f for f in folders if f != name]
-    save_folders()
-    save_mocks()
-    return {"message": f"Папка '{name}' и все её моки удалены", "folders": folders}
+    db.delete(folder)
+    db.commit()
+    return {"message": f"Папка '{name}' и все её моки удалены"}
 
 @app.get("/api/mocks/folders")
-def list_folders():
-    used = list(set([m.folder for m in mocks.values()] + folders))
-    if "default" in used:
-        used.remove("default")
-        used.insert(0, "default")
-    return used
+def list_folders(db: Session = Depends(get_db)):
+    names = [f.name for f in db.query(Folder).all()]
+    if "default" in names:
+        names.remove("default")
+        names.insert(0, "default")
+    return names
 
 @app.post("/api/mocks")
-def create_or_update_mock(entry: MockEntry):
-    global folders, mocks
-    if entry.folder not in folders:
-        folders.append(entry.folder)
-        save_folders()
-    mocks[entry.id] = entry
-    save_mocks()
+def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
+    folder = db.query(Folder).filter_by(name=entry.folder).first()
+    if not folder:
+        folder = Folder(name=entry.folder)
+        db.add(folder)
+    mock = db.query(Mock).filter_by(id=entry.id).first()
+    if not mock:
+        mock = Mock(id=entry.id)
+        db.add(mock)
+    mock.folder_name = entry.folder
+    mock.method = entry.request_condition.method
+    mock.path = entry.request_condition.path
+    mock.headers = entry.request_condition.headers or {}
+    mock.body_contains = entry.request_condition.body_contains
+    mock.status_code = entry.response_config.status_code
+    mock.response_headers = entry.response_config.headers or {}
+    mock.response_body = entry.response_config.body
+    mock.sequence_next_id = entry.sequence_next_id
+    mock.active = entry.active if entry.active is not None else True
+    db.commit()
     return {"message": "mock saved", "mock": entry}
 
 @app.get("/api/mocks")
-def list_mocks(folder: Optional[str] = None):
+def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(Mock)
     if folder:
-        return [m for m in mocks.values() if m.folder == folder]
-    return list(mocks.values())
+        q = q.filter_by(folder_name=folder)
+    return [m for m in q.all()]
 
 @app.delete("/api/mocks")
-def delete_mock(id_: str = Query(...)):
-    if id_ in mocks:
-        del mocks[id_]
-        save_mocks()
-        return {"message": "mock deleted"}
-    raise HTTPException(404, f"Mock with id {id_} not found")
+def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
+    mock = db.query(Mock).filter_by(id=id_).first()
+    if not mock:
+        raise HTTPException(404, f"Mock with id {id_} not found")
+    db.delete(mock)
+    db.commit()
+    return {"message": "mock deleted"}
 
 @app.patch("/api/mocks/{mock_id}/toggle")
-def toggle_mock(
-    mock_id: str = Path(...),
-    active: bool = Body(..., embed=True)
-):
-    if mock_id not in mocks:
+def toggle_mock(mock_id: str = Path(...), active: bool = Body(..., embed=True), db: Session = Depends(get_db)):
+    mock = db.query(Mock).filter_by(id=mock_id).first()
+    if not mock:
         raise HTTPException(404, "Mock not found")
-    mocks[mock_id].active = active
-    save_mocks()
+    mock.active = active
+    db.commit()
     return {"id": mock_id, "active": active}
 
 @app.patch("/api/mocks/deactivate-all")
-def deactivate_all(folder: str = Query(...)):
-    updated = False
-    for mock in mocks.values():
-        if mock.folder == folder and mock.active:
-            mock.active = False
-            updated = True
-    if not updated:
+def deactivate_all(folder: str = Query(...), db: Session = Depends(get_db)):
+    mocks_in_folder = db.query(Mock).filter_by(folder_name=folder, active=True).all()
+    if not mocks_in_folder:
         raise HTTPException(404, "No matching mock found")
-    save_mocks()
+    for m in mocks_in_folder:
+        m.active = False
+    db.commit()
     return {"message": f"All mocks in folder '{folder}' deactivated"}
 
 async def match_condition(req: Request, condition: MockRequestCondition):
@@ -159,21 +181,20 @@ async def match_condition(req: Request, condition: MockRequestCondition):
         for hk, hv in condition.headers.items():
             if req.headers.get(hk) != hv:
                 return False
+    if condition.body_contains:
+        body = (await req.body()).decode("utf-8")
+        if condition.body_contains not in body:
+            return False
     return True
 
 @app.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH"])
-async def mock_handler(request: Request, full_path: str):
-    for mock in mocks.values():
-        if mock.active and await match_condition(request, mock.request_condition):
-            resp = JSONResponse(
-                content=mock.response_config.body,
-                status_code=mock.response_config.status_code
-            )
-            if mock.response_config.headers:
-                for k, v in mock.response_config.headers.items():
-                    resp.headers[k] = v
-            # Add next-mock header if exists
-            if mock.sequence_next_id:
-                resp.headers["X-Next-Mock-Id"] = mock.sequence_next_id
+async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
+    for m in db.query(Mock).all():
+        if m.active and await match_condition(request, m.request_condition):
+            resp = JSONResponse(content=m.response_config.body, status_code=m.response_config.status_code)
+            for k, v in m.response_config.headers.items():
+                resp.headers[k] = v
+            if m.sequence_next_id:
+                resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
     raise HTTPException(404, "No matching mock found")
