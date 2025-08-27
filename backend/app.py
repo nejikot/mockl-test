@@ -1,25 +1,35 @@
 import os
-import json
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Optional, List
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON, Text, ForeignKey
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL env var required")
+# Читаем параметры подключения из окружения
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+if not all([DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS]):
+    raise RuntimeError("DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASS обязательны")
 
+DATABASE_URL = (
+    f"postgresql://{DB_USER}:{DB_PASS}"
+    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+
+# Создаем движок с обязательным SSL
 engine = create_engine(
-  DATABASE_URL,
-  echo=False,
-  future=True,
-  connect_args={"sslmode": "require"}
+    DATABASE_URL,
+    echo=False,
+    future=True,
+    connect_args={"sslmode": "require"}
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -36,15 +46,16 @@ class Mock(Base):
     folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
     method = Column(String, nullable=False)
     path = Column(String, nullable=False)
-    headers = Column(JSON, default={})
+    headers = Column(SAJSON, default={})
     body_contains = Column(String, nullable=True)
     status_code = Column(Integer, nullable=False)
-    response_headers = Column(JSON, default={})
-    response_body = Column(JSON, nullable=False)
+    response_headers = Column(SAJSON, default={})
+    response_body = Column(SAJSON, nullable=False)
     sequence_next_id = Column(String, nullable=True)
     active = Column(Boolean, default=True)
     folder_obj = relationship("Folder", back_populates="mocks")
 
+# Создаем таблицы в БД
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -146,7 +157,7 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Mock)
     if folder:
         q = q.filter_by(folder_name=folder)
-    return [m for m in q.all()]
+    return q.all()
 
 @app.delete("/api/mocks")
 def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
@@ -158,7 +169,11 @@ def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
     return {"message": "mock deleted"}
 
 @app.patch("/api/mocks/{mock_id}/toggle")
-def toggle_mock(mock_id: str = Path(...), active: bool = Body(..., embed=True), db: Session = Depends(get_db)):
+def toggle_mock(
+    mock_id: str = Path(...),
+    active: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
     mock = db.query(Mock).filter_by(id=mock_id).first()
     if not mock:
         raise HTTPException(404, "Mock not found")
@@ -197,7 +212,10 @@ async def match_condition(req: Request, condition: MockRequestCondition):
 async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
     for m in db.query(Mock).all():
         if m.active and await match_condition(request, m.request_condition):
-            resp = JSONResponse(content=m.response_config.body, status_code=m.response_config.status_code)
+            resp = JSONResponse(
+                content=m.response_config.body,
+                status_code=m.response_config.status_code
+            )
             for k, v in m.response_config.headers.items():
                 resp.headers[k] = v
             if m.sequence_next_id:
