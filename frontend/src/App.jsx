@@ -356,7 +356,7 @@ export default function App() {
             <span style={{ fontWeight: 80, letterSpacing: 0.5 }}> ᨐock </span>
             <div style={{
               marginLeft: "auto", display: "flex",
-              alignItems: "center", gap: 12, width: screens.xs ? "20%" : "15 %"
+              alignItems: "center", gap: 12, width: screens.xs ? "20%" : "15%"
             }}>
               <Input
                 value={host}
