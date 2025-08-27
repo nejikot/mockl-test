@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, HTTPException, Request, Query, Body
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -36,6 +36,7 @@ class MockEntry(BaseModel):
     request_condition: MockRequestCondition
     response_config: MockResponseConfig
     sequence_next_id: Optional[str] = None
+    active: Optional[bool] = True
 
 mocks: Dict[str, MockEntry] = {}
 folders: List[str] = []
@@ -59,7 +60,7 @@ def load_folders():
         with open(FOLDER_FILE, "r", encoding="utf-8") as f:
             folders = json.load(f)
     else:
-        folders = ["default"] # always have at least default
+        folders = ["default"]
 
 def save_folders():
     with open(FOLDER_FILE, "w", encoding="utf-8") as f:
@@ -87,7 +88,6 @@ def delete_folder(name: str = Query(...)):
         raise HTTPException(400, "Нельзя удалить стандартную папку")
     if name not in folders:
         raise HTTPException(404, "Папка не найдена")
-    # Удаляем все моки из этой папки:
     mocks = {k: v for k, v in mocks.items() if v.folder != name}
     folders = [f for f in folders if f != name]
     save_folders()
@@ -96,14 +96,15 @@ def delete_folder(name: str = Query(...)):
 
 @app.get("/api/mocks/folders")
 def list_folders():
-    # Совмещаем явно созданные папки и те, что были только с моками (устаревшее)
-    used_folders = list(set([m.folder for m in mocks.values()] + folders))
-    used_folders = sorted(set(used_folders))
-    return used_folders
+    used = list(set([m.folder for m in mocks.values()] + folders))
+    if "default" in used:
+        used.remove("default")
+        used.insert(0, "default")
+    return used
 
 @app.post("/api/mocks")
 def create_or_update_mock(entry: MockEntry):
-    global folders
+    global folders, mocks
     if entry.folder not in folders:
         folders.append(entry.folder)
         save_folders()
@@ -123,15 +124,25 @@ def delete_mock(id_: str = Query(...)):
         del mocks[id_]
         save_mocks()
         return {"message": "mock deleted"}
-    else:
-        raise HTTPException(404, f"Mock with id {id_} not found")
+    raise HTTPException(404, f"Mock with id {id_} not found")
+
+@app.patch("/api/mocks/{mock_id}/toggle")
+def toggle_mock(
+    mock_id: str = Path(...),
+    active: bool = Query(...)
+):
+    if mock_id not in mocks:
+        raise HTTPException(404, "Mock not found")
+    mocks[mock_id].active = active
+    save_mocks()
+    return {"id": mock_id, "active": active}
 
 async def match_condition(req: Request, condition: MockRequestCondition):
-    qp = str(req.query_params)
-    full_path = req.url.path + (f"?{req.url.query}" if qp else "")
+    path = req.url.path.lstrip("/")
+    full = f"{path}{f'?{req.url.query}' if req.url.query else ''}"
     if req.method.upper() != condition.method.upper():
         return False
-    if full_path != condition.path:
+    if full != condition.path.lstrip("/"):
         return False
     if condition.headers:
         for hk, hv in condition.headers.items():
@@ -146,8 +157,11 @@ async def match_condition(req: Request, condition: MockRequestCondition):
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def mock_handler(request: Request, full_path: str):
     for mock in mocks.values():
-        if await match_condition(request, mock.request_condition):
-            resp = JSONResponse(content=mock.response_config.body, status_code=mock.response_config.status_code)
+        if mock.active and await match_condition(request, mock.request_condition):
+            resp = JSONResponse(
+                content=mock.response_config.body,
+                status_code=mock.response_config.status_code
+            )
             if mock.response_config.headers:
                 for k, v in mock.response_config.headers.items():
                     resp.headers[k] = v
