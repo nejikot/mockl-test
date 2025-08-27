@@ -4,12 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Optional, List
-from pathlib import Path
+from pathlib import Path as FSPath
 
 app = FastAPI()
 
-DATA_FILE = Path(__file__).parent / "mocks_data.json"
-FOLDER_FILE = Path(__file__).parent / "folders_data.json"
+DATA_FILE = FSPath(__file__).parent / "mocks_data.json"
+FOLDER_FILE = FSPath(__file__).parent / "folders_data.json"
 
 app.add_middleware(
     CORSMiddleware,
