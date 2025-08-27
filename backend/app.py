@@ -23,7 +23,6 @@ class MockRequestCondition(BaseModel):
     method: str
     path: str
     headers: Optional[Dict[str, str]] = None
-    body_contains: Optional[str] = None
 
 class MockResponseConfig(BaseModel):
     status_code: int
@@ -129,13 +128,25 @@ def delete_mock(id_: str = Query(...)):
 @app.patch("/api/mocks/{mock_id}/toggle")
 def toggle_mock(
     mock_id: str = Path(...),
-    active: bool = Query(...)
+    active: bool = Body(..., embed=True)
 ):
     if mock_id not in mocks:
         raise HTTPException(404, "Mock not found")
     mocks[mock_id].active = active
     save_mocks()
     return {"id": mock_id, "active": active}
+
+@app.patch("/api/mocks/deactivate-all")
+def deactivate_all(folder: str = Query(...)):
+    updated = False
+    for mock in mocks.values():
+        if mock.folder == folder and mock.active:
+            mock.active = False
+            updated = True
+    if not updated:
+        raise HTTPException(404, "No matching mock found")
+    save_mocks()
+    return {"message": f"All mocks in folder '{folder}' deactivated"}
 
 async def match_condition(req: Request, condition: MockRequestCondition):
     path = req.url.path.lstrip("/")
@@ -148,22 +159,15 @@ async def match_condition(req: Request, condition: MockRequestCondition):
         for hk, hv in condition.headers.items():
             if req.headers.get(hk) != hv:
                 return False
-    if condition.body_contains:
-        body = (await req.body()).decode("utf-8")
-        if condition.body_contains not in body:
-            return False
     return True
 
-@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH"])
 async def mock_handler(request: Request, full_path: str):
     for mock in mocks.values():
         if mock.active and await match_condition(request, mock.request_condition):
-            resp = JSONResponse(
-                content=mock.response_config.body,
-                status_code=mock.response_config.status_code
-            )
+            resp = JSONResponse(content=mock.response_config.body, status_code=mock.response_config.status_code)
             if mock.response_config.headers:
-                for k, v in mock.response_config.headers.items():
+                for k,v in mock.response_config.headers.items():
                     resp.headers[k] = v
             return resp
     raise HTTPException(404, "No matching mock found")
