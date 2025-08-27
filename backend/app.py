@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, HTTPException, Request, Query, Body, Path
+from fastapi import FastAPI, HTTPException, Request, Body, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -23,7 +23,6 @@ class MockRequestCondition(BaseModel):
     method: str
     path: str
     headers: Optional[Dict[str, str]] = None
-    body_contains: Optional[str] = None
 
 class MockResponseConfig(BaseModel):
     status_code: int
@@ -82,7 +81,7 @@ def create_folder(name: str = Body(..., embed=True)):
     return {"message": "Папка добавлена", "folders": folders}
 
 @app.delete("/api/folders")
-def delete_folder(name: str = Query(...)):
+def delete_folder(name: str):
     global folders, mocks
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
@@ -119,7 +118,7 @@ def list_mocks(folder: Optional[str] = None):
     return list(mocks.values())
 
 @app.delete("/api/mocks")
-def delete_mock(id_: str = Query(...)):
+def delete_mock(id_: str = Body(..., embed=True)):
     if id_ in mocks:
         del mocks[id_]
         save_mocks()
@@ -129,7 +128,7 @@ def delete_mock(id_: str = Query(...)):
 @app.patch("/api/mocks/{mock_id}/toggle")
 def toggle_mock(
     mock_id: str = Path(...),
-    active: bool = Query(...)
+    active: bool = Body(..., embed=True)
 ):
     if mock_id not in mocks:
         raise HTTPException(404, "Mock not found")
@@ -148,10 +147,6 @@ async def match_condition(req: Request, condition: MockRequestCondition):
         for hk, hv in condition.headers.items():
             if req.headers.get(hk) != hv:
                 return False
-    if condition.body_contains:
-        body = (await req.body()).decode("utf-8")
-        if condition.body_contains not in body:
-            return False
     return True
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
