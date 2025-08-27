@@ -1,9 +1,7 @@
 @import "antd/dist/reset.css";
 
-/* Базовые стили для фона и основного контента */
 html, body, #root {
   height: 100%;
-  min-height: 100%;
   margin: 0;
   padding: 0;
   background: #f7f8fa;

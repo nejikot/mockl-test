@@ -3,9 +3,6 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "start:backend": "uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload",
-    "start:frontend": "vite",
-    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
@@ -18,7 +15,6 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",
-    "concurrently": "^9.2.1",
     "vite": "^4.3.0"
   }
 }

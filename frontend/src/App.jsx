@@ -1,7 +1,17 @@
 import React, { useState, useEffect } from "react";
 import {
-  Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Switch, Grid, theme as antdTheme
+  Table,
+  Button,
+  Form,
+  Input,
+  Select,
+  Modal,
+  Layout,
+  message,
+  ConfigProvider,
+  Switch,
+  Grid,
+  theme as antdTheme,
 } from "antd";
 import { BulbOutlined, BulbFilled } from "@ant-design/icons";
 
@@ -12,18 +22,19 @@ const { useBreakpoint } = Grid;
 const statuses = [
   { code: 200, label: "OK", desc: "Запрос выполнен успешно", example: '{"result":"ok"}' },
   { code: 201, label: "Created", desc: "Создан новый ресурс", example: '{"id":1,"message":"Created"}' },
-  { code: 204, label: "No Content", desc: "Успешно, без содержимого", example: '{}' },
+  { code: 204, label: "No Content", desc: "Успешно, без содержимого", example: "{}" },
   { code: 400, label: "Bad Request", desc: "Некорректный запрос", example: '{"error":"Bad Request"}' },
   { code: 401, label: "Unauthorized", desc: "Неавторизован", example: '{"error":"Unauthorized"}' },
   { code: 404, label: "Not Found", desc: "Ресурс не найден", example: '{"error":"Not Found"}' },
-  { code: 500, label: "Internal Server Error", desc: "Ошибка сервера", example: '{"error":"Internal Server Error"}' }
+  { code: 500, label: "Internal Server Error", desc: "Ошибка сервера", example: '{"error":"Internal Server Error"}' },
 ];
 
 const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 
 export default function App() {
   const [form] = Form.useForm();
-  const [host, setHost] = useState("http://localhost:8000");
+  // Считываем адрес бекенда из переменной окружения
+  const [host, setHost] = useState(import.meta.env.VITE_BACKEND_URL || "http://localhost:8000");
   const [mocks, setMocks] = useState([]);
   const [editing, setEditing] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -46,7 +57,6 @@ export default function App() {
 
   useEffect(() => {
     fetchMocks();
-    // eslint-disable-next-line
   }, [host]);
 
   function openEdit(mock) {
@@ -80,12 +90,12 @@ export default function App() {
         path: values.path,
         method: values.method,
         status_code: Number(values.status_code),
-        response: JSON.parse(values.response)
+        response: JSON.parse(values.response),
       };
       await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mock)
+        body: JSON.stringify(mock),
       });
       setModalOpen(false);
       fetchMocks();
@@ -96,10 +106,9 @@ export default function App() {
   }
 
   async function remove(mock) {
-    await fetch(
-      `${host}/api/mocks?path=${encodeURIComponent(mock.path)}&method=${encodeURIComponent(mock.method)}`,
-      { method: "DELETE" }
-    );
+    await fetch(`${host}/api/mocks?path=${encodeURIComponent(mock.path)}&method=${encodeURIComponent(mock.method)}`, {
+      method: "DELETE",
+    });
     fetchMocks();
   }
 
@@ -107,9 +116,7 @@ export default function App() {
     <ConfigProvider
       theme={{
         algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        token: {
-          colorBgBase: dark ? "#18181c" : "#f7f8fa"
-        }
+        token: { colorBgBase: dark ? "#18181c" : "#f7f8fa" },
       }}
     >
       <Layout style={{ minHeight: "100vh", background: dark ? "#18181c" : "#f7f8fa" }}>
@@ -120,7 +127,7 @@ export default function App() {
             background: dark ? "#22232a" : "white",
             display: "flex",
             alignItems: "center",
-            padding: screens.xs ? "4px 8px" : "0 20px"
+            padding: screens.xs ? "4px 8px" : "0 20px",
           }}
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
@@ -155,7 +162,7 @@ export default function App() {
             padding: screens.xs ? 8 : 28,
             boxSizing: "border-box",
             boxShadow: dark ? "0 3px 24px 0 #0004" : "0 3px 16px 0 #ddd4",
-            marginTop: screens.xs ? 4 : 26
+            marginTop: screens.xs ? 4 : 26,
           }}
         >
           <Button
@@ -186,8 +193,8 @@ export default function App() {
                   </div>
                 ),
                 width: 130,
-                responsive: ["sm", "md", "lg"]
-              }
+                responsive: ["sm", "md", "lg"],
+              },
             ]}
             scroll={{ x: true }}
             pagination={{ pageSize: screens.xs ? 5 : 10 }}
