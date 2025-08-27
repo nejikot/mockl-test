@@ -1,25 +1,15 @@
 import React, { useState, useEffect } from "react";
 import {
-  Table,
-  Button,
-  Form,
-  Input,
-  Select,
-  Modal,
-  Layout,
-  message,
-  ConfigProvider,
-  Switch,
-  Grid,
-  InputNumber
+  Table, Button, Form, Input, Select, Modal, Layout, message,
+  ConfigProvider, Switch, Grid, InputNumber
 } from "antd";
 import { v4 as uuidv4 } from "uuid";
-import { theme as antdTheme } from "antd";
-import { BulbOutlined, BulbFilled } from "@ant-design/icons";
+import { BulbOutlined, BulbFilled, PlusOutlined, DeleteOutlined, ExclamationCircleOutlined } from "@ant-design/icons";
 
 const { Header, Content } = Layout;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
+const { confirm } = Modal;
 
 const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 
@@ -35,6 +25,9 @@ export default function App() {
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+
+  const [isFolderModalOpen, setFolderModalOpen] = useState(false);
+  const [folderForm] = Form.useForm();
 
   const [dark, setDark] = useState(false);
 
@@ -73,13 +66,64 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    fetchFolders();
-  }, [host]);
+  useEffect(() => { fetchFolders(); }, [host]);
+  useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
 
-  useEffect(() => {
-    fetchMocks();
-  }, [selectedFolder, host]);
+  // Создать папку
+  const openAddFolderModal = () => {
+    folderForm.resetFields();
+    setFolderModalOpen(true);
+  };
+
+  const handleAddFolder = async (values) => {
+    const name = values.name.trim();
+    if (folders.includes(name)) {
+      message.error("Папка с таким именем уже существует");
+      return;
+    }
+    try {
+      const res = await fetch(`${host}/api/folders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      if (!res.ok) throw new Error("Не удалось создать папку");
+      message.success("Папка создана");
+      setFolderModalOpen(false);
+      fetchFolders();
+    } catch (e) {
+      message.error(e.message);
+    }
+  };
+
+  // Удалить папку
+  const handleDeleteFolder = (name) => {
+    if (name === "default") {
+      message.warning("Нельзя удалять папку default");
+      return;
+    }
+    confirm({
+      title: `Удалить папку "${name}" и все моки в ней?`,
+      icon: <ExclamationCircleOutlined />,
+      okText: "Удалить",
+      okType: "danger",
+      cancelText: "Отмена",
+      onOk: async () => {
+        try {
+          const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+          if (!res.ok) throw new Error("Не удалось удалить папку");
+          message.success("Папка удалена");
+          if (selectedFolder === name) setSelectedFolder("default");
+          fetchFolders();
+          fetchMocks();
+        } catch (e) {
+          message.error(e.message);
+        }
+      },
+    });
+  };
+
+  // Остальной код по работе с моками (openAdd, openEdit, saveMock, deleteMock) остается без изменений
 
   const openAdd = () => {
     setEditing(null);
@@ -144,7 +188,7 @@ export default function App() {
       fetchFolders();
       message.success("Мок сохранён");
     } catch (e) {
-      message.error("Ошибка сохранения мока: " + (e.message || ""));
+      message.error("Ошибка сохранения мока: " + (e?.message || ""));
     }
   };
 
@@ -156,7 +200,7 @@ export default function App() {
       fetchFolders();
       message.success("Мок удалён");
     } catch (e) {
-      message.error("Ошибка удаления мока: " + (e.message || ""));
+      message.error("Ошибка удаления моков: " + (e?.message || ""));
     }
   };
 
@@ -180,9 +224,10 @@ export default function App() {
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+
             <Input
               value={host}
-              onChange={(e) => setHost(e.target.value)}
+              onChange={e => setHost(e.target.value)}
               style={{ maxWidth: screens.xs ? 140 : 320, background: dark ? "#22232a" : "white" }}
               placeholder="Адрес бэкенда"
               size={screens.xs ? "small" : "middle"}
@@ -195,9 +240,12 @@ export default function App() {
               value={selectedFolder}
               onChange={setSelectedFolder}
               style={{ minWidth: screens.xs ? 120 : 200 }}
-              options={folders.map((f) => ({ label: f, value: f }))}
+              options={folders.map(f => ({ label: f, value: f }))}
               dropdownMatchSelectWidth={false}
             />
+
+            <Button icon={<PlusOutlined />} onClick={openAddFolderModal} />
+            <Button icon={<DeleteOutlined />} danger disabled={selectedFolder === "default"} onClick={() => handleDeleteFolder(selectedFolder)} />
 
             <Button type="primary" onClick={openAdd}>
               Добавить мок
@@ -212,6 +260,7 @@ export default function App() {
             />
           </div>
         </Header>
+
         <Content
           style={{
             minHeight: "calc(100vh - 64px)",
@@ -308,6 +357,37 @@ export default function App() {
 
               <Form.Item name="sequence_next_id" label="ID следующего мока в цепочке (опционально)">
                 <Input placeholder="UUID следующего мок-запроса" />
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Создание новой папки"
+            open={isFolderModalOpen}
+            onCancel={() => setFolderModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={folderForm} onFinish={handleAddFolder} layout="vertical">
+              <Form.Item
+                label="Имя папки"
+                name="name"
+                rules={[
+                  { required: true, message: "Введите имя папки" },
+                  {
+                    validator: (_, value) =>
+                      folders.includes(value)
+                        ? Promise.reject(new Error("Папка с таким именем уже существует"))
+                        : Promise.resolve(),
+                  },
+                ]}
+              >
+                <Input placeholder="Например: new-folder" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Создать папку
+                </Button>
               </Form.Item>
             </Form>
           </Modal>
