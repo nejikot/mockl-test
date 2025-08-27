@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, HTTPException, Request, Body, Path
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -81,7 +81,7 @@ def create_folder(name: str = Body(..., embed=True)):
     return {"message": "Папка добавлена", "folders": folders}
 
 @app.delete("/api/folders")
-def delete_folder(name: str):
+def delete_folder(name: str = Query(...)):
     global folders, mocks
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
@@ -118,7 +118,7 @@ def list_mocks(folder: Optional[str] = None):
     return list(mocks.values())
 
 @app.delete("/api/mocks")
-def delete_mock(id_: str = Body(..., embed=True)):
+def delete_mock(id_: str = Query(...)):
     if id_ in mocks:
         del mocks[id_]
         save_mocks()
