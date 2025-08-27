@@ -4,6 +4,7 @@ import {
   ConfigProvider, Switch, Grid, InputNumber
 } from "antd";
 import { v4 as uuidv4 } from "uuid";
+import { theme as antdTheme } from "antd";
 import { BulbOutlined, BulbFilled, PlusOutlined, DeleteOutlined, ExclamationCircleOutlined } from "@ant-design/icons";
 
 const { Header, Content } = Layout;
