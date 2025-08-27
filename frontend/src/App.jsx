@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Grid, InputNumber, Typography, Card
+  ConfigProvider, Grid, InputNumber, Typography
 } from "antd";
 import { theme as antdTheme } from "antd";
 import { v4 as uuidv4 } from "uuid";
@@ -68,7 +68,6 @@ export default function App() {
   useEffect(() => { fetchFolders(); }, [host]);
   useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
 
-  // Создать папку
   const openAddFolderModal = () => {
     folderForm.resetFields();
     setFolderModalOpen(true);
@@ -95,14 +94,9 @@ export default function App() {
     }
   };
 
-  // Удалить папку
   const handleDeleteFolder = (name) => {
-    if (name === "default") {
-      message.warning("Нельзя удалять папку default");
-      return;
-    }
     confirm({
-      title: `Удалить папку "${name}" и все моки в ней?`,
+      title: `Удалить папку "${name === "default" ? "Главная" : name}" и все моки в ней?`,
       icon: <ExclamationCircleOutlined />,
       okText: "Удалить",
       okType: "danger",
@@ -122,7 +116,6 @@ export default function App() {
     });
   };
 
-  // Моки
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
@@ -131,7 +124,7 @@ export default function App() {
       status_code: 200,
       headers: "{}",
       response_headers: "{}",
-      response_body: "{}"
+      response_body: "{}",
     });
     setModalOpen(true);
   };
@@ -140,7 +133,7 @@ export default function App() {
     setEditing(mock);
     form.setFieldsValue({
       id: mock.id,
-      folder: mock.folder || "default",
+      folder: mock.folder || "Моки",
       method: mock.request_condition.method,
       path: mock.request_condition.path,
       headers: JSON.stringify(mock.request_condition.headers || {}, null, 2),
@@ -148,7 +141,7 @@ export default function App() {
       status_code: mock.response_config.status_code,
       response_headers: JSON.stringify(mock.response_config.headers || {}, null, 2),
       response_body: JSON.stringify(mock.response_config.body, null, 2),
-      sequence_next_id: mock.sequence_next_id || ""
+      sequence_next_id: mock.sequence_next_id || "",
     });
     setModalOpen(true);
   };
@@ -166,19 +159,19 @@ export default function App() {
           method: values.method,
           path: values.path,
           headers: reqHeaders,
-          body_contains: values.body_contains || null
+          body_contains: values.body_contains || null,
         },
         response_config: {
           status_code: Number(values.status_code),
           headers: respHeaders,
-          body: respBody
+          body: respBody,
         },
-        sequence_next_id: values.sequence_next_id || null
+        sequence_next_id: values.sequence_next_id || null,
       };
       const r = await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry)
+        body: JSON.stringify(entry),
       });
       if (!r.ok) throw new Error("Ошибка сохранения");
       setModalOpen(false);
@@ -206,7 +199,7 @@ export default function App() {
     <ConfigProvider
       theme={{
         algorithm: antdTheme.defaultAlgorithm,
-        token: { colorBgBase: "#f7f8fa" }
+        token: { colorBgBase: "#f7f8fa" },
       }}
     >
       <Layout style={{ minHeight: "100vh", background: "#f7f8fa" }}>
@@ -217,14 +210,14 @@ export default function App() {
             background: "white",
             display: "flex",
             alignItems: "center",
-            padding: screens.xs ? "4px 8px" : "0 20px"
+            padding: screens.xs ? "4px 8px" : "0 20px",
           }}
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
             <Input
               value={host}
-              onChange={e => setHost(e.target.value)}
+              onChange={(e) => setHost(e.target.value)}
               style={{ maxWidth: screens.xs ? 140 : 320, background: "white" }}
               placeholder="Адрес бэкенда"
               size={screens.xs ? "small" : "middle"}
@@ -237,7 +230,7 @@ export default function App() {
         <Layout style={{ minHeight: "calc(100vh - 64px)" }}>
           {/* Sidebar — увеличенная панель папок */}
           <Sider
-            width={440}
+            width={550}
             style={{
               background: "transparent",
               border: "none",
@@ -255,37 +248,45 @@ export default function App() {
                 padding: 0,
                 minHeight: "calc(100vh - 94px)",
                 display: "flex",
-                flexDirection: "column"
+                flexDirection: "column",
               }}
             >
               {/* Заголовок/кнопки */}
-              <div style={{
-                borderBottom: "1px solid #f0f0f0",
-                padding: "14px 18px 12px 18px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between"
-              }}>
-                <Typography.Text style={{ fontWeight: 600, fontSize: 17 }}>Папки</Typography.Text>
+              <div
+                style={{
+                  borderBottom: "1px solid #f0f0f0",
+                  padding: "14px 18px 12px 18px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Typography.Text style={{ fontWeight: 600, fontSize: 17 }}>
+                  Папки{" "}
+                </Typography.Text>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Button
                     icon={<PlusOutlined />}
                     onClick={openAddFolderModal}
                     size="small"
                     type="default"
-                  >Добавить папку</Button>
+                  >
+                    Добавить папку
+                  </Button>
                   <Button
                     icon={<PlusOutlined />}
                     onClick={openAdd}
                     type="primary"
                     size="middle"
                     style={{ fontWeight: 600, minWidth: 128 }}
-                  >Создать мок</Button>
+                  >
+                    Создать мок
+                  </Button>
                 </div>
               </div>
               {/* Список папок */}
               <div style={{ overflowY: "auto", flex: 1, padding: "16px 12px 18px 12px" }}>
-                {folders.map(folder =>
+                {folders.map((folder) => (
                   <div
                     key={folder}
                     style={{
@@ -299,24 +300,27 @@ export default function App() {
                       cursor: "pointer",
                       color: "#222",
                       justifyContent: "space-between",
-                      transition: "background .2s"
+                      transition: "background .2s",
                     }}
                     onClick={() => setSelectedFolder(folder)}
                   >
                     <span style={{ fontWeight: folder === selectedFolder ? 700 : 400 }}>
-                      {folder}
+                      {folder === "default" ? "Главная" : folder}
                     </span>
-                    {folder !== "default" &&
+                    {folder !== "default" && (
                       <Button
                         icon={<DeleteOutlined />}
                         size="small"
                         type="text"
                         danger
-                        onClick={e => { e.stopPropagation(); handleDeleteFolder(folder); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteFolder(folder);
+                        }}
                       />
-                    }
+                    )}
                   </div>
-                )}
+                ))}
               </div>
             </div>
           </Sider>
@@ -332,7 +336,7 @@ export default function App() {
               padding: screens.xs ? 12 : 28,
               boxSizing: "border-box",
               boxShadow: "0 3px 16px 0 #ddd4",
-              flex: 1
+              flex: 1,
             }}
           >
             <Table
@@ -344,7 +348,7 @@ export default function App() {
                 {
                   title: "Статус ответа",
                   dataIndex: ["response_config", "status_code"],
-                  width: 110
+                  width: 110,
                 },
                 {
                   title: "Действия",
@@ -358,8 +362,8 @@ export default function App() {
                         Удалить
                       </Button>
                     </>
-                  )
-                }
+                  ),
+                },
               ]}
               pagination={{ pageSize: 10 }}
               scroll={{ x: 600 }}
