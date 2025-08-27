@@ -345,15 +345,26 @@ export default function App() {
     });
   };
 
-  return (
+ return (
     <DndProvider backend={HTML5Backend}>
       <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f7f8fa" } }}>
         <Layout style={{ minHeight: "100vh", background: "#f7f8fa" }}>
-          <Header style={{ color: "#222", fontSize: 26, background: "white", display: "flex", alignItems: "center", padding: screens.xs ? "4px 8px" : "0 20px" }}>
+          <Header style={{
+            color: "#222", fontSize: 26, background: "white",
+            display: "flex", alignItems: "center", padding: screens.xs ? "4px 8px" : "0 20px"
+          }}>
             <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-              <Input value={host} onChange={(e) => setHost(e.target.value)} style={{ maxWidth: screens.xs ? 140 : 320, background: "white" }} placeholder="Адрес бэкенда" size={screens.xs ? "small" : "middle"} />
-              <Button onClick={fetchFolders} type="default" size={screens.xs ? "small" : "middle"}>Подключиться</Button>
+            <div style={{
+              marginLeft: "auto", display: "flex",
+              alignItems: "center", gap: 12, width: screens.xs ? "40%" : "50%"
+            }}>
+              <Input
+                value={host}
+                onChange={e => setHost(e.target.value)}
+                style={{ flex: 1, background: "white" }}
+                placeholder="Адрес бэкенда"
+                size={screens.xs ? "small" : "middle"}
+              />
             </div>
           </Header>
           
