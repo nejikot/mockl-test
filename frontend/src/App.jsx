@@ -350,13 +350,13 @@ export default function App() {
       <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f7f8fa" } }}>
         <Layout style={{ minHeight: "100vh", background: "#f7f8fa" }}>
           <Header style={{
-            color: "#222", fontSize: 26, background: "white",
-            display: "flex", alignItems: "center", padding: screens.xs ? "4px 8px" : "0 20px"
+            color: "#222", fontSize: 60, background: "white",
+            display: "flex", alignItems: "center", padding: screens.xs ? "4px 8px" : "0 100px"
           }}>
-            <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
+            <span style={{ fontWeight: 80, letterSpacing: 0.5 }}> ᨐock </span>
             <div style={{
               marginLeft: "auto", display: "flex",
-              alignItems: "center", gap: 12, width: screens.xs ? "40%" : "50%"
+              alignItems: "center", gap: 12, width: screens.xs ? "20%" : "15 %"
             }}>
               <Input
                 value={host}
