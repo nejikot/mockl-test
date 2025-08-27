@@ -1,18 +1,19 @@
 import json
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pathlib import Path
 
 app = FastAPI()
 
 DATA_FILE = Path(__file__).parent / "mocks_data.json"
+FOLDER_FILE = Path(__file__).parent / "folders_data.json"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Или адреса ваших фронтендов
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,9 +21,9 @@ app.add_middleware(
 
 class MockRequestCondition(BaseModel):
     method: str
-    path: str  # полный путь + query string
+    path: str
     headers: Optional[Dict[str, str]] = None
-    body_contains: Optional[str] = None  # часть тела запроса для проверки, если нужно
+    body_contains: Optional[str] = None
 
 class MockResponseConfig(BaseModel):
     status_code: int
@@ -37,6 +38,7 @@ class MockEntry(BaseModel):
     sequence_next_id: Optional[str] = None
 
 mocks: Dict[str, MockEntry] = {}
+folders: List[str] = []
 
 def load_mocks():
     global mocks
@@ -51,12 +53,60 @@ def save_mocks():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump([m.dict() for m in mocks.values()], f, ensure_ascii=False, indent=2)
 
+def load_folders():
+    global folders
+    if FOLDER_FILE.exists():
+        with open(FOLDER_FILE, "r", encoding="utf-8") as f:
+            folders = json.load(f)
+    else:
+        folders = ["default"] # always have at least default
+
+def save_folders():
+    with open(FOLDER_FILE, "w", encoding="utf-8") as f:
+        json.dump(folders, f, ensure_ascii=False, indent=2)
+
 @app.on_event("startup")
 def startup_event():
     load_mocks()
+    load_folders()
+
+@app.post("/api/folders")
+def create_folder(name: str = Body(..., embed=True)):
+    global folders
+    name = name.strip()
+    if not name or name in folders:
+        raise HTTPException(400, "Некорректное или уже существующее имя папки")
+    folders.append(name)
+    save_folders()
+    return {"message": "Папка добавлена", "folders": folders}
+
+@app.delete("/api/folders")
+def delete_folder(name: str = Query(...)):
+    global folders, mocks
+    if name == "default":
+        raise HTTPException(400, "Нельзя удалить стандартную папку")
+    if name not in folders:
+        raise HTTPException(404, "Папка не найдена")
+    # Удаляем все моки из этой папки:
+    mocks = {k: v for k, v in mocks.items() if v.folder != name}
+    folders = [f for f in folders if f != name]
+    save_folders()
+    save_mocks()
+    return {"message": f"Папка '{name}' и все её моки удалены", "folders": folders}
+
+@app.get("/api/mocks/folders")
+def list_folders():
+    # Совмещаем явно созданные папки и те, что были только с моками (устаревшее)
+    used_folders = list(set([m.folder for m in mocks.values()] + folders))
+    used_folders = sorted(set(used_folders))
+    return used_folders
 
 @app.post("/api/mocks")
 def create_or_update_mock(entry: MockEntry):
+    global folders
+    if entry.folder not in folders:
+        folders.append(entry.folder)
+        save_folders()
     mocks[entry.id] = entry
     save_mocks()
     return {"message": "mock saved", "mock": entry}
@@ -77,19 +127,16 @@ def delete_mock(id_: str = Query(...)):
         raise HTTPException(404, f"Mock with id {id_} not found")
 
 async def match_condition(req: Request, condition: MockRequestCondition):
-    # Проверяем метод и путь (с query)
     qp = str(req.query_params)
     full_path = req.url.path + (f"?{req.url.query}" if qp else "")
     if req.method.upper() != condition.method.upper():
         return False
     if full_path != condition.path:
         return False
-    # Проверяем заголовки (если заданы)
     if condition.headers:
         for hk, hv in condition.headers.items():
             if req.headers.get(hk) != hv:
                 return False
-    # Проверяем тело (если задано)
     if condition.body_contains:
         body = (await req.body()).decode("utf-8")
         if condition.body_contains not in body:
