@@ -1,7 +1,17 @@
 import React, { useState, useEffect } from "react";
 import {
-  Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Switch, Grid, InputNumber
+  Table,
+  Button,
+  Form,
+  Input,
+  Select,
+  Modal,
+  Layout,
+  message,
+  ConfigProvider,
+  Switch,
+  Grid,
+  InputNumber
 } from "antd";
 import { v4 as uuidv4 } from "uuid";
 import { BulbOutlined, BulbFilled } from "@ant-design/icons";
@@ -18,13 +28,17 @@ function getBackendUrl() {
 
 export default function App() {
   const [form] = Form.useForm();
+
   const [folders, setFolders] = useState(["default"]);
   const [selectedFolder, setSelectedFolder] = useState("default");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+
   const [dark, setDark] = useState(false);
+
   const screens = useBreakpoint();
+
   const [host, setHost] = useState(getBackendUrl());
 
   useEffect(() => {
@@ -58,8 +72,13 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchFolders(); }, [host]);
-  useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
+  useEffect(() => {
+    fetchFolders();
+  }, [host]);
+
+  useEffect(() => {
+    fetchMocks();
+  }, [selectedFolder, host]);
 
   const openAdd = () => {
     setEditing(null);
@@ -69,7 +88,7 @@ export default function App() {
       status_code: 200,
       headers: "{}",
       response_headers: "{}",
-      response_body: "{}",
+      response_body: "{}"
     });
     setModalOpen(true);
   };
@@ -86,7 +105,7 @@ export default function App() {
       status_code: mock.response_config.status_code,
       response_headers: JSON.stringify(mock.response_config.headers || {}, null, 2),
       response_body: JSON.stringify(mock.response_config.body, null, 2),
-      sequence_next_id: mock.sequence_next_id || "",
+      sequence_next_id: mock.sequence_next_id || ""
     });
     setModalOpen(true);
   };
@@ -104,19 +123,19 @@ export default function App() {
           method: values.method,
           path: values.path,
           headers: reqHeaders,
-          body_contains: values.body_contains || null,
+          body_contains: values.body_contains || null
         },
         response_config: {
           status_code: Number(values.status_code),
           headers: respHeaders,
-          body: respBody,
+          body: respBody
         },
-        sequence_next_id: values.sequence_next_id || null,
+        sequence_next_id: values.sequence_next_id || null
       };
       const r = await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry),
+        body: JSON.stringify(entry)
       });
       if (!r.ok) throw new Error("Ошибка сохранения");
       setModalOpen(false);
@@ -124,7 +143,7 @@ export default function App() {
       fetchFolders();
       message.success("Мок сохранён");
     } catch (e) {
-      message.error("Ошибка сохранения мока: " + (e?.message || ""));
+      message.error("Ошибка сохранения мока: " + (e.message || ""));
     }
   };
 
@@ -136,15 +155,15 @@ export default function App() {
       fetchFolders();
       message.success("Мок удалён");
     } catch (e) {
-      message.error("Ошибка удаления мока: " + (e?.message || ""));
+      message.error("Ошибка удаления мока: " + (e.message || ""));
     }
   };
 
   return (
     <ConfigProvider
       theme={{
-        algorithm: dark ? "dark" : "default",
-        token: { colorBgBase: dark ? "#18181c" : "#f7f8fa" },
+        algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        token: { colorBgBase: dark ? "#18181c" : "#f7f8fa" }
       }}
     >
       <Layout style={{ minHeight: "100vh", background: dark ? "#18181c" : "#f7f8fa" }}>
@@ -155,14 +174,14 @@ export default function App() {
             background: dark ? "#22232a" : "white",
             display: "flex",
             alignItems: "center",
-            padding: screens.xs ? "4px 8px" : "0 20px",
+            padding: screens.xs ? "4px 8px" : "0 20px"
           }}
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
             <Input
               value={host}
-              onChange={e => setHost(e.target.value)}
+              onChange={(e) => setHost(e.target.value)}
               style={{ maxWidth: screens.xs ? 140 : 320, background: dark ? "#22232a" : "white" }}
               placeholder="Адрес бэкенда"
               size={screens.xs ? "small" : "middle"}
@@ -201,7 +220,7 @@ export default function App() {
             borderRadius: 16,
             padding: screens.xs ? 12 : 28,
             boxSizing: "border-box",
-            boxShadow: dark ? "0 3px 24px 0 #0004" : "0 3px 16px 0 #ddd4",
+            boxShadow: dark ? "0 3px 24px 0 #0004" : "0 3px 16px 0 #ddd4"
           }}
         >
           <Table
@@ -210,7 +229,11 @@ export default function App() {
             columns={[
               { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
               { title: "Путь с параметрами", dataIndex: ["request_condition", "path"], ellipsis: true },
-              { title: "Статус ответа", dataIndex: ["response_config", "status_code"], width: 110 },
+              {
+                title: "Статус ответа",
+                dataIndex: ["response_config", "status_code"],
+                width: 110
+              },
               {
                 title: "Действия",
                 width: 160,
@@ -223,8 +246,8 @@ export default function App() {
                       Удалить
                     </Button>
                   </>
-                ),
-              },
+                )
+              }
             ]}
             pagination={{ pageSize: 10 }}
             scroll={{ x: 600 }}
