@@ -586,7 +586,7 @@ export default function App() {
                 <TextArea rows={8} placeholder='{"message": "ok"}' />
               </Form.Item>
 
-              <Form.Item name="sequence_next_id" label="ID следующего мока в цепочке (опционально)">
+              <Form.Item name="sequence_next_id" label="UUID следующего мока в цепочке (опционально)">
                 <Input placeholder="UUID следующего мок-запроса" />
               </Form.Item>
             </Form>

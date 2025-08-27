@@ -165,9 +165,15 @@ async def match_condition(req: Request, condition: MockRequestCondition):
 async def mock_handler(request: Request, full_path: str):
     for mock in mocks.values():
         if mock.active and await match_condition(request, mock.request_condition):
-            resp = JSONResponse(content=mock.response_config.body, status_code=mock.response_config.status_code)
+            resp = JSONResponse(
+                content=mock.response_config.body,
+                status_code=mock.response_config.status_code
+            )
             if mock.response_config.headers:
-                for k,v in mock.response_config.headers.items():
+                for k, v in mock.response_config.headers.items():
                     resp.headers[k] = v
+            # Add next-mock header if exists
+            if mock.sequence_next_id:
+                resp.headers["X-Next-Mock-Id"] = mock.sequence_next_id
             return resp
     raise HTTPException(404, "No matching mock found")
