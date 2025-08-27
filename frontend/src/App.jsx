@@ -1,11 +1,27 @@
 import React, { useState, useEffect } from "react";
 import {
-  Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Switch, Grid, InputNumber
+  Table,
+  Button,
+  Form,
+  Input,
+  Select,
+  Modal,
+  Layout,
+  message,
+  ConfigProvider,
+  Switch,
+  Grid,
+  InputNumber,
 } from "antd";
-import { v4 as uuidv4 } from "uuid";
 import { theme as antdTheme } from "antd";
-import { BulbOutlined, BulbFilled, PlusOutlined, DeleteOutlined, ExclamationCircleOutlined } from "@ant-design/icons";
+import { v4 as uuidv4 } from "uuid";
+import {
+  BulbOutlined,
+  BulbFilled,
+  PlusOutlined,
+  DeleteOutlined,
+  ExclamationCircleOutlined,
+} from "@ant-design/icons";
 
 const { Header, Content } = Layout;
 const { TextArea } = Input;
@@ -67,8 +83,13 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchFolders(); }, [host]);
-  useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
+  useEffect(() => {
+    fetchFolders();
+  }, [host]);
+
+  useEffect(() => {
+    fetchMocks();
+  }, [selectedFolder, host]);
 
   // Создать папку
   const openAddFolderModal = () => {
@@ -86,7 +107,7 @@ export default function App() {
       const res = await fetch(`${host}/api/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name }),
       });
       if (!res.ok) throw new Error("Не удалось создать папку");
       message.success("Папка создана");
@@ -124,7 +145,7 @@ export default function App() {
     });
   };
 
-  // Остальной код по работе с моками (openAdd, openEdit, saveMock, deleteMock) остается без изменений
+  // Моки
 
   const openAdd = () => {
     setEditing(null);
@@ -134,7 +155,7 @@ export default function App() {
       status_code: 200,
       headers: "{}",
       response_headers: "{}",
-      response_body: "{}"
+      response_body: "{}",
     });
     setModalOpen(true);
   };
@@ -151,7 +172,7 @@ export default function App() {
       status_code: mock.response_config.status_code,
       response_headers: JSON.stringify(mock.response_config.headers || {}, null, 2),
       response_body: JSON.stringify(mock.response_config.body, null, 2),
-      sequence_next_id: mock.sequence_next_id || ""
+      sequence_next_id: mock.sequence_next_id || "",
     });
     setModalOpen(true);
   };
@@ -169,19 +190,19 @@ export default function App() {
           method: values.method,
           path: values.path,
           headers: reqHeaders,
-          body_contains: values.body_contains || null
+          body_contains: values.body_contains || null,
         },
         response_config: {
           status_code: Number(values.status_code),
           headers: respHeaders,
-          body: respBody
+          body: respBody,
         },
-        sequence_next_id: values.sequence_next_id || null
+        sequence_next_id: values.sequence_next_id || null,
       };
       const r = await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry)
+        body: JSON.stringify(entry),
       });
       if (!r.ok) throw new Error("Ошибка сохранения");
       setModalOpen(false);
@@ -209,7 +230,7 @@ export default function App() {
     <ConfigProvider
       theme={{
         algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        token: { colorBgBase: dark ? "#18181c" : "#f7f8fa" }
+        token: { colorBgBase: dark ? "#18181c" : "#f7f8fa" },
       }}
     >
       <Layout style={{ minHeight: "100vh", background: dark ? "#18181c" : "#f7f8fa" }}>
@@ -220,15 +241,14 @@ export default function App() {
             background: dark ? "#22232a" : "white",
             display: "flex",
             alignItems: "center",
-            padding: screens.xs ? "4px 8px" : "0 20px"
+            padding: screens.xs ? "4px 8px" : "0 20px",
           }}
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-
             <Input
               value={host}
-              onChange={e => setHost(e.target.value)}
+              onChange={(e) => setHost(e.target.value)}
               style={{ maxWidth: screens.xs ? 140 : 320, background: dark ? "#22232a" : "white" }}
               placeholder="Адрес бэкенда"
               size={screens.xs ? "small" : "middle"}
@@ -241,12 +261,17 @@ export default function App() {
               value={selectedFolder}
               onChange={setSelectedFolder}
               style={{ minWidth: screens.xs ? 120 : 200 }}
-              options={folders.map(f => ({ label: f, value: f }))}
+              options={folders.map((f) => ({ label: f, value: f }))}
               dropdownMatchSelectWidth={false}
             />
 
             <Button icon={<PlusOutlined />} onClick={openAddFolderModal} />
-            <Button icon={<DeleteOutlined />} danger disabled={selectedFolder === "default"} onClick={() => handleDeleteFolder(selectedFolder)} />
+            <Button
+              icon={<DeleteOutlined />}
+              danger
+              disabled={selectedFolder === "default"}
+              onClick={() => handleDeleteFolder(selectedFolder)}
+            />
 
             <Button type="primary" onClick={openAdd}>
               Добавить мок
@@ -271,7 +296,7 @@ export default function App() {
             borderRadius: 16,
             padding: screens.xs ? 12 : 28,
             boxSizing: "border-box",
-            boxShadow: dark ? "0 3px 24px 0 #0004" : "0 3px 16px 0 #ddd4"
+            boxShadow: dark ? "0 3px 24px 0 #0004" : "0 3px 16px 0 #ddd4",
           }}
         >
           <Table
@@ -283,7 +308,7 @@ export default function App() {
               {
                 title: "Статус ответа",
                 dataIndex: ["response_config", "status_code"],
-                width: 110
+                width: 110,
               },
               {
                 title: "Действия",
@@ -297,8 +322,8 @@ export default function App() {
                       Удалить
                     </Button>
                   </>
-                )
-              }
+                ),
+              },
             ]}
             pagination={{ pageSize: 10 }}
             scroll={{ x: 600 }}
