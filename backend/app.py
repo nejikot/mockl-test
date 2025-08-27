@@ -24,7 +24,7 @@ DATABASE_URL = (
     f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
-# Создаем движок с обязательным SSL
+# Создаем движок с SSL
 engine = create_engine(
     DATABASE_URL,
     echo=False,
@@ -55,7 +55,7 @@ class Mock(Base):
     active = Column(Boolean, default=True)
     folder_obj = relationship("Folder", back_populates="mocks")
 
-# Создаем таблицы в БД
+# Создаем таблицы
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -216,8 +216,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 content=m.response_config.body,
                 status_code=m.response_config.status_code
             )
-            for k, v in m.response_config.headers.items():
-                resp.headers[k] = v
+            if m.response_config.headers:
+                for k, v in m.response_config.headers.items():
+                    resp.headers[k] = v
             if m.sequence_next_id:
                 resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
