@@ -1,20 +1,10 @@
 import React, { useState, useEffect } from "react";
 import {
-  Table,
-  Button,
-  Form,
-  Input,
-  Select,
-  Modal,
-  Layout,
-  message,
-  ConfigProvider,
-  Switch,
-  Grid,
-  InputNumber,
+  Table, Button, Form, Input, Select, Modal, Layout, message,
+  ConfigProvider, Switch, Grid, InputNumber
 } from "antd";
-
 import { v4 as uuidv4 } from "uuid";
+import { BulbOutlined, BulbFilled } from "@ant-design/icons";
 
 const { Header, Content } = Layout;
 const { TextArea } = Input;
@@ -22,66 +12,60 @@ const { useBreakpoint } = Grid;
 
 const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 
+function getBackendUrl() {
+  return import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+}
+
 export default function App() {
   const [form] = Form.useForm();
-
-  const [folders, setFolders] = useState([]);
+  const [folders, setFolders] = useState(["default"]);
   const [selectedFolder, setSelectedFolder] = useState("default");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-
   const [dark, setDark] = useState(false);
-
   const screens = useBreakpoint();
-
-  const backendHost = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
-  const [host, setHost] = useState(backendHost);
+  const [host, setHost] = useState(getBackendUrl());
 
   useEffect(() => {
     document.body.style.background = dark ? "#18181c" : "#f7f8fa";
   }, [dark]);
 
-  // Fetch folders from backend
   const fetchFolders = async () => {
     try {
       const res = await fetch(`${host}/api/mocks/folders`);
+      if (!res.ok) throw new Error("Ошибка ответа сервера");
       const data = await res.json();
       setFolders(data.length ? data : ["default"]);
-      if (!selectedFolder && data.length) setSelectedFolder(data[0]);
-    } catch (e) {
-      message.error("Ошибка получения папок");
+      if (!data.includes(selectedFolder)) setSelectedFolder(data[0] || "default");
+    } catch {
+      setFolders(["default"]);
+      setSelectedFolder("default");
+      message.error("Ошибка получения папок (backend недоступен)");
     }
   };
 
-  // Fetch mocks in selected folder
   const fetchMocks = async () => {
     if (!selectedFolder) return;
     try {
-      const res = await fetch(`${host}/api/mocks?folder=${selectedFolder}`);
+      const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(selectedFolder)}`);
+      if (!res.ok) throw new Error("Ошибка ответа сервера");
       const data = await res.json();
       setMocks(data);
-    } catch (e) {
-      message.error("Ошибка получения моков");
+    } catch {
+      setMocks([]);
+      message.error("Ошибка получения моков (backend недоступен)");
     }
   };
 
-  useEffect(() => {
-    fetchFolders();
-    // eslint-disable-next-line
-  }, []);
+  useEffect(() => { fetchFolders(); }, [host]);
+  useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
 
-  useEffect(() => {
-    fetchMocks();
-    // eslint-disable-next-line
-  }, [selectedFolder, host]);
-
-  // Open modal for new mock
   const openAdd = () => {
     setEditing(null);
     form.resetFields();
     form.setFieldsValue({
-      folder: selectedFolder || "default",
+      folder: selectedFolder,
       status_code: 200,
       headers: "{}",
       response_headers: "{}",
@@ -90,7 +74,6 @@ export default function App() {
     setModalOpen(true);
   };
 
-  // Open modal for editing mock
   const openEdit = (mock) => {
     setEditing(mock);
     form.setFieldsValue({
@@ -108,7 +91,6 @@ export default function App() {
     setModalOpen(true);
   };
 
-  // Save mock (create or update)
   const saveMock = async (values) => {
     try {
       const reqHeaders = JSON.parse(values.headers || "{}");
@@ -131,29 +113,30 @@ export default function App() {
         },
         sequence_next_id: values.sequence_next_id || null,
       };
-      await fetch(`${host}/api/mocks`, {
+      const r = await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(entry),
       });
+      if (!r.ok) throw new Error("Ошибка сохранения");
       setModalOpen(false);
       fetchMocks();
       fetchFolders();
       message.success("Мок сохранён");
     } catch (e) {
-      message.error("Ошибка сохранения моков: " + (e.message || ""));
+      message.error("Ошибка сохранения мока: " + (e?.message || ""));
     }
   };
 
-  // Delete mock
   const deleteMock = async (id) => {
     try {
-      await fetch(`${host}/api/mocks?id_=${id}`, { method: "DELETE" });
+      const r = await fetch(`${host}/api/mocks?id_=${id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("Ошибка удаления");
       fetchMocks();
       fetchFolders();
       message.success("Мок удалён");
     } catch (e) {
-      message.error("Ошибка удаления моков");
+      message.error("Ошибка удаления мока: " + (e?.message || ""));
     }
   };
 
@@ -176,8 +159,18 @@ export default function App() {
           }}
         >
           <span style={{ fontWeight: 800, letterSpacing: 0.5 }}>Mock API UI</span>
-
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+            <Input
+              value={host}
+              onChange={e => setHost(e.target.value)}
+              style={{ maxWidth: screens.xs ? 140 : 320, background: dark ? "#22232a" : "white" }}
+              placeholder="Адрес бэкенда"
+              size={screens.xs ? "small" : "middle"}
+            />
+            <Button onClick={fetchFolders} type="default" size={screens.xs ? "small" : "middle"}>
+              Подключиться
+            </Button>
+
             <Select
               value={selectedFolder}
               onChange={setSelectedFolder}
@@ -199,7 +192,6 @@ export default function App() {
             />
           </div>
         </Header>
-
         <Content
           style={{
             minHeight: "calc(100vh - 64px)",
@@ -218,11 +210,7 @@ export default function App() {
             columns={[
               { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
               { title: "Путь с параметрами", dataIndex: ["request_condition", "path"], ellipsis: true },
-              {
-                title: "Статус ответа",
-                dataIndex: ["response_config", "status_code"],
-                width: 110,
-              },
+              { title: "Статус ответа", dataIndex: ["response_config", "status_code"], width: 110 },
               {
                 title: "Действия",
                 width: 160,
@@ -248,8 +236,8 @@ export default function App() {
             open={modalOpen}
             onCancel={() => setModalOpen(false)}
             onOk={() => form.submit()}
-            width={"90vw"}
-            maxWidth={900}
+            width="90vw"
+            style={{ maxWidth: 900 }}
             bodyStyle={{ maxHeight: "80vh", overflowY: "auto" }}
             destroyOnClose
           >
