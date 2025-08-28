@@ -1,3 +1,4 @@
+# app.py
 import os
 import json
 from uuid import uuid4
@@ -38,12 +39,10 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
-
 class Folder(Base):
     __tablename__ = "folders"
     name = Column(String, primary_key=True)
     mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete")
-
 
 class Mock(Base):
     __tablename__ = "mocks"
@@ -65,7 +64,6 @@ class Mock(Base):
 
     folder_obj = relationship("Folder", back_populates="mocks")
 
-
 # Создаём таблицы
 Base.metadata.create_all(bind=engine)
 
@@ -79,19 +77,16 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-
 class MockRequestCondition(BaseModel):
     method: str
     path: str
     headers: Optional[Dict[str, str]] = None
     body_contains: Optional[str] = None
 
-
 class MockResponseConfig(BaseModel):
     status_code: int
     headers: Optional[Dict[str, str]] = None
     body: Dict
-
 
 class MockEntry(BaseModel):
     id: str
@@ -101,14 +96,12 @@ class MockEntry(BaseModel):
     sequence_next_id: Optional[str] = None
     active: Optional[bool] = True
 
-
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
 
 @app.on_event("startup")
 def ensure_default_folder():
@@ -118,7 +111,6 @@ def ensure_default_folder():
         db.commit()
     db.close()
 
-
 @app.post("/api/folders")
 def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_db)):
     name = name.strip()
@@ -127,7 +119,6 @@ def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_d
     db.add(Folder(name=name))
     db.commit()
     return {"message": "Папка добавлена"}
-
 
 @app.delete("/api/folders")
 def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
@@ -140,7 +131,6 @@ def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Папка '{name}' и все её моки удалены"}
 
-
 @app.get("/api/mocks/folders", response_model=List[str])
 def list_folders(db: Session = Depends(get_db)):
     names = [f.name for f in db.query(Folder).all()]
@@ -148,7 +138,6 @@ def list_folders(db: Session = Depends(get_db)):
         names.remove("default")
         names.insert(0, "default")
     return names
-
 
 @app.post("/api/mocks")
 def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
@@ -172,7 +161,6 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     mock.active = entry.active if entry.active is not None else True
     db.commit()
     return {"message": "mock saved", "mock": entry}
-
 
 @app.get("/api/mocks", response_model=List[MockEntry])
 def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
@@ -202,7 +190,6 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
         )
     return results
 
-
 @app.delete("/api/mocks")
 def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
     mock = db.query(Mock).filter_by(id=id_).first()
@@ -211,7 +198,6 @@ def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
     db.delete(mock)
     db.commit()
     return {"message": "mock deleted"}
-
 
 @app.patch("/api/mocks/{mock_id}/toggle")
 def toggle_mock(
@@ -226,17 +212,18 @@ def toggle_mock(
     db.commit()
     return {"id": mock_id, "active": active}
 
-
 @app.patch("/api/mocks/deactivate-all")
-def deactivate_all(folder: str = Query(...), db: Session = Depends(get_db)):
-    mocks_in_folder = db.query(Mock).filter_by(folder_name=folder, active=True).all()
+def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    q = db.query(Mock).filter_by(active=True)
+    if folder:
+        q = q.filter_by(folder_name=folder)
+    mocks_in_folder = q.all()
     if not mocks_in_folder:
         raise HTTPException(404, "No matching mock found")
     for m in mocks_in_folder:
         m.active = False
     db.commit()
-    return {"message": f"All mocks in folder '{folder}' deactivated"}
-
+    return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
 
 async def match_condition(req: Request, m: Mock) -> bool:
     if req.method.upper() != m.method.upper():
@@ -255,7 +242,6 @@ async def match_condition(req: Request, m: Mock) -> bool:
             return False
     return True
 
-
 @app.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH"])
 async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
     for m in db.query(Mock).filter_by(active=True).all():
@@ -270,7 +256,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
     raise HTTPException(404, "No matching mock found")
-
 
 @app.post("/api/mocks/import")
 async def import_postman_collection(
