@@ -1,5 +1,8 @@
 import os
-from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends
+import json
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -267,3 +270,80 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
     raise HTTPException(404, "No matching mock found")
+
+
+@app.post("/api/mocks/import")
+async def import_postman_collection(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Импорт из Postman Collection v2.1 JSON.
+    Создаёт папку с именем collection.info.name и сохраняет все запросы как моки в ней.
+    """
+    content = await file.read()
+    try:
+        coll = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON file")
+
+    folder_name = coll.get("info", {}).get("name", "postman")
+    folder_name = folder_name.strip() or "postman"
+    if not db.query(Folder).filter_by(name=folder_name).first():
+        db.add(Folder(name=folder_name))
+        db.commit()
+
+    items = coll.get("item", [])
+    imported = []
+
+    for it in items:
+        req = it.get("request", {})
+        res_list = it.get("response", [])
+        if not req or not res_list:
+            continue
+
+        res = res_list[0]
+        url = req.get("url", {})
+        raw = url.get("raw") if isinstance(url, dict) else (url if isinstance(url, str) else "")
+        path = raw.split("://")[-1]
+        path = "/" + path.split("/", 1)[1] if "/" in path else "/"
+
+        mock_id = str(uuid4())
+
+        entry = MockEntry(
+            id=mock_id,
+            folder=folder_name,
+            request_condition=MockRequestCondition(
+                method=req.get("method", "GET"),
+                path=path,
+                headers={h["key"]: h.get("value", "") for h in req.get("header", [])}
+            ),
+            response_config=MockResponseConfig(
+                status_code=res.get("status", 200),
+                headers={h["key"]: h.get("value", "") for h in res.get("header", [])},
+                body=(json.loads(res.get("body", "{}")) if isinstance(res.get("body"), str) else res.get("body", {}))
+            ),
+            sequence_next_id=None,
+            active=True
+        )
+
+        mock = Mock(id=entry.id)
+        db.add(mock)
+        mock.folder_name = entry.folder
+        mock.method = entry.request_condition.method
+        mock.path = entry.request_condition.path
+        mock.headers = entry.request_condition.headers or {}
+        mock.body_contains = entry.request_condition.body_contains
+        mock.status_code = entry.response_config.status_code
+        mock.response_headers = entry.response_config.headers or {}
+        mock.response_body = entry.response_config.body
+        mock.sequence_next_id = entry.sequence_next_id
+        mock.active = entry.active
+
+        imported.append(entry.id)
+
+    db.commit()
+    return {
+        "message": f"Imported {len(imported)} mocks into folder '{folder_name}'",
+        "imported_ids": imported
+    }
