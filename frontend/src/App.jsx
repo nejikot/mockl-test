@@ -338,20 +338,20 @@ export default function App() {
         <Layout style={{ minHeight: "100vh" }}>
           <Header style={{
             background: "#fff",
-            padding: screens.xs ? "80px 16px" : "0 100px",
+            padding: screens.xs ? "8px 16px" : "0 80px",
             display: "flex",
             alignItems: "center",
             boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
           }}>
-            <Typography.Title level={40} style={{ margin: 10 }}>ᨐᵒᶜᵏ</Typography.Title>
+            <Typography.Title level={30} style={{ margin: 10 }}>ᨐᵒᶜᵏ</Typography.Title>
             <div style={{
               marginLeft: "auto",
               display: "flex",
               alignItems: "center",
               gap: 8,
-              width: screens.xs ? "70%" : "25%"
+              width: screens.xs ? "40%" : "25%"
             }}>
-              <Typography.Text>Бэк: </Typography.Text>
+              <Typography.Text>Бэк:</Typography.Text>
               <Tooltip title="Копировать адрес">
                 <Button
                   icon={<CopyOutlined />}
@@ -491,6 +491,12 @@ export default function App() {
                         )
                       }
                     ]}
+                    pagination={{
+                      pageSize: 10,
+                      showSizeChanger: true,
+                      showQuickJumper: true,
+                      showTotal: (total, range) => `${range[0]}-${range[1]} из ${total}`
+                    }}
                     scroll={{ x: 700 }}
                   />
                 </div>
