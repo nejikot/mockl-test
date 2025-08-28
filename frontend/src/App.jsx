@@ -394,7 +394,7 @@ export default function App() {
                       icon={<UploadOutlined />}
                       onClick={onImportClick}
                     >
-                      + Импорт mock
+                      Импорт
                     </Button>
                     <input
                       type="file"
@@ -491,12 +491,6 @@ export default function App() {
                         )
                       }
                     ]}
-                    pagination={{
-                      pageSize: 10,
-                      showSizeChanger: true,
-                      showQuickJumper: true,
-                      showTotal: (total, range) => `${range[0]}-${range[1]} из ${total}`
-                    }}
                     scroll={{ x: 700 }}
                   />
                 </div>
