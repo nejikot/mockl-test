@@ -270,7 +270,7 @@ async def import_postman_collection(
     try:
         coll = json.loads(content)
     except json.JSONDecodeError:
-        raise HTTPException(400, "Invalid JSON file")
+        return JSONResponse({"detail": "Invalid JSON file"}, status_code=400)
 
     folder_name = coll.get("info", {}).get("name", "postman")
     folder_name = folder_name.strip() or "postman"
@@ -328,7 +328,7 @@ async def import_postman_collection(
         imported.append(entry.id)
 
     db.commit()
-    return {
+    return JSONResponse({
         "message": f"Imported {len(imported)} mocks into folder '{folder_name}'",
         "imported_ids": imported
-    }
+    }, status_code=200)

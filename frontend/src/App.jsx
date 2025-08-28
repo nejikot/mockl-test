@@ -292,7 +292,7 @@ export default function App() {
     }
     Modal.confirm({
       title: `Удалить папку '${name}' и все её моки?`,
-      icon: <ExclamationCircleOutlined />,
+      icon: <ExclamationCircleOutlined />,  
       okText: "Удалить",
       okType: "danger",
       cancelText: "Отмена",
@@ -301,7 +301,7 @@ export default function App() {
           const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(name)}`, { method: "DELETE" });
           if (!res.ok) throw new Error();
           message.success("Папка удалена");
-          if (selectedFolder === name) setSelectedFolder("default");
+          if (selectedFolder === name) setSelectedFolder(" default");
           fetchFolders();
           fetchMocks();
         } catch {
@@ -323,15 +323,18 @@ export default function App() {
           method: 'POST',
           body: formData
         });
-        if (!res.ok) throw new Error();
+        if (!res.ok) {
+          const err = await res.text();
+          throw new Error(err || 'Import failed');
+        }
         const data = await res.json();
         message.success(data.message);
         fetchFolders();
         fetchMocks();
-        onSuccess(null, file);
-      } catch {
-        message.error("Ошибка импорта");
-        onError();
+        onSuccess(data, file);
+      } catch (err) {
+        message.error("Ошибка импорта: " + err.message);
+        onError(err);
       }
     }
   };
