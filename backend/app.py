@@ -1,94 +1,19 @@
 # app.py
-import os
 import json
+import os
 from uuid import uuid4
-
-
-from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
+from typing import Dict, Optional, List, Set
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Optional, List
-from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from pathlib import Path as PathlibPath
+import threading
 
 
-# Читаем параметры подключения из окружения
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
-if not all([DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS]):
-    raise RuntimeError("DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASS обязательны")
-
-
-DATABASE_URL = (
-    f"postgresql://{DB_USER}:{DB_PASS}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
-
-
-# Создаём движок с SSL
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    future=True,
-    connect_args={"sslmode": "require"}
-)
-
-
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
-
-
-class Folder(Base):
-    __tablename__ = "folders"
-    name = Column(String, primary_key=True)
-    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete")
-
-
-class Mock(Base):
-    __tablename__ = "mocks"
-    id = Column(String, primary_key=True, index=True)
-    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
-
-
-    # Условия запроса
-    method = Column(String, nullable=False)
-    path = Column(String, nullable=False)
-    headers = Column(SAJSON, default={})
-    body_contains = Column(String, nullable=True)
-
-
-    # Конфиг ответа
-    status_code = Column(Integer, nullable=False)
-    response_headers = Column(SAJSON, default={})
-    response_body = Column(SAJSON, nullable=False)
-    sequence_next_id = Column(String, nullable=True)
-    active = Column(Boolean, default=True)
-
-
-    folder_obj = relationship("Folder", back_populates="mocks")
-
-
-# Создаём таблицы
-Base.metadata.create_all(bind=engine)
-
-
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
+# ============================================================================
+# В-ПАМЯТИ ХРАНИЛИЩЕ ДАННЫХ
+# ============================================================================
 
 class MockRequestCondition(BaseModel):
     method: str
@@ -112,153 +37,299 @@ class MockEntry(BaseModel):
     active: Optional[bool] = True
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+class InMemoryDataStore:
+    """
+    В-памяти хранилище для папок и моков с опциональным персистентным хранением в JSON
+    """
+    def __init__(self, persistence_file: Optional[str] = None):
+        self.folders: Dict[str, Set[str]] = {}  # {folder_name: {mock_ids}}
+        self.mocks: Dict[str, dict] = {}  # {mock_id: mock_data}
+        self.persistence_file = persistence_file
+        self.lock = threading.RLock()
+        
+        # Создаём стандартную папку
+        self.folders["default"] = set()
+        
+        # Загружаем данные из файла если существует
+        if self.persistence_file and PathlibPath(self.persistence_file).exists():
+            self._load_from_file()
+    
+    def _load_from_file(self):
+        """Загружает данные из JSON файла"""
+        try:
+            with open(self.persistence_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.mocks = data.get("mocks", {})
+                self.folders = {k: set(v) for k, v in data.get("folders", {}).items()}
+                if "default" not in self.folders:
+                    self.folders["default"] = set()
+                print(f"✓ Данные загружены из {self.persistence_file}")
+        except Exception as e:
+            print(f"⚠ Ошибка при загрузке файла: {e}")
+    
+    def _save_to_file(self):
+        """Сохраняет данные в JSON файл"""
+        if not self.persistence_file:
+            return
+        try:
+            with self.lock:
+                data = {
+                    "mocks": self.mocks,
+                    "folders": {k: list(v) for k, v in self.folders.items()}
+                }
+                os.makedirs(os.path.dirname(self.persistence_file) or ".", exist_ok=True)
+                with open(self.persistence_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠ Ошибка при сохранении файла: {e}")
+    
+    # === ПАПКИ ===
+    def create_folder(self, name: str) -> bool:
+        """Создаёт папку. Возвращает True если успешно, False если уже существует"""
+        with self.lock:
+            name = name.strip()
+            if not name or name in self.folders:
+                return False
+            self.folders[name] = set()
+            self._save_to_file()
+            return True
+    
+    def delete_folder(self, name: str) -> bool:
+        """Удаляет папку и все её моки. Возвращает False если папка не найдена"""
+        with self.lock:
+            if name == "default":
+                return False
+            if name not in self.folders:
+                return False
+            # Удаляем все моки в этой папке
+            mock_ids = self.folders[name].copy()
+            for mock_id in mock_ids:
+                if mock_id in self.mocks:
+                    del self.mocks[mock_id]
+            del self.folders[name]
+            self._save_to_file()
+            return True
+    
+    def list_folders(self) -> List[str]:
+        """Возвращает список папок с 'default' в начале"""
+        with self.lock:
+            names = list(self.folders.keys())
+            if "default" in names:
+                names.remove("default")
+                names.insert(0, "default")
+            return names
+    
+    def folder_exists(self, name: str) -> bool:
+        """Проверяет существование папки"""
+        with self.lock:
+            return name in self.folders
+    
+    # === МОКИ ===
+    def create_or_update_mock(self, entry: MockEntry) -> None:
+        """Создаёт или обновляет мок"""
+        with self.lock:
+            # Создаём папку если не существует
+            if entry.folder not in self.folders:
+                self.folders[entry.folder] = set()
+            
+            mock_data = {
+                "id": entry.id,
+                "folder": entry.folder,
+                "method": entry.request_condition.method,
+                "path": entry.request_condition.path,
+                "headers": entry.request_condition.headers or {},
+                "body_contains": entry.request_condition.body_contains,
+                "status_code": entry.response_config.status_code,
+                "response_headers": entry.response_config.headers or {},
+                "response_body": entry.response_config.body,
+                "sequence_next_id": entry.sequence_next_id,
+                "active": entry.active if entry.active is not None else True
+            }
+            
+            self.mocks[entry.id] = mock_data
+            self.folders[entry.folder].add(entry.id)
+            self._save_to_file()
+    
+    def get_mock(self, mock_id: str) -> Optional[dict]:
+        """Получает мок по ID"""
+        with self.lock:
+            return self.mocks.get(mock_id)
+    
+    def list_mocks(self, folder: Optional[str] = None) -> List[MockEntry]:
+        """Получает список моков, опционально отфильтрованных по папке"""
+        with self.lock:
+            results = []
+            for mock_id, mock_data in self.mocks.items():
+                if folder and mock_data["folder"] != folder:
+                    continue
+                results.append(self._mock_data_to_entry(mock_data))
+            return results
+    
+    def delete_mock(self, mock_id: str) -> bool:
+        """Удаляет мок. Возвращает False если не найден"""
+        with self.lock:
+            if mock_id not in self.mocks:
+                return False
+            mock_data = self.mocks[mock_id]
+            folder = mock_data["folder"]
+            if folder in self.folders:
+                self.folders[folder].discard(mock_id)
+            del self.mocks[mock_id]
+            self._save_to_file()
+            return True
+    
+    def toggle_mock(self, mock_id: str, active: bool) -> bool:
+        """Переключает статус мока. Возвращает False если не найден"""
+        with self.lock:
+            if mock_id not in self.mocks:
+                return False
+            self.mocks[mock_id]["active"] = active
+            self._save_to_file()
+            return True
+    
+    def deactivate_all(self, folder: Optional[str] = None) -> int:
+        """Деактивирует все моки в папке. Возвращает количество деактивированных"""
+        with self.lock:
+            count = 0
+            for mock_id, mock_data in self.mocks.items():
+                if mock_data["active"]:
+                    if folder is None or mock_data["folder"] == folder:
+                        mock_data["active"] = False
+                        count += 1
+            if count > 0:
+                self._save_to_file()
+            return count
+    
+    def get_active_mocks(self) -> List[dict]:
+        """Получает все активные моки"""
+        with self.lock:
+            return [m for m in self.mocks.values() if m["active"]]
+    
+    @staticmethod
+    def _mock_data_to_entry(mock_data: dict) -> MockEntry:
+        """Конвертирует данные мока в MockEntry"""
+        return MockEntry(
+            id=mock_data["id"],
+            folder=mock_data["folder"],
+            request_condition=MockRequestCondition(
+                method=mock_data["method"],
+                path=mock_data["path"],
+                headers=mock_data["headers"] or None,
+                body_contains=mock_data["body_contains"]
+            ),
+            response_config=MockResponseConfig(
+                status_code=mock_data["status_code"],
+                headers=mock_data["response_headers"] or None,
+                body=mock_data["response_body"]
+            ),
+            sequence_next_id=mock_data["sequence_next_id"],
+            active=mock_data["active"]
+        )
 
 
-@app.on_event("startup")
-def ensure_default_folder():
-    db = SessionLocal()
-    if not db.query(Folder).filter_by(name="default").first():
-        db.add(Folder(name="default"))
-        db.commit()
-    db.close()
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ
+# ============================================================================
 
+# Опциональное сохранение в файл (раскомментируйте если нужна персистентность)
+DATA_FILE = os.getenv("DATA_FILE", "mocks_data.json")
+db_store = InMemoryDataStore(persistence_file=DATA_FILE)
+
+app = FastAPI(title="Mock Server", version="2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
+# ============================================================================
+# ЭНДПОИНТЫ - ПАПКИ
+# ============================================================================
 
 @app.post("/api/folders")
-def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_db)):
-    name = name.strip()
-    if not name or db.query(Folder).filter_by(name=name).first():
+def create_folder(name: str = Body(..., embed=True)):
+    """Создаёт новую папку для моков"""
+    if not db_store.create_folder(name):
         raise HTTPException(400, "Некорректное или уже существующее имя папки")
-    db.add(Folder(name=name))
-    db.commit()
     return {"message": "Папка добавлена"}
 
 
 @app.delete("/api/folders")
-def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
-    if name == "default":
-        raise HTTPException(400, "Нельзя удалить стандартную папку")
-    folder = db.query(Folder).filter_by(name=name).first()
-    if not folder:
+def delete_folder(name: str = Query(...)):
+    """Удаляет папку и все её моки"""
+    if not db_store.delete_folder(name):
+        if name == "default":
+            raise HTTPException(400, "Нельзя удалить стандартную папку")
         raise HTTPException(404, "Папка не найдена")
-    db.delete(folder)
-    db.commit()
     return {"message": f"Папка '{name}' и все её моки удалены"}
 
 
 @app.get("/api/mocks/folders", response_model=List[str])
-def list_folders(db: Session = Depends(get_db)):
-    names = [f.name for f in db.query(Folder).all()]
-    if "default" in names:
-        names.remove("default")
-        names.insert(0, "default")
-    return names
+def list_folders():
+    """Получает список всех папок"""
+    return db_store.list_folders()
 
+
+# ============================================================================
+# ЭНДПОИНТЫ - МОКИ
+# ============================================================================
 
 @app.post("/api/mocks")
-def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
-    folder = db.query(Folder).filter_by(name=entry.folder).first()
-    if not folder:
-        folder = Folder(name=entry.folder)
-        db.add(folder)
-    mock = db.query(Mock).filter_by(id=entry.id).first()
-    if not mock:
-        mock = Mock(id=entry.id)
-        db.add(mock)
-    mock.folder_name = entry.folder
-    mock.method = entry.request_condition.method
-    mock.path = entry.request_condition.path
-    mock.headers = entry.request_condition.headers or {}
-    mock.body_contains = entry.request_condition.body_contains
-    mock.status_code = entry.response_config.status_code
-    mock.response_headers = entry.response_config.headers or {}
-    mock.response_body = entry.response_config.body
-    mock.sequence_next_id = entry.sequence_next_id
-    mock.active = entry.active if entry.active is not None else True
-    db.commit()
+def create_or_update_mock(entry: MockEntry):
+    """Создаёт или обновляет мок"""
+    if not db_store.folder_exists(entry.folder):
+        db_store.create_folder(entry.folder)
+    db_store.create_or_update_mock(entry)
     return {"message": "mock saved", "mock": entry}
 
 
 @app.get("/api/mocks", response_model=List[MockEntry])
-def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
-    q = db.query(Mock)
-    if folder:
-        q = q.filter_by(folder_name=folder)
-    results = []
-    for m in q.all():
-        results.append(
-            MockEntry(
-                id=m.id,
-                folder=m.folder_name,
-                request_condition=MockRequestCondition(
-                    method=m.method,
-                    path=m.path,
-                    headers=m.headers,
-                    body_contains=m.body_contains,
-                ),
-                response_config=MockResponseConfig(
-                    status_code=m.status_code,
-                    headers=m.response_headers,
-                    body=m.response_body,
-                ),
-                sequence_next_id=m.sequence_next_id,
-                active=m.active,
-            )
-        )
-    return results
+def list_mocks(folder: Optional[str] = None):
+    """Получает список моков, опционально отфильтрованных по папке"""
+    return db_store.list_mocks(folder)
 
 
 @app.delete("/api/mocks")
-def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
-    mock = db.query(Mock).filter_by(id=id_).first()
-    if not mock:
+def delete_mock(id_: str = Query(...)):
+    """Удаляет мок по ID"""
+    if not db_store.delete_mock(id_):
         raise HTTPException(404, f"Mock with id {id_} not found")
-    db.delete(mock)
-    db.commit()
     return {"message": "mock deleted"}
 
 
 @app.patch("/api/mocks/{mock_id}/toggle")
 def toggle_mock(
     mock_id: str = Path(...),
-    active: bool = Body(..., embed=True),
-    db: Session = Depends(get_db)
+    active: bool = Body(..., embed=True)
 ):
-    mock = db.query(Mock).filter_by(id=mock_id).first()
-    if not mock:
+    """Переключает активность мока"""
+    if not db_store.toggle_mock(mock_id, active):
         raise HTTPException(404, "Mock not found")
-    mock.active = active
-    db.commit()
     return {"id": mock_id, "active": active}
 
 
 @app.patch("/api/mocks/deactivate-all")
-def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(get_db)):
-    q = db.query(Mock).filter_by(active=True)
-    if folder:
-        q = q.filter_by(folder_name=folder)
-    mocks_in_folder = q.all()
-    if not mocks_in_folder:
+def deactivate_all(folder: Optional[str] = Query(None)):
+    """Деактивирует все моки (опционально в папке)"""
+    count = db_store.deactivate_all(folder)
+    if count == 0:
         raise HTTPException(404, "No matching mock found")
-    for m in mocks_in_folder:
-        m.active = False
-    db.commit()
-    return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
+    return {"message": f"Деактивировано {count} моков{f' в папке {folder}' if folder else ''}"}
 
+
+# ============================================================================
+# ЭНДПОИНТ - ИМПОРТ POSTMAN
+# ============================================================================
 
 @app.post("/api/mocks/import")
-async def import_postman_collection(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
+async def import_postman_collection(file: UploadFile = File(...)):
     """
-    Импорт из Postman Collection v2.1 JSON.
-    Создаёт папку с именем collection.info.name и сохраняет все запросы как моки в ней.
+    Импортирует коллекцию из Postman Collection v2.1 JSON.
+    Создаёт папку с именем collection.info.name и сохраняет все запросы как моки.
     """
     try:
         content = await file.read()
@@ -269,9 +340,9 @@ async def import_postman_collection(
 
         folder_name = coll.get("info", {}).get("name", "postman")
         folder_name = folder_name.strip() or "postman"
-        if not db.query(Folder).filter_by(name=folder_name).first():
-            db.add(Folder(name=folder_name))
-            db.commit()
+        
+        if not db_store.folder_exists(folder_name):
+            db_store.create_folder(folder_name)
 
         items = coll.get("item", [])
         imported = []
@@ -292,9 +363,7 @@ async def import_postman_collection(
                 if path_segments:
                     path = "/" + "/".join(str(segment) for segment in path_segments)
                 else:
-                    # Если path пустой, извлекаем из raw
                     if raw:
-                        # Убираем протокол и хост, оставляем только путь
                         if "://" in raw:
                             raw = raw.split("://", 1)[1]
                         if "/" in raw:
@@ -334,7 +403,6 @@ async def import_postman_collection(
                 try:
                     response_body = json.loads(response_body)
                 except json.JSONDecodeError:
-                    # Если не JSON, сохраняем как строку в JSON объекте
                     response_body = {"text": response_body}
             elif response_body is None:
                 response_body = {}
@@ -364,22 +432,9 @@ async def import_postman_collection(
                 active=True
             )
 
-            mock = Mock(id=entry.id)
-            db.add(mock)
-            mock.folder_name = entry.folder
-            mock.method = entry.request_condition.method
-            mock.path = entry.request_condition.path
-            mock.headers = entry.request_condition.headers or {}
-            mock.body_contains = entry.request_condition.body_contains
-            mock.status_code = entry.response_config.status_code
-            mock.response_headers = entry.response_config.headers or {}
-            mock.response_body = entry.response_config.body
-            mock.sequence_next_id = entry.sequence_next_id
-            mock.active = entry.active
-
+            db_store.create_or_update_mock(entry)
             imported.append(entry.id)
 
-        db.commit()
         return JSONResponse({
             "message": f"Imported {len(imported)} mocks into folder '{folder_name}'",
             "imported_ids": imported
@@ -391,40 +446,63 @@ async def import_postman_collection(
         }, status_code=500)
 
 
-async def match_condition(req: Request, m: Mock) -> bool:
-    if req.method.upper() != m.method.upper():
+# ============================================================================
+# MOCK HANDLER - ПЕРЕХВАТ ВСЕХ ОСТАЛЬНЫХ ЗАПРОСОВ
+# ============================================================================
+
+async def match_condition(req: Request, mock_data: dict) -> bool:
+    """Проверяет соответствие запроса условиям мока"""
+    if req.method.upper() != mock_data["method"].upper():
         return False
+    
     path = req.url.path
     full = f"{path}{f'?{req.url.query}' if req.url.query else ''}"
-    if full != m.path:
+    if full != mock_data["path"]:
         return False
-    if m.headers:
-        for hk, hv in m.headers.items():
+    
+    if mock_data["headers"]:
+        for hk, hv in mock_data["headers"].items():
             if req.headers.get(hk) != hv:
                 return False
-    if m.body_contains:
+    
+    if mock_data["body_contains"]:
         body = (await req.body()).decode("utf-8")
-        if m.body_contains not in body:
+        if mock_data["body_contains"] not in body:
             return False
+    
     return True
 
 
-# ИСПРАВЛЕНИЕ: Изменяем catch-all роут чтобы исключить API пути
-@app.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH"])
-async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
+@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def mock_handler(request: Request, full_path: str):
+    """
+    Перехватывает все запросы и ищет соответствующий мок.
+    Исключает API пути.
+    """
     # Исключаем API пути из обработки моков
     if full_path.startswith("api/"):
         raise HTTPException(404, "No matching mock found")
     
-    for m in db.query(Mock).filter_by(active=True).all():
-        if await match_condition(request, m):
+    # Ищем подходящий активный мок
+    for mock_data in db_store.get_active_mocks():
+        if await match_condition(request, mock_data):
             resp = JSONResponse(
-                content=m.response_body,
-                status_code=m.status_code
+                content=mock_data["response_body"],
+                status_code=mock_data["status_code"]
             )
-            for k, v in (m.response_headers or {}).items():
+            for k, v in (mock_data["response_headers"] or {}).items():
                 resp.headers[k] = v
-            if m.sequence_next_id:
-                resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
+            if mock_data["sequence_next_id"]:
+                resp.headers["X-Next-Mock-Id"] = mock_data["sequence_next_id"]
             return resp
+    
     raise HTTPException(404, "No matching mock found")
+
+
+# ============================================================================
+# ЗАПУСК
+# ============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
