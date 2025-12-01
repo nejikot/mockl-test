@@ -68,7 +68,6 @@ class Mock(Base):
     status_code = Column(Integer, nullable=False)
     response_headers = Column(SAJSON, default={})
     response_body = Column(SAJSON, nullable=False)
-    sequence_next_id = Column(String, nullable=True)
     active = Column(Boolean, default=True)
 
 
@@ -108,7 +107,6 @@ class MockEntry(BaseModel):
     folder: Optional[str] = "default"
     request_condition: MockRequestCondition
     response_config: MockResponseConfig
-    sequence_next_id: Optional[str] = None
     active: Optional[bool] = True
 
 
@@ -178,7 +176,6 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
     mock.response_body = entry.response_config.body
-    mock.sequence_next_id = entry.sequence_next_id
     mock.active = entry.active if entry.active is not None else True
     db.commit()
     return {"message": "mock saved", "mock": entry}
@@ -206,7 +203,6 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
                     headers=m.response_headers,
                     body=m.response_body,
                 ),
-                sequence_next_id=m.sequence_next_id,
                 active=m.active,
             )
         )
@@ -360,7 +356,6 @@ async def import_postman_collection(
                     headers=response_headers if response_headers else None,
                     body=response_body
                 ),
-                sequence_next_id=None,
                 active=True
             )
 
@@ -374,7 +369,6 @@ async def import_postman_collection(
             mock.status_code = entry.response_config.status_code
             mock.response_headers = entry.response_config.headers or {}
             mock.response_body = entry.response_config.body
-            mock.sequence_next_id = entry.sequence_next_id
             mock.active = entry.active
 
             imported.append(entry.id)
@@ -424,7 +418,5 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             )
             for k, v in (m.response_headers or {}).items():
                 resp.headers[k] = v
-            if m.sequence_next_id:
-                resp.headers["X-Next-Mock-Id"] = m.sequence_next_id
             return resp
     raise HTTPException(404, "No matching mock found")

@@ -244,8 +244,7 @@ export default function App() {
       status_code: m.response_config.status_code,
       active: m.active !== false,
       responseHeaders: headersToFormList(m.response_config.headers),
-      response_body: JSON.stringify(m.response_config.body, null, 2),
-      sequence_next_id: m.sequence_next_id || ""
+      response_body: JSON.stringify(m.response_config.body, null, 2)
     });
     setModalOpen(true);
   };
@@ -279,8 +278,7 @@ export default function App() {
           status_code: Number(vals.status_code),
           headers: responseHeadersObj,
           body: JSON.parse(vals.response_body || "{}")
-        },
-        sequence_next_id: vals.sequence_next_id || null
+        }
       };
       const res = await fetch(`${host}/api/mocks`, {
         method: "POST",
@@ -355,26 +353,103 @@ export default function App() {
     });
   };
 
+  const isDesktop = screens.md ?? false;
+  const stickyTopOffset = isDesktop ? 88 : 64;
+  const isDefaultFolder = selectedFolder === "default";
+  const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
+  const primaryButtonStyle = {
+    minWidth: isDesktop ? 160 : "calc(50% - 8px)",
+    flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
+  };
+
+  const actionToolbar = (
+    <div style={{ position: "sticky", top: stickyTopOffset, zIndex: 10, marginBottom: 24 }}>
+      <div style={{
+        background: "#fff",
+        borderRadius: 12,
+        padding: isDesktop ? 20 : 16,
+        boxShadow: "0 15px 35px rgba(15,23,42,0.08)",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 12,
+        justifyContent: isDesktop ? "space-between" : "center",
+        alignItems: "center"
+      }}>
+        <div style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 12,
+          flex: 1,
+          justifyContent: isDesktop ? "flex-start" : "center"
+        }}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={openAddMock}
+            style={primaryButtonStyle}
+          >
+            Создать mock
+          </Button>
+          <Button
+            icon={<PlusOutlined />}
+            onClick={openAddFolder}
+            style={primaryButtonStyle}
+          >
+            Добавить страницу
+          </Button>
+          <Button
+            icon={<UploadOutlined />}
+            onClick={onImportClick}
+            style={primaryButtonStyle}
+          >
+            Импорт
+          </Button>
+          <input
+            type="file"
+            accept="application/json"
+            ref={fileInputRef}
+            style={{ display: "none" }}
+            onChange={handleFileChange}
+          />
+        </div>
+        <Button
+          danger
+          icon={<PoweroffOutlined />}
+          onClick={deactivateAllMocks}
+          disabled={!mocks.length}
+          style={{ ...primaryButtonStyle, justifySelf: "flex-end" }}
+        >
+          Отключить все
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <DndProvider backend={HTML5Backend}>
       <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f0f2f5" } }}>
         <Layout style={{ minHeight: "100vh" }}>
           <Header style={{
             background: "#fff",
-            padding: screens.xs ? "8px 16px" : "0 80px",
+            padding: isDesktop ? "0 80px" : "12px 16px",
             display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
             alignItems: "center",
+            justifyContent: "space-between",
             boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
           }}>
-            <Typography.Title level={30} style={{ margin: 10 }}>ᨐᵒᶜᵏ</Typography.Title>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+              <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
+              <Typography.Text type="secondary">гибкий mock-сервер</Typography.Text>
+            </div>
             <div style={{
-              marginLeft: "auto",
               display: "flex",
               alignItems: "center",
               gap: 8,
-              width: screens.xs ? "40%" : "25%"
+              flex: isDesktop ? "0 0 320px" : "1 1 100%"
             }}>
-              <Typography.Text>Бэк:</Typography.Text>
+              <Typography.Text strong>Бэк:</Typography.Text>
               <Tooltip title="Копировать адрес">
                 <Button
                   icon={<CopyOutlined />}
@@ -392,41 +467,37 @@ export default function App() {
             </div>
           </Header>
 
-          <Content style={{ padding: screens.xs ? "16px" : "24px 80px" }}>
-            <Layout style={{ background: "transparent" }}>
+          <Content style={{ padding: isDesktop ? "24px 80px" : "16px" }}>
+            {actionToolbar}
+            <Layout style={{
+              background: "transparent",
+              display: "flex",
+              flexDirection: isDesktop ? "row" : "column",
+              gap: 24
+            }}>
               <Sider
-                width="25vw"
+                width={isDesktop ? 320 : "100%"}
                 style={{
                   background: "transparent",
-                  marginRight: screens.xs ? 0 : 24
+                  marginRight: isDesktop ? 0 : 0
                 }}
               >
                 <div style={{
                   background: "#fff",
-                  borderRadius: 8,
+                  borderRadius: 12,
                   padding: 16,
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
-                  height: "calc(100vh - 128px)",
+                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
+                  position: isDesktop ? "sticky" : "static",
+                  top: isDesktop ? stickyTopOffset + 40 : "auto",
+                  maxHeight: isDesktop ? "calc(100vh - 180px)" : "none",
                   overflowY: "auto"
                 }}>
-                  <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-                    <Button block onClick={openAddFolder} icon={<PlusOutlined />}>Добавить страницу</Button>
-                    <Button block type="primary" onClick={openAddMock} icon={<PlusOutlined />}>Создать mock</Button>
-                    <Button
-                      block
-                      icon={<UploadOutlined />}
-                      onClick={onImportClick}
-                    >
-                      Импорт
-                    </Button>
-                    <input
-                      type="file"
-                      accept="application/json"
-                      ref={fileInputRef}
-                      style={{ display: "none" }}
-                      onChange={handleFileChange}
-                    />
-                  </div>
+                  <Typography.Title level={5} style={{ margin: 0, marginBottom: 12 }}>
+                    Страницы
+                  </Typography.Title>
+                  <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                    Перетаскивайте, чтобы упорядочить, или удаляйте ненужные.
+                  </Typography.Paragraph>
                   {folders.map((f, i) => (
                     <DraggableFolder
                       key={f}
@@ -441,41 +512,68 @@ export default function App() {
                 </div>
               </Sider>
 
-              <Content style={{ width: "75vw" }}>
+              <Content style={{ width: "100%" }}>
+                {isDefaultFolder && (
+                  <div style={{
+                    background: "#fff",
+                    borderRadius: 12,
+                    padding: isDesktop ? 24 : 16,
+                    boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
+                    marginBottom: 16
+                  }}>
+                    <Typography.Title level={3} style={{ marginTop: 0 }}>
+                      MockK — среда для гибкого тестирования
+                    </Typography.Title>
+                    <Typography.Paragraph>
+                      Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов.
+                      Поддерживаются фильтры по HTTP-методу, пути, заголовкам и даже частям тела запроса,
+                      а ответ можно настроить с нужным статусом, заголовками и JSON.
+                    </Typography.Paragraph>
+                    <Typography.Title level={4}>Как пользоваться</Typography.Title>
+                    <ol style={{ paddingLeft: 18, lineHeight: 1.6 }}>
+                      <li>Настройте адрес работающего backend-а сверху, чтобы панель могла обращаться к API.</li>
+                      <li>Создайте страницу (папку) для логической группы моков и выберите её слева.</li>
+                      <li>Нажмите «Создать mock», укажите метод, путь, необходимые заголовки/фрагмент тела и соберите желаемый ответ.</li>
+                      <li>Сохраните и убедитесь, что мок активен — он сразу начнёт перехватывать запросы.</li>
+                    </ol>
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+                      Советы: используйте заголовки и поиск по телу запроса, чтобы разделять похожие вызовы,
+                      а с помощью кнопок сверху быстро переключайте сценарии и импортируйте коллекции Postman.
+                    </Typography.Paragraph>
+                  </div>
+                )}
+
                 <div style={{
                   background: "#fff",
-                  borderRadius: 8,
-                  padding: 16,
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.05)"
+                  borderRadius: 12,
+                  padding: isDesktop ? 24 : 16,
+                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
                 }}>
                   <div style={{
                     display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
                     justifyContent: "space-between",
                     alignItems: "center",
                     marginBottom: 16
                   }}>
                     <Typography.Title level={4} style={{ margin: 0 }}>
-                      Mock: {selectedFolder === "default" ? "Главная" : selectedFolder}
+                      {folderTitle}
                     </Typography.Title>
-                    <Button
-                      danger
-                      icon={<PoweroffOutlined />}
-                      onClick={deactivateAllMocks}
-                      disabled={!mocks.length}
-                    >
-                      Отключить все
-                    </Button>
+                    <Typography.Text type="secondary">
+                      {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
+                    </Typography.Text>
                   </div>
 
                   <Table
                     dataSource={mocks}
                     rowKey="id"
-                    size="small"
+                    size="middle"
                     columns={[
                       {
                         title: "UUID",
                         dataIndex: "id",
-                        width: 100,
+                        width: 120,
                         render: text => (
                           <Tooltip title="Скопировать UUID">
                             <Button
@@ -492,7 +590,7 @@ export default function App() {
                       {
                         title: "Активно",
                         dataIndex: "active",
-                        width: 80,
+                        width: 90,
                         render: (a, r) => (
                           <Switch
                             checked={a !== false}
@@ -500,15 +598,15 @@ export default function App() {
                           />
                         )
                       },
-                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 80 },
+                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
                       { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
-                      { title: "Код", dataIndex: ["response_config", "status_code"], width: 80 },
+                      { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
                       {
                         title: "Действия",
-                        width: 180,
+                        width: 200,
                         render: (_, r) => (
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <Button size="small" onClick={() => openEditMock(r)}>Ред.</Button>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <Button size="small" onClick={() => openEditMock(r)}>Редактировать</Button>
                             <Button size="small" danger onClick={() => deleteMock(r.id)}>Удалить</Button>
                           </div>
                         )
@@ -640,10 +738,6 @@ export default function App() {
 
               <Form.Item name="response_body" label="Тело (JSON)" rules={[{ required: true }]}>
                 <TextArea rows={6} placeholder='{"message":"ok"}' />
-              </Form.Item>
-
-              <Form.Item name="sequence_next_id" label="UUID следующего мока">
-                <Input placeholder="UUID" />
               </Form.Item>
             </Form>
           </Modal>
