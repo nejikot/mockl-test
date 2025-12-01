@@ -275,15 +275,17 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if db.query(Folder).filter_by(name=new).first():
             raise HTTPException(400, "Папка с таким именем уже существует")
 
-        # Обновляем folder_name для всех моков в этой папке (ИСПРАВЛЕНИЕ)
+        # ШАГ 1: Сначала обновляем саму папку
+        folder.name = new
+        db.flush()  # Записываем изменение в папке, но не коммитим
+        
+        # ШАГ 2: Затем обновляем все моки в этой папке
         db.query(Mock).filter_by(folder_name=old).update(
             {"folder_name": new},
             synchronize_session=False
         )
         
-        # Обновляем имя папки
-        folder.name = new
-        
+        # ШАГ 3: Коммитим всё разом
         db.commit()
         return {"message": "Папка переименована", "old": old, "new": new}
     
@@ -293,15 +295,7 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
-
-    # Обновляем имя папки и все связанные моки
-    folder.name = new
-    for m in folder.mocks:
-        m.folder_name = new
-    db.commit()
-    return {"message": "Папка переименована", "old": old, "new": new}
-
-
+    
 @app.get(
     "/api/mocks/folders",
     response_model=List[str],
