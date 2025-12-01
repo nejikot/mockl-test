@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Optional, List
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
@@ -78,7 +78,18 @@ class Mock(Base):
 Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI()
+app = FastAPI(
+    title="MockK — гибкий mock-сервер",
+    description=(
+        "Сервис для создания и управления HTTP моками.\n\n"
+        "Позволяет:\n"
+        "- группировать моки по папкам (\"страницам\");\n"
+        "- настраивать условия срабатывания по методу, пути, заголовкам и фрагменту тела запроса;\n"
+        "- задавать произвольный HTTP‑код, заголовки и JSON‑тело ответа;\n"
+        "- импортировать моки из Postman Collection v2.1."
+    ),
+    version="1.0.0",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -90,29 +101,82 @@ app.add_middleware(
 
 
 class MockRequestCondition(BaseModel):
-    method: str
-    path: str
-    headers: Optional[Dict[str, str]] = None
-    body_contains: Optional[str] = None
+    """Условия, при которых мок должен сработать."""
+
+    method: str = Field(..., description="HTTP‑метод запроса (GET, POST, PUT, DELETE, PATCH и т.д.)")
+    path: str = Field(..., description="Путь запроса, например `/api/users` или `/status?code=200`")
+    headers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Набор заголовков, которые должны совпадать (полнейшее совпадение по ключу и значению)",
+    )
+    body_contains: Optional[str] = Field(
+        default=None,
+        description="Произвольный фрагмент текста, который должен содержаться в теле запроса",
+    )
 
 
 class MockResponseConfig(BaseModel):
-    status_code: int
-    headers: Optional[Dict[str, str]] = None
-    body: Dict
+    """Описание того, какой ответ вернёт мок."""
+
+    status_code: int = Field(..., description="HTTP‑код ответа (например 200, 400, 404)")
+    headers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Дополнительные заголовки ответа, которые вернёт мок",
+    )
+    body: Dict = Field(..., description="JSON‑тело ответа, произвольная структура")
 
 
 class MockEntry(BaseModel):
-    id: Optional[str] = None
-    folder: Optional[str] = "default"
-    request_condition: MockRequestCondition
-    response_config: MockResponseConfig
-    active: Optional[bool] = True
+    """Полное описание мока."""
+
+    id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Уникальный идентификатор мока (UUID). "
+            "Если не передан, будет сгенерирован автоматически."
+        ),
+    )
+    folder: Optional[str] = Field(
+        default="default",
+        description='Имя папки (\"страницы\"), в которой хранится мок. По умолчанию — `default`.',
+    )
+    request_condition: MockRequestCondition = Field(
+        ..., description="Условия запроса, при которых будет отработан данный мок."
+    )
+    response_config: MockResponseConfig = Field(
+        ..., description="Конфигурация HTTP‑ответа, который вернёт мок."
+    )
+    active: Optional[bool] = Field(
+        default=True,
+        description="Признак активности мока. Неактивные моки игнорируются при обработке запросов.",
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "d7f9f6b4-6c86-4d3b-a8d2-0b8c2e1e1234",
+                "folder": "auth",
+                "request_condition": {
+                    "method": "POST",
+                    "path": "/api/login",
+                    "headers": {"Content-Type": "application/json"},
+                    "body_contains": "\"email\":\"user@example.com\"",
+                },
+                "response_config": {
+                    "status_code": 200,
+                    "headers": {"X-Mocked": "true"},
+                    "body": {"token": "mocked-jwt-token"},
+                },
+                "active": True,
+            }
+        }
 
 
 class FolderRenamePayload(BaseModel):
-    old_name: str
-    new_name: str
+    """Модель запроса для переименования папки."""
+
+    old_name: str = Field(..., description="Текущее имя папки")
+    new_name: str = Field(..., description="Новое имя папки")
 
 
 
@@ -134,8 +198,23 @@ def ensure_default_folder():
     db.close()
 
 
-@app.post("/api/folders")
-def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_db)):
+@app.post(
+    "/api/folders",
+    summary="Создать папку (страницу) для моков",
+    description=(
+        "Создаёт новую папку (логическую группу моков).\n\n"
+        "Имя папки должно быть уникальным. Папка `default` создаётся автоматически при старте сервиса."
+    ),
+)
+def create_folder(
+    name: str = Body(
+        ...,
+        embed=True,
+        description="Имя новой папки. Пример: `auth`, `users`, `payments`.",
+        examples=["auth"],
+    ),
+    db: Session = Depends(get_db),
+):
     name = name.strip()
     if not name or db.query(Folder).filter_by(name=name).first():
         raise HTTPException(400, "Некорректное или уже существующее имя папки")
@@ -144,8 +223,18 @@ def create_folder(name: str = Body(..., embed=True), db: Session = Depends(get_d
     return {"message": "Папка добавлена"}
 
 
-@app.delete("/api/folders")
-def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
+@app.delete(
+    "/api/folders",
+    summary="Удалить папку и все её моки",
+    description=(
+        "Удаляет указанную папку и все связанные с ней моки.\n\n"
+        "Папку `default` удалить нельзя."
+    ),
+)
+def delete_folder(
+    name: str = Query(..., description="Имя папки, которую нужно удалить"),
+    db: Session = Depends(get_db),
+):
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
     folder = db.query(Folder).filter_by(name=name).first()
@@ -178,7 +267,12 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     return {"message": "Папка переименована", "old": old, "new": new}
 
 
-@app.get("/api/mocks/folders", response_model=List[str])
+@app.get(
+    "/api/mocks/folders",
+    response_model=List[str],
+    summary="Получить список папок",
+    description="Возвращает список всех существующих папок. Папка `default` всегда первая.",
+)
 def list_folders(db: Session = Depends(get_db)):
     names = [f.name for f in db.query(Folder).all()]
     if "default" in names:
@@ -187,8 +281,22 @@ def list_folders(db: Session = Depends(get_db)):
     return names
 
 
-@app.post("/api/mocks")
-def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
+@app.post(
+    "/api/mocks",
+    summary="Создать или обновить мок",
+    description=(
+        "Создаёт новый мок или обновляет существующий по полю `id`.\n\n"
+        "- Если `id` не передан — будет создан новый мок с автоматически сгенерированным UUID.\n"
+        "- Если `id` существует — запись будет перезаписана новыми значениями."
+    ),
+)
+def create_or_update_mock(
+    entry: MockEntry = Body(
+        ...,
+        description="Полное описание мока и условий его срабатывания",
+    ),
+    db: Session = Depends(get_db),
+):
     # Если id не передан — создаём новый мок с внутренним UUID
     if not entry.id:
         entry.id = str(uuid4())
@@ -214,8 +322,22 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
     return {"message": "mock saved", "mock": entry}
 
 
-@app.get("/api/mocks", response_model=List[MockEntry])
-def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
+@app.get(
+    "/api/mocks",
+    response_model=List[MockEntry],
+    summary="Получить список моков",
+    description=(
+        "Возвращает список всех моков.\n\n"
+        "Можно ограничить выборку конкретной папкой, передав параметр `folder`."
+    ),
+)
+def list_mocks(
+    folder: Optional[str] = Query(
+        default=None,
+        description="Имя папки (страницы), для которой нужно вернуть моки. Если не указано — возвращаются все моки.",
+    ),
+    db: Session = Depends(get_db),
+):
     q = db.query(Mock)
     if folder:
         q = q.filter_by(folder_name=folder)
@@ -242,8 +364,15 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
     return results
 
 
-@app.delete("/api/mocks")
-def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
+@app.delete(
+    "/api/mocks",
+    summary="Удалить мок по ID",
+    description="Удаляет мок по его уникальному идентификатору (UUID).",
+)
+def delete_mock(
+    id_: str = Query(..., description="UUID мока, который нужно удалить"),
+    db: Session = Depends(get_db),
+):
     mock = db.query(Mock).filter_by(id=id_).first()
     if not mock:
         raise HTTPException(404, f"Mock with id {id_} not found")
@@ -252,10 +381,14 @@ def delete_mock(id_: str = Query(...), db: Session = Depends(get_db)):
     return {"message": "mock deleted"}
 
 
-@app.patch("/api/mocks/{mock_id}/toggle")
+@app.patch(
+    "/api/mocks/{mock_id}/toggle",
+    summary="Включить или выключить мок",
+    description="Меняет флаг активности мока (`active`). Неактивные моки игнорируются при обработке запросов.",
+)
 def toggle_mock(
-    mock_id: str = Path(...),
-    active: bool = Body(..., embed=True),
+    mock_id: str = Path(..., description="UUID мока"),
+    active: bool = Body(..., embed=True, description="Новое значение флага активности"),
     db: Session = Depends(get_db)
 ):
     mock = db.query(Mock).filter_by(id=mock_id).first()
@@ -266,8 +399,18 @@ def toggle_mock(
     return {"id": mock_id, "active": active}
 
 
-@app.patch("/api/mocks/deactivate-all")
-def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(get_db)):
+@app.patch(
+    "/api/mocks/deactivate-all",
+    summary="Отключить все активные моки",
+    description="Массово отключает все моки, опционально только в указанной папке.",
+)
+def deactivate_all(
+    folder: Optional[str] = Query(
+        None,
+        description="Имя папки. Если не указано — будут отключены все активные моки во всех папках.",
+    ),
+    db: Session = Depends(get_db),
+):
     q = db.query(Mock).filter_by(active=True)
     if folder:
         q = q.filter_by(folder_name=folder)
@@ -282,9 +425,20 @@ def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(ge
 
 
 
-@app.post("/api/mocks/import")
+@app.post(
+    "/api/mocks/import",
+    summary="Импортировать моки из Postman Collection v2.1",
+    description=(
+        "Принимает JSON‑файл Postman Collection v2.1 и создаёт моки по содержимому коллекции.\n\n"
+        "Для коллекции создаётся отдельная папка с именем `collection.info.name`."
+    ),
+)
 async def import_postman_collection(
-    file: UploadFile = File(...),
+    file: UploadFile = File(
+        ...,
+        description="Файл Postman Collection v2.1 в формате JSON",
+        examples=["postman_collection.json"],
+    ),
     db: Session = Depends(get_db)
 ):
     """

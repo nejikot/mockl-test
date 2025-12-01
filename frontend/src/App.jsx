@@ -7,7 +7,8 @@ import { theme as antdTheme } from "antd";
 import {
   PlusOutlined, MinusCircleOutlined, DeleteOutlined,
   ExclamationCircleOutlined, CopyOutlined,
-  MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined
+  MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
+  SnippetsOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -349,6 +350,30 @@ export default function App() {
     }
   };
 
+  const buildCurlForMock = mock => {
+    if (!mock || !mock.request_condition) return "";
+    const method = (mock.request_condition.method || "GET").toUpperCase();
+    const path = mock.request_condition.path || "/";
+    const headers = mock.request_condition.headers || {};
+
+    const normalizedHost = (host || "").replace(/\/+$/, "");
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const url = `${normalizedHost}${normalizedPath}`;
+
+    const parts = [`curl -X ${method}`];
+
+    Object.entries(headers).forEach(([key, value]) => {
+      parts.push(`-H '${key}: ${value}'`);
+    });
+
+    if (mock.request_condition.body_contains) {
+      parts.push(`--data-raw '${mock.request_condition.body_contains}'`);
+    }
+
+    parts.push(`'${url}'`);
+    return parts.join(" ");
+  };
+
   const openAddFolder = () => {
     folderForm.resetFields();
     setFolderModalOpen(true);
@@ -653,18 +678,6 @@ export default function App() {
                         render: (_, __, index) => index + 1
                       },
                       {
-                        title: "ID",
-                        dataIndex: "id",
-                        width: 140,
-                        render: text => (
-                          <Tooltip title={text}>
-                            <span style={{ fontFamily: "monospace", cursor: "pointer" }} onClick={() => copyToClipboard(text)}>
-                              {text.slice(0, 8)}...
-                            </span>
-                          </Tooltip>
-                        )
-                      },
-                      {
                         title: "Активно",
                         dataIndex: "active",
                         width: 90,
@@ -680,7 +693,7 @@ export default function App() {
                       { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
                       {
                         title: "Действия",
-                        width: 160,
+                        width: 200,
                         render: (_, r) => (
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                             <Tooltip title="Редактировать">
@@ -697,6 +710,14 @@ export default function App() {
                                 type="text"
                                 icon={<CopyOutlined />}
                                 onClick={() => duplicateMock(r)}
+                              />
+                            </Tooltip>
+                            <Tooltip title="Скопировать curl">
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<SnippetsOutlined />}
+                                onClick={() => copyToClipboard(buildCurlForMock(r))}
                               />
                             </Tooltip>
                             <Tooltip title="Удалить">
