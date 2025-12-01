@@ -79,7 +79,7 @@ Base.metadata.create_all(bind=engine)
 
 
 app = FastAPI(
-    title="MockK — гибкий mock-сервер",
+    title="MocK — гибкий mock-сервер",
     description=(
         "Сервис для создания и управления HTTP моками.\n\n"
         "Позволяет:\n"
