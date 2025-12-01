@@ -35,6 +35,11 @@ function getBackendUrl() {
   return import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 }
 
+const headersToFormList = headersObj => {
+  const list = Object.entries(headersObj || {}).map(([k, v]) => ({ key: k, value: v }));
+  return list.length ? list : [{ key: "", value: "" }];
+};
+
 const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
@@ -219,6 +224,8 @@ export default function App() {
       method: "GET",
       status_code: 200,
       active: true,
+      requestHeaders: [{ key: "", value: "" }],
+      request_body_contains: "",
       responseHeaders: [{ key: "", value: "" }],
       response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
     });
@@ -232,9 +239,11 @@ export default function App() {
       folder: m.folder,
       method: m.request_condition.method,
       path: m.request_condition.path,
+      requestHeaders: headersToFormList(m.request_condition.headers),
+      request_body_contains: m.request_condition.body_contains || "",
       status_code: m.response_config.status_code,
       active: m.active !== false,
-      responseHeaders: Object.entries(m.response_config.headers || {}).map(([k, v]) => ({ key: k, value: v })),
+      responseHeaders: headersToFormList(m.response_config.headers),
       response_body: JSON.stringify(m.response_config.body, null, 2),
       sequence_next_id: m.sequence_next_id || ""
     });
@@ -243,18 +252,32 @@ export default function App() {
 
   const saveMock = async vals => {
     try {
-      const headersObj = {};
-      (vals.responseHeaders || []).forEach(it => {
-        if (it.key) headersObj[it.key] = it.value || "";
-      });
+      const toHeaderObject = list => {
+        const obj = {};
+        (list || []).forEach(it => {
+          if (it.key) obj[it.key] = it.value || "";
+        });
+        return obj;
+      };
+
+      const responseHeadersObj = toHeaderObject(vals.responseHeaders || []);
+      const requestHeadersObj = toHeaderObject(vals.requestHeaders || []);
+
+      const bodyContains = (vals.request_body_contains || "").trim();
+
       const entry = {
         id: vals.id || uuidv4(),
         folder: vals.folder,
         active: vals.active !== false,
-        request_condition: { method: vals.method, path: vals.path, headers: {} },
+        request_condition: {
+          method: vals.method,
+          path: vals.path,
+          headers: Object.keys(requestHeadersObj).length ? requestHeadersObj : {},
+          body_contains: bodyContains || null
+        },
         response_config: {
           status_code: Number(vals.status_code),
-          headers: headersObj,
+          headers: responseHeadersObj,
           body: JSON.parse(vals.response_body || "{}")
         },
         sequence_next_id: vals.sequence_next_id || null
@@ -516,6 +539,8 @@ export default function App() {
                 method: "GET",
                 status_code: 200,
                 active: true,
+                requestHeaders: [{ key: "", value: "" }],
+                request_body_contains: "",
                 responseHeaders: [{ key: "", value: "" }]
               }}
             >
@@ -541,6 +566,43 @@ export default function App() {
                     <Input style={{ flex: 1 }} placeholder="/path" />
                   </Form.Item>
                 </Input.Group>
+              </Form.Item>
+
+              <Form.List name="requestHeaders">
+                {(fields, { add, remove }) => (
+                  <>
+                    <Typography.Text strong>Заголовки запроса</Typography.Text>
+                    {fields.map(field => (
+                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                        <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                          <Form.Item {...field} name={[field.name, 'key']} noStyle>
+                            <Input placeholder="Ключ" style={{ width: '35%' }} />
+                          </Form.Item>
+                          <Form.Item {...field} name={[field.name, 'value']} noStyle>
+                            <Input placeholder="Значение" style={{ flex: 1 }} />
+                          </Form.Item>
+                          {fields.length > 1 && (
+                            <MinusCircleOutlined
+                              onClick={() => remove(field.name)}
+                              style={{ color: 'red', fontSize: 20 }}
+                            />
+                          )}
+                        </Input.Group>
+                      </Form.Item>
+                    ))}
+                    <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
+                      Добавить заголовок
+                    </Button>
+                  </>
+                )}
+              </Form.List>
+
+              <Form.Item
+                name="request_body_contains"
+                label="Фрагмент тела запроса"
+                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку"
+              >
+                <TextArea rows={3} placeholder='Например {"user":"123"}' />
               </Form.Item>
 
               <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
