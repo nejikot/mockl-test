@@ -247,13 +247,38 @@ export default function App() {
 
   const openEditMock = m => {
     setEditing(m);
+    const headers = m.request_condition.headers || {};
+    const contentTypeKey = Object.keys(headers).find(
+      k => k.toLowerCase() === "content-type"
+    );
+    const contentType = contentTypeKey ? headers[contentTypeKey] : "";
+    const bodyContains = m.request_condition.body_contains || "";
+
+    let request_body_mode = "raw";
+    let request_body_raw = bodyContains;
+    let request_body_params = [{ key: "", value: "" }];
+
+    if (/application\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
+      request_body_mode = "urlencoded";
+      const pairs = bodyContains.split("&").filter(Boolean);
+      request_body_params =
+        pairs.map(p => {
+          const [k, v = ""] = p.split("=");
+          return {
+            key: decodeURIComponent(k),
+            value: decodeURIComponent(v)
+          };
+        }) || [{ key: "", value: "" }];
+    }
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
       method: m.request_condition.method,
       path: m.request_condition.path,
       requestHeaders: headersToFormList(m.request_condition.headers),
-      request_body_contains: m.request_condition.body_contains || "",
+      request_body_mode,
+      request_body_raw,
+      request_body_params,
       status_code: m.response_config.status_code,
       active: m.active !== false,
       responseHeaders: headersToFormList(m.response_config.headers),
@@ -275,7 +300,22 @@ export default function App() {
       const responseHeadersObj = toHeaderObject(vals.responseHeaders || []);
       const requestHeadersObj = toHeaderObject(vals.requestHeaders || []);
 
-      const bodyContains = (vals.request_body_contains || "").trim();
+      const bodyMode = vals.request_body_mode || "raw";
+      let bodyContains = "";
+      if (bodyMode === "urlencoded") {
+        const params = vals.request_body_params || [];
+        bodyContains = params
+          .filter(p => p.key)
+          .map(
+            p =>
+              `${encodeURIComponent(p.key)}=${encodeURIComponent(
+                p.value || ""
+              )}`
+          )
+          .join("&");
+      } else {
+        bodyContains = (vals.request_body_raw || "").trim();
+      }
 
       const entry = {
         id: vals.id || uuidv4(),
@@ -352,9 +392,11 @@ export default function App() {
 
   const buildCurlForMock = mock => {
     if (!mock || !mock.request_condition) return "";
+    if (!host) return "";
     const method = (mock.request_condition.method || "GET").toUpperCase();
     const path = mock.request_condition.path || "/";
     const headers = mock.request_condition.headers || {};
+    const bodyContains = mock.request_condition.body_contains || "";
 
     const normalizedHost = (host || "").replace(/\/+$/, "");
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -362,12 +404,27 @@ export default function App() {
 
     const parts = [`curl -X ${method}`];
 
+    let contentType = "";
     Object.entries(headers).forEach(([key, value]) => {
+      if (key.toLowerCase() === "content-type") {
+        contentType = value || "";
+      }
       parts.push(`-H '${key}: ${value}'`);
     });
 
-    if (mock.request_condition.body_contains) {
-      parts.push(`--data-raw '${mock.request_condition.body_contains}'`);
+    if (bodyContains) {
+      if (/application\/x-www-form-urlencoded/i.test(contentType)) {
+        const pairs = bodyContains.split("&").filter(Boolean);
+        if (pairs.length) {
+          pairs.forEach(p => {
+            parts.push(`--data-urlencode '${p}'`);
+          });
+        } else {
+          parts.push(`--data-urlencode '${bodyContains}'`);
+        }
+      } else {
+        parts.push(`--data '${bodyContains}'`);
+      }
     }
 
     parts.push(`'${url}'`);
@@ -759,7 +816,9 @@ export default function App() {
                 status_code: 200,
                 active: true,
                 requestHeaders: [{ key: "", value: "" }],
-                request_body_contains: "",
+                request_body_mode: "raw",
+                request_body_raw: "",
+                request_body_params: [{ key: "", value: "" }],
                 responseHeaders: [{ key: "", value: "" }]
               }}
             >
@@ -816,12 +875,88 @@ export default function App() {
                 )}
               </Form.List>
 
-              <Form.Item
-                name="request_body_contains"
-                label="Фрагмент тела запроса"
-                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку"
-              >
-                <TextArea rows={3} placeholder='Например {"user":"123"}' />
+              <Form.Item label="Тело запроса">
+                <Form.Item name="request_body_mode" noStyle>
+                  <Select
+                    style={{ width: 220, marginBottom: 8 }}
+                    options={[
+                      { label: "raw (JSON)", value: "raw" },
+                      { label: "x-www-form-urlencoded", value: "urlencoded" }
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item
+                  noStyle
+                  shouldUpdate={(prev, cur) =>
+                    prev.request_body_mode !== cur.request_body_mode
+                  }
+                >
+                  {({ getFieldValue }) => {
+                    const mode = getFieldValue("request_body_mode") || "raw";
+                    if (mode === "urlencoded") {
+                      return (
+                        <Form.List name="request_body_params">
+                          {(fields, { add, remove }) => (
+                            <>
+                              {fields.map(field => (
+                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                                  <Input.Group
+                                    compact
+                                    style={{ display: "flex", gap: 8 }}
+                                  >
+                                    <Form.Item
+                                      {...field}
+                                      name={[field.name, "key"]}
+                                      noStyle
+                                    >
+                                      <Input
+                                        placeholder="Ключ"
+                                        style={{ width: "40%" }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      {...field}
+                                      name={[field.name, "value"]}
+                                      noStyle
+                                    >
+                                      <Input
+                                        placeholder="Значение"
+                                        style={{ flex: 1 }}
+                                      />
+                                    </Form.Item>
+                                    {fields.length > 1 && (
+                                      <MinusCircleOutlined
+                                        onClick={() => remove(field.name)}
+                                        style={{ color: "red", fontSize: 20 }}
+                                      />
+                                    )}
+                                  </Input.Group>
+                                </Form.Item>
+                              ))}
+                              <Button
+                                type="dashed"
+                                block
+                                icon={<PlusOutlined />}
+                                onClick={() => add()}
+                                style={{ marginTop: 8 }}
+                              >
+                                Добавить параметр
+                              </Button>
+                            </>
+                          )}
+                        </Form.List>
+                      );
+                    }
+                    return (
+                      <Form.Item
+                        name="request_body_raw"
+                        tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                      >
+                        <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                      </Form.Item>
+                    );
+                  }}
+                </Form.Item>
               </Form.Item>
 
               <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
