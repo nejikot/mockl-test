@@ -122,7 +122,7 @@ const headersToFormList = headersObj => {
   return list.length ? list : [{ key: "", value: "" }];
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename }) => {
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
@@ -137,6 +137,16 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
       }
     }
   });
+  
+  const isActive = folder === selectedFolder;
+  const bgColor = isActive 
+    ? (theme === "dark" ? "#1890ff" : "#e6f7ff")
+    : (theme === "dark" ? "#262626" : "#fafafa");
+  const textColor = isActive
+    ? (theme === "dark" ? "#fff" : "#000")
+    : (theme === "dark" ? "#e8e8e8" : "#000");
+  const hoverBgColor = theme === "dark" ? "#1890ff" : "#e6f7ff";
+  
   return (
     <div
       ref={node => drag(drop(node))}
@@ -146,18 +156,25 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         marginBottom: 8,
         borderRadius: 8,
         cursor: "pointer",
-        background: folder === selectedFolder ? '#e6f7ff' : 'white',
-        fontWeight: folder === selectedFolder ? 600 : 400,
+        background: bgColor,
+        color: textColor,
+        fontWeight: isActive ? 600 : 400,
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
-        transition: "background 0.3s"
+        transition: "all 0.3s",
+      }}
+      onMouseEnter={e => {
+        if (!isActive) e.currentTarget.style.background = hoverBgColor;
+      }}
+      onMouseLeave={e => {
+        if (!isActive) e.currentTarget.style.background = bgColor;
       }}
       onClick={() => setSelectedFolder(folder)}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <MenuOutlined style={{ color: '#999', cursor: 'grab' }} />
-        <Typography.Text>
+        <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
+        <Typography.Text style={{ color: textColor }}>
           {folder === "default" ? "Главная" : folder}
         </Typography.Text>
       </div>
@@ -165,11 +182,11 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <EditOutlined
             onClick={e => { e.stopPropagation(); startRename(folder); }}
-            style={{ color: '#000', fontSize: 16 }}
+            style={{ color: textColor, fontSize: 16, cursor: "pointer" }}
           />
           <DeleteOutlined
             onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
-            style={{ color: '#ff4d4f', fontSize: 16 }}
+            style={{ color: '#ff4d4f', fontSize: 16, cursor: "pointer" }}
           />
         </div>
       )}
@@ -795,6 +812,7 @@ export default function App() {
                       setSelectedFolder={setSelectedFolder}
                       deleteFolder={deleteFolder}
                       startRename={startRenameFolder}
+                      theme={theme}
                     />
                   ))}
                 </div>
