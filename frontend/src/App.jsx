@@ -738,7 +738,7 @@ export default function App() {
           }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
               <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
-              <Typography.Text type="secondary">гибкий mock-сервер</Typography.Text>
+              <Typography.Text type="secondary">mock-сервер</Typography.Text>
             </div>
             <Button
               icon={<BgColorsOutlined />}
@@ -828,7 +828,7 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      MockK — среда для гибкого тестирования
+                      Mock — среда для гибкого тестирования
                     </Typography.Title>
                     <Typography.Paragraph>
                       Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов.
