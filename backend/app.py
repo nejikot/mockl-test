@@ -83,6 +83,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app = FastAPI(
+    title="MocK — гибкий mock-сервер",
+    description=(
+        "Сервис для создания и управления HTTP моками.\n\n"
+        "Позволяет:\n"
+        "- группировать моки по папкам (\"страницам\");\n"
+        "- настраивать условия срабатывания по методу, пути, заголовкам и фрагменту тела запроса;\n"
+        "- задавать произвольный HTTP‑код, заголовки и JSON‑тело ответа;\n"
+        "- импортировать моки из Postman Collection v2.1."
+    ),
+    version="1.0.0",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -131,7 +143,7 @@ class MockEntry(BaseModel):
     )
     folder: Optional[str] = Field(
         default="default",
-        description='Имя папки ("страницы"), в которой хранится мок. По умолчанию — `default`.',
+        description='Имя папки (\"страницы\"), в которой хранится мок. По умолчанию — `default`.',
     )
     request_condition: MockRequestCondition = Field(
         ..., description="Условия запроса, при которых будет отработан данный мок."
@@ -170,6 +182,8 @@ class FolderRenamePayload(BaseModel):
 
     old_name: str = Field(..., description="Текущее имя папки")
     new_name: str = Field(..., description="Новое имя папки")
+
+
 
 
 def get_db():
@@ -245,27 +259,45 @@ def delete_folder(
 )
 def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     """Переименовывает папку и обновляет все связанные моки."""
-    old = payload.old_name.strip()
-    new = payload.new_name.strip()
-    
-    if not new or old == new:
-        raise HTTPException(400, "Некорректное новое имя папки")
-    if old == "default":
-        raise HTTPException(400, "Нельзя переименовать стандартную папку")
-    
-    folder = db.query(Folder).filter_by(name=old).first()
-    if not folder:
-        raise HTTPException(404, "Папка не найдена")
-    
-    if db.query(Folder).filter_by(name=new).first():
-        raise HTTPException(400, "Папка с таким именем уже существует")
+    try:
+        old = payload.old_name.strip()
+        new = payload.new_name.strip()
+        
+        if not new or old == new:
+            raise HTTPException(400, "Некорректное новое имя папки")
+        if old == "default":
+            raise HTTPException(400, "Нельзя переименовать стандартную папку")
+        
+        folder = db.query(Folder).filter_by(name=old).first()
+        if not folder:
+            raise HTTPException(404, "Папка не найдена")
+        
+        if db.query(Folder).filter_by(name=new).first():
+            raise HTTPException(400, "Папка с таким именем уже существует")
 
-    # Обновляем имя папки
+        # Обновляем folder_name для всех моков в этой папке (ИСПРАВЛЕНИЕ)
+        db.query(Mock).filter_by(folder_name=old).update(
+            {"folder_name": new},
+            synchronize_session=False
+        )
+        
+        # Обновляем имя папки
+        folder.name = new
+        
+        db.commit()
+        return {"message": "Папка переименована", "old": old, "new": new}
+    
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
+
+    # Обновляем имя папки и все связанные моки
     folder.name = new
-    
-    # Обновляем folder_name для всех моков в этой папке
-    db.query(Mock).filter_by(folder_name=old).update({"folder_name": new})
-    
+    for m in folder.mocks:
+        m.folder_name = new
     db.commit()
     return {"message": "Папка переименована", "old": old, "new": new}
 
@@ -304,7 +336,6 @@ def create_or_update_mock(
     if not entry.id:
         entry.id = str(uuid4())
 
-    # Убеждаемся, что папка существует
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
         folder = Folder(name=entry.folder)
@@ -435,6 +466,8 @@ def deactivate_all(
     return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
 
 
+
+
 @app.post(
     "/api/mocks/import",
     summary="Импортировать моки из Postman Collection v2.1",
@@ -481,8 +514,34 @@ async def import_postman_collection(
             res = res_list[0]
             url = req.get("url", {})
             
-            # Обработка URL
-            path = extract_path_from_url(url)
+            # Улучшенная обработка URL
+            if isinstance(url, dict):
+                raw = url.get("raw", "")
+                path_segments = url.get("path", [])
+                if path_segments:
+                    path = "/" + "/".join(str(segment) for segment in path_segments)
+                else:
+                    # Если path пустой, извлекаем из raw
+                    if raw:
+                        # Убираем протокол и хост, оставляем только путь
+                        if "://" in raw:
+                            raw = raw.split("://", 1)[1]
+                        if "/" in raw:
+                            path = "/" + raw.split("/", 1)[1]
+                        else:
+                            path = "/"
+                    else:
+                        path = "/"
+            elif isinstance(url, str):
+                raw = url
+                if "://" in raw:
+                    raw = raw.split("://", 1)[1]
+                if "/" in raw:
+                    path = "/" + raw.split("/", 1)[1]
+                else:
+                    path = "/"
+            else:
+                path = "/"
 
             # Обработка заголовков запроса
             request_headers = {}
