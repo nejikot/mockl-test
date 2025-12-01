@@ -82,11 +82,11 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <EditOutlined
             onClick={e => { e.stopPropagation(); startRename(folder); }}
-            style={{ color: '#1677ff', fontSize: 16 }}
+            style={{ color: '#000', fontSize: 16 }}
           />
           <DeleteOutlined
             onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
-            style={{ color: 'red', fontSize: 16 }}
+            style={{ color: '#ff4d4f', fontSize: 16 }}
           />
         </div>
       )}
@@ -506,7 +506,13 @@ export default function App() {
       <ConfigProvider
         theme={{
           algorithm: darkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-          token: { colorBgBase: darkMode ? "#0b1120" : "#f0f2f5" }
+          token: {
+            colorBgBase: darkMode ? "#050505" : "#f0f2f5",
+            colorPrimary: "#000000",
+            colorInfo: "#000000",
+            colorText: darkMode ? "#f9fafb" : "#000000",
+            colorBgContainer: darkMode ? "#050505" : "#ffffff"
+          }
         }}
       >
         <Layout style={{ minHeight: "100vh" }}>
@@ -568,10 +574,10 @@ export default function App() {
                 }}
               >
                 <div style={{
-                  background: "#fff",
+                  background: darkMode ? "#000000" : "#fff",
                   borderRadius: 12,
                   padding: 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
+                  boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)",
                   position: isDesktop ? "sticky" : "static",
                   top: isDesktop ? stickyTopOffset + 40 : "auto",
                   maxHeight: isDesktop ? "calc(100vh - 180px)" : "none",
@@ -601,10 +607,10 @@ export default function App() {
               <Content style={{ width: "100%" }}>
                 {isDefaultFolder && (
                   <div style={{
-                    background: "#fff",
+                    background: darkMode ? "#000000" : "#fff",
                     borderRadius: 12,
                     padding: isDesktop ? 24 : 16,
-                    boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
+                    boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)",
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
@@ -630,10 +636,10 @@ export default function App() {
                 )}
 
                 <div style={{
-                  background: "#fff",
+                  background: darkMode ? "#000000" : "#fff",
                   borderRadius: 12,
                   padding: isDesktop ? 24 : 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
+                  boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)"
                 }}>
                   <div style={{
                     display: "flex",
@@ -678,12 +684,34 @@ export default function App() {
                       { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
                       {
                         title: "Действия",
-                        width: 260,
+                        width: 160,
                         render: (_, r) => (
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <Button size="small" onClick={() => openEditMock(r)}>Редактировать</Button>
-                            <Button size="small" onClick={() => duplicateMock(r)}>Дублировать</Button>
-                            <Button size="small" danger onClick={() => deleteMock(r.id)}>Удалить</Button>
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <Tooltip title="Редактировать">
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<EditOutlined />}
+                                onClick={() => openEditMock(r)}
+                              />
+                            </Tooltip>
+                            <Tooltip title="Дублировать">
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<CopyOutlined />}
+                                onClick={() => duplicateMock(r)}
+                              />
+                            </Tooltip>
+                            <Tooltip title="Удалить">
+                              <Button
+                                size="small"
+                                type="text"
+                                danger
+                                icon={<DeleteOutlined />}
+                                onClick={() => deleteMock(r.id)}
+                              />
+                            </Tooltip>
                           </div>
                         )
                       }
