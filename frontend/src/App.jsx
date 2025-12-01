@@ -7,9 +7,8 @@ import { theme as antdTheme } from "antd";
 import {
   PlusOutlined, MinusCircleOutlined, DeleteOutlined,
   ExclamationCircleOutlined, CopyOutlined,
-  MenuOutlined, PoweroffOutlined, UploadOutlined
+  MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined
 } from "@ant-design/icons";
-import { v4 as uuidv4 } from "uuid";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 
@@ -40,7 +39,7 @@ const headersToFormList = headersObj => {
   return list.length ? list : [{ key: "", value: "" }];
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder }) => {
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
@@ -80,10 +79,16 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         </Typography.Text>
       </div>
       {folder !== "default" && (
-        <DeleteOutlined
-          onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
-          style={{ color: 'red', fontSize: 16 }}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <EditOutlined
+            onClick={e => { e.stopPropagation(); startRename(folder); }}
+            style={{ color: '#1677ff', fontSize: 16 }}
+          />
+          <DeleteOutlined
+            onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
+            style={{ color: 'red', fontSize: 16 }}
+          />
+        </div>
       )}
     </div>
   );
@@ -92,13 +97,17 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
 export default function App() {
   const [form] = Form.useForm();
   const [folderForm] = Form.useForm();
+  const [renameForm] = Form.useForm();
   const [folders, setFolders] = useState(["default"]);
   const [selectedFolder, setSelectedFolder] = useState("default");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
+  const [isRenameModalOpen, setRenameModalOpen] = useState(false);
+  const [folderToRename, setFolderToRename] = useState(null);
   const [editing, setEditing] = useState(null);
   const [host, setHost] = useState(getBackendUrl());
+  const [darkMode, setDarkMode] = useState(false);
   const screens = useBreakpoint();
   const fileInputRef = useRef();
 
@@ -198,6 +207,10 @@ export default function App() {
   };
 
   const fetchMocks = async () => {
+    if (selectedFolder === "default") {
+      setMocks([]);
+      return;
+    }
     try {
       const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(selectedFolder)}`);
       if (!res.ok) throw new Error();
@@ -307,9 +320,45 @@ export default function App() {
     }
   };
 
+  const duplicateMock = async mock => {
+    try {
+      const copy = {
+        folder: mock.folder,
+        active: mock.active !== false,
+        request_condition: {
+          method: mock.request_condition.method,
+          path: mock.request_condition.path,
+          headers: mock.request_condition.headers || {},
+          body_contains: mock.request_condition.body_contains || null
+        },
+        response_config: {
+          status_code: mock.response_config.status_code,
+          headers: mock.response_config.headers || {},
+          body: mock.response_config.body
+        }
+      };
+      const res = await fetch(`${host}/api/mocks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(copy)
+      });
+      if (!res.ok) throw new Error();
+      message.success("Мок продублирован");
+      fetchMocks();
+    } catch {
+      message.error("Не удалось продублировать мок");
+    }
+  };
+
   const openAddFolder = () => {
     folderForm.resetFields();
     setFolderModalOpen(true);
+  };
+
+  const startRenameFolder = name => {
+    setFolderToRename(name);
+    renameForm.setFieldsValue({ new_name: name });
+    setRenameModalOpen(true);
   };
 
   const addFolder = async vals => {
@@ -351,6 +400,33 @@ export default function App() {
         }
       }
     });
+  };
+
+  const renameFolder = async vals => {
+    const newName = (vals.new_name || "").trim();
+    if (!folderToRename || !newName || newName === folderToRename) {
+      setRenameModalOpen(false);
+      return;
+    }
+    if (folders.includes(newName)) {
+      return message.error("Папка с таким именем уже существует");
+    }
+    try {
+      const res = await fetch(`${host}/api/folders/rename`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_name: folderToRename, new_name: newName })
+      });
+      if (!res.ok) throw new Error();
+      message.success("Переименовано");
+      setRenameModalOpen(false);
+      if (selectedFolder === folderToRename) {
+        setSelectedFolder(newName);
+      }
+      fetchFolders();
+    } catch {
+      message.error("Ошибка переименования");
+    }
   };
 
   const isDesktop = screens.md ?? false;
@@ -427,7 +503,12 @@ export default function App() {
 
   return (
     <DndProvider backend={HTML5Backend}>
-      <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f0f2f5" } }}>
+      <ConfigProvider
+        theme={{
+          algorithm: darkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+          token: { colorBgBase: darkMode ? "#0b1120" : "#f0f2f5" }
+        }}
+      >
         <Layout style={{ minHeight: "100vh" }}>
           <Header style={{
             background: "#fff",
@@ -446,8 +527,8 @@ export default function App() {
             <div style={{
               display: "flex",
               alignItems: "center",
-              gap: 8,
-              flex: isDesktop ? "0 0 320px" : "1 1 100%"
+              gap: 12,
+              flex: isDesktop ? "0 0 420px" : "1 1 100%"
             }}>
               <Typography.Text strong>Бэк:</Typography.Text>
               <Tooltip title="Копировать адрес">
@@ -462,8 +543,12 @@ export default function App() {
                 onChange={e => setHost(e.target.value)}
                 placeholder="Адрес бэкенда"
                 size="small"
-                style={{ flex: 1 }}
+                  style={{ flex: 1 }}
               />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Typography.Text>Тёмная тема</Typography.Text>
+              <Switch checked={darkMode} onChange={setDarkMode} />
             </div>
           </Header>
 
@@ -507,6 +592,7 @@ export default function App() {
                       selectedFolder={selectedFolder}
                       setSelectedFolder={setSelectedFolder}
                       deleteFolder={deleteFolder}
+                      startRename={startRenameFolder}
                     />
                   ))}
                 </div>
@@ -569,23 +655,12 @@ export default function App() {
                     dataSource={mocks}
                     rowKey="id"
                     size="middle"
+                    pagination={false}
                     columns={[
                       {
-                        title: "UUID",
-                        dataIndex: "id",
-                        width: 120,
-                        render: text => (
-                          <Tooltip title="Скопировать UUID">
-                            <Button
-                              type="text"
-                              icon={<CopyOutlined />}
-                              onClick={() => copyToClipboard(text)}
-                              size="small"
-                            >
-                              {text.slice(0, 8)}...
-                            </Button>
-                          </Tooltip>
-                        )
+                        title: "№",
+                        width: 70,
+                        render: (_, __, index) => index + 1
                       },
                       {
                         title: "Активно",
@@ -603,10 +678,11 @@ export default function App() {
                       { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
                       {
                         title: "Действия",
-                        width: 200,
+                        width: 260,
                         render: (_, r) => (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <Button size="small" onClick={() => openEditMock(r)}>Редактировать</Button>
+                            <Button size="small" onClick={() => duplicateMock(r)}>Дублировать</Button>
                             <Button size="small" danger onClick={() => deleteMock(r.id)}>Удалить</Button>
                           </div>
                         )
@@ -762,6 +838,27 @@ export default function App() {
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>Создать</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Переименовать страницу"
+            open={isRenameModalOpen}
+            onCancel={() => setRenameModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={renameForm} onFinish={renameFolder} layout="vertical">
+              <Form.Item
+                name="new_name"
+                label="Новое имя страницы"
+                rules={[{ required: true, message: "Введите новое имя" }]}
+              >
+                <Input placeholder="Новое имя" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>Сохранить</Button>
               </Form.Item>
             </Form>
           </Modal>

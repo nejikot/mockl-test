@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Optional, List
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, func
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -68,6 +68,7 @@ class Mock(Base):
     status_code = Column(Integer, nullable=False)
     response_headers = Column(SAJSON, default={})
     response_body = Column(SAJSON, nullable=False)
+    order_index = Column(Integer, default=0)
     active = Column(Boolean, default=True)
 
 
@@ -103,11 +104,21 @@ class MockResponseConfig(BaseModel):
 
 
 class MockEntry(BaseModel):
-    id: str
+    id: Optional[str] = None
     folder: Optional[str] = "default"
     request_condition: MockRequestCondition
     response_config: MockResponseConfig
     active: Optional[bool] = True
+
+
+class FolderRenamePayload(BaseModel):
+    old_name: str
+    new_name: str
+
+
+class MocksReorderPayload(BaseModel):
+    folder: str
+    ids: List[str]
 
 
 def get_db():
@@ -149,6 +160,28 @@ def delete_folder(name: str = Query(...), db: Session = Depends(get_db)):
     return {"message": f"Папка '{name}' и все её моки удалены"}
 
 
+@app.patch("/api/folders/rename")
+def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
+    old = payload.old_name.strip()
+    new = payload.new_name.strip()
+    if not new or old == new:
+        raise HTTPException(400, "Некорректное новое имя папки")
+    if old == "default":
+        raise HTTPException(400, "Нельзя переименовать стандартную папку")
+    folder = db.query(Folder).filter_by(name=old).first()
+    if not folder:
+        raise HTTPException(404, "Папка не найдена")
+    if db.query(Folder).filter_by(name=new).first():
+        raise HTTPException(400, "Папка с таким именем уже существует")
+
+    # Обновляем имя папки и все связанные моки
+    folder.name = new
+    for m in folder.mocks:
+        m.folder_name = new
+    db.commit()
+    return {"message": "Папка переименована", "old": old, "new": new}
+
+
 @app.get("/api/mocks/folders", response_model=List[str])
 def list_folders(db: Session = Depends(get_db)):
     names = [f.name for f in db.query(Folder).all()]
@@ -160,14 +193,25 @@ def list_folders(db: Session = Depends(get_db)):
 
 @app.post("/api/mocks")
 def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
+    # Если id не передан — создаём новый мок с внутренним UUID
+    if not entry.id:
+        entry.id = str(uuid4())
+
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
         folder = Folder(name=entry.folder)
         db.add(folder)
     mock = db.query(Mock).filter_by(id=entry.id).first()
+    # Новый мок — назначаем следующий порядковый индекс внутри папки
     if not mock:
         mock = Mock(id=entry.id)
         db.add(mock)
+        max_order = (
+            db.query(func.max(Mock.order_index))
+            .filter_by(folder_name=entry.folder)
+            .scalar()
+        )
+        mock.order_index = (max_order or 0) + 1
     mock.folder_name = entry.folder
     mock.method = entry.request_condition.method
     mock.path = entry.request_condition.path
@@ -186,6 +230,8 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Mock)
     if folder:
         q = q.filter_by(folder_name=folder)
+    # Всегда сортируем по order_index, затем по id для стабильности
+    q = q.order_by(Mock.order_index, Mock.id)
     results = []
     for m in q.all():
         results.append(
@@ -245,6 +291,25 @@ def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(ge
         m.active = False
     db.commit()
     return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
+
+
+@app.patch("/api/mocks/reorder")
+def reorder_mocks(payload: MocksReorderPayload, db: Session = Depends(get_db)):
+    """
+    Обновление порядка моков внутри папки.
+    На вход подаётся массив id в нужной последовательности.
+    """
+    ids_order = {mock_id: index for index, mock_id in enumerate(payload.ids)}
+    mocks_in_folder = db.query(Mock).filter_by(folder_name=payload.folder).all()
+    if not mocks_in_folder:
+        raise HTTPException(404, "Mocks not found for this folder")
+
+    for m in mocks_in_folder:
+        if m.id in ids_order:
+            m.order_index = ids_order[m.id]
+
+    db.commit()
+    return {"message": "order updated", "count": len(ids_order)}
 
 
 @app.post("/api/mocks/import")
@@ -310,8 +375,6 @@ async def import_postman_collection(
             else:
                 path = "/"
 
-            mock_id = str(uuid4())
-
             # Обработка заголовков запроса
             request_headers = {}
             for h in req.get("header", []):
@@ -344,7 +407,6 @@ async def import_postman_collection(
                     status_code = 200
 
             entry = MockEntry(
-                id=mock_id,
                 folder=folder_name,
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
