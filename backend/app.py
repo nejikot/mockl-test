@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Optional, List
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, func
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -68,7 +68,6 @@ class Mock(Base):
     status_code = Column(Integer, nullable=False)
     response_headers = Column(SAJSON, default={})
     response_body = Column(SAJSON, nullable=False)
-    order_index = Column(Integer, default=0)
     active = Column(Boolean, default=True)
 
 
@@ -116,9 +115,6 @@ class FolderRenamePayload(BaseModel):
     new_name: str
 
 
-class MocksReorderPayload(BaseModel):
-    folder: str
-    ids: List[str]
 
 
 def get_db():
@@ -202,16 +198,9 @@ def create_or_update_mock(entry: MockEntry, db: Session = Depends(get_db)):
         folder = Folder(name=entry.folder)
         db.add(folder)
     mock = db.query(Mock).filter_by(id=entry.id).first()
-    # Новый мок — назначаем следующий порядковый индекс внутри папки
     if not mock:
         mock = Mock(id=entry.id)
         db.add(mock)
-        max_order = (
-            db.query(func.max(Mock.order_index))
-            .filter_by(folder_name=entry.folder)
-            .scalar()
-        )
-        mock.order_index = (max_order or 0) + 1
     mock.folder_name = entry.folder
     mock.method = entry.request_condition.method
     mock.path = entry.request_condition.path
@@ -230,8 +219,6 @@ def list_mocks(folder: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Mock)
     if folder:
         q = q.filter_by(folder_name=folder)
-    # Всегда сортируем по order_index, затем по id для стабильности
-    q = q.order_by(Mock.order_index, Mock.id)
     results = []
     for m in q.all():
         results.append(
@@ -293,23 +280,6 @@ def deactivate_all(folder: Optional[str] = Query(None), db: Session = Depends(ge
     return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
 
 
-@app.patch("/api/mocks/reorder")
-def reorder_mocks(payload: MocksReorderPayload, db: Session = Depends(get_db)):
-    """
-    Обновление порядка моков внутри папки.
-    На вход подаётся массив id в нужной последовательности.
-    """
-    ids_order = {mock_id: index for index, mock_id in enumerate(payload.ids)}
-    mocks_in_folder = db.query(Mock).filter_by(folder_name=payload.folder).all()
-    if not mocks_in_folder:
-        raise HTTPException(404, "Mocks not found for this folder")
-
-    for m in mocks_in_folder:
-        if m.id in ids_order:
-            m.order_index = ids_order[m.id]
-
-    db.commit()
-    return {"message": "order updated", "count": len(ids_order)}
 
 
 @app.post("/api/mocks/import")

@@ -107,7 +107,6 @@ export default function App() {
   const [folderToRename, setFolderToRename] = useState(null);
   const [editing, setEditing] = useState(null);
   const [host, setHost] = useState(getBackendUrl());
-  const [darkMode, setDarkMode] = useState(false);
   const screens = useBreakpoint();
   const fileInputRef = useRef();
 
@@ -503,18 +502,7 @@ export default function App() {
 
   return (
     <DndProvider backend={HTML5Backend}>
-      <ConfigProvider
-        theme={{
-          algorithm: darkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-          token: {
-            colorBgBase: darkMode ? "#050505" : "#f0f2f5",
-            colorPrimary: "#000000",
-            colorInfo: "#000000",
-            colorText: darkMode ? "#f9fafb" : "#000000",
-            colorBgContainer: darkMode ? "#050505" : "#ffffff"
-          }
-        }}
-      >
+      <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f0f2f5" } }}>
         <Layout style={{ minHeight: "100vh" }}>
           <Header style={{
             background: "#fff",
@@ -552,10 +540,6 @@ export default function App() {
                   style={{ flex: 1 }}
               />
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Typography.Text>Тёмная тема</Typography.Text>
-              <Switch checked={darkMode} onChange={setDarkMode} />
-            </div>
           </Header>
 
           <Content style={{ padding: isDesktop ? "24px 80px" : "16px" }}>
@@ -574,10 +558,10 @@ export default function App() {
                 }}
               >
                 <div style={{
-                  background: darkMode ? "#000000" : "#fff",
+                  background: "#fff",
                   borderRadius: 12,
                   padding: 16,
-                  boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)",
+                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
                   position: isDesktop ? "sticky" : "static",
                   top: isDesktop ? stickyTopOffset + 40 : "auto",
                   maxHeight: isDesktop ? "calc(100vh - 180px)" : "none",
@@ -607,10 +591,10 @@ export default function App() {
               <Content style={{ width: "100%" }}>
                 {isDefaultFolder && (
                   <div style={{
-                    background: darkMode ? "#000000" : "#fff",
+                    background: "#fff",
                     borderRadius: 12,
                     padding: isDesktop ? 24 : 16,
-                    boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)",
+                    boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
@@ -636,10 +620,10 @@ export default function App() {
                 )}
 
                 <div style={{
-                  background: darkMode ? "#000000" : "#fff",
+                  background: "#fff",
                   borderRadius: 12,
                   padding: isDesktop ? 24 : 16,
-                  boxShadow: darkMode ? "0 12px 30px rgba(0,0,0,0.8)" : "0 12px 30px rgba(15,23,42,0.05)"
+                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
                 }}>
                   <div style={{
                     display: "flex",
@@ -665,8 +649,20 @@ export default function App() {
                     columns={[
                       {
                         title: "№",
-                        width: 70,
+                        width: 60,
                         render: (_, __, index) => index + 1
+                      },
+                      {
+                        title: "ID",
+                        dataIndex: "id",
+                        width: 140,
+                        render: text => (
+                          <Tooltip title={text}>
+                            <span style={{ fontFamily: "monospace", cursor: "pointer" }} onClick={() => copyToClipboard(text)}>
+                              {text.slice(0, 8)}...
+                            </span>
+                          </Tooltip>
+                        )
                       },
                       {
                         title: "Активно",
