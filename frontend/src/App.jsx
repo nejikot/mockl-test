@@ -8,7 +8,7 @@ import {
   PlusOutlined, MinusCircleOutlined, DeleteOutlined,
   ExclamationCircleOutlined, CopyOutlined,
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
-  SnippetsOutlined
+  SnippetsOutlined, BgColorsOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -17,18 +17,100 @@ const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
 const { useBreakpoint } = Grid;
 
-const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
+const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+
+// Полный список HTTP статусов из RFC
 const HTTP_STATUSES = [
+  // 1xx: Informational
+  { value: 100, label: "100 - Continue", example: { message: "continue" } },
+  { value: 101, label: "101 - Switching Protocols", example: { message: "switching protocols" } },
+  { value: 102, label: "102 - Processing", example: { message: "processing" } },
+  { value: 103, label: "103 - Early Hints", example: { message: "early hints" } },
+
+  // 2xx: Success
   { value: 200, label: "200 - OK", example: { message: "success", data: {} } },
   { value: 201, label: "201 - Created", example: { message: "created", id: "123" } },
+  { value: 202, label: "202 - Accepted", example: { message: "accepted", task_id: "456" } },
+  { value: 203, label: "203 - Non-Authoritative Information", example: { message: "non-authoritative" } },
+  { value: 204, label: "204 - No Content", example: {} },
+  { value: 205, label: "205 - Reset Content", example: {} },
+  { value: 206, label: "206 - Partial Content", example: { data: "partial" } },
+  { value: 207, label: "207 - Multi-Status", example: { status: "multi-status" } },
+  { value: 208, label: "208 - Already Reported", example: { message: "already reported" } },
+  { value: 226, label: "226 - IM Used", example: { message: "IM used" } },
+
+  // 3xx: Redirection
+  { value: 300, label: "300 - Multiple Choices", example: { choices: [] } },
+  { value: 301, label: "301 - Moved Permanently", example: { redirect: "url" } },
+  { value: 302, label: "302 - Found", example: { redirect: "url" } },
+  { value: 303, label: "303 - See Other", example: { redirect: "url" } },
+  { value: 304, label: "304 - Not Modified", example: {} },
+  { value: 305, label: "305 - Use Proxy", example: { proxy: "url" } },
+  { value: 307, label: "307 - Temporary Redirect", example: { redirect: "url" } },
+  { value: 308, label: "308 - Permanent Redirect", example: { redirect: "url" } },
+
+  // 4xx: Client Error
   { value: 400, label: "400 - Bad Request", example: { error: "bad request", message: "Invalid input" } },
   { value: 401, label: "401 - Unauthorized", example: { error: "unauthorized", message: "Authentication required" } },
+  { value: 402, label: "402 - Payment Required", example: { error: "payment required" } },
   { value: 403, label: "403 - Forbidden", example: { error: "forbidden", message: "Access denied" } },
   { value: 404, label: "404 - Not Found", example: { error: "not found", message: "Resource not found" } },
+  { value: 405, label: "405 - Method Not Allowed", example: { error: "method not allowed" } },
+  { value: 406, label: "406 - Not Acceptable", example: { error: "not acceptable" } },
+  { value: 407, label: "407 - Proxy Authentication Required", example: { error: "proxy authentication required" } },
+  { value: 408, label: "408 - Request Timeout", example: { error: "request timeout" } },
+  { value: 409, label: "409 - Conflict", example: { error: "conflict", message: "Resource conflict" } },
+  { value: 410, label: "410 - Gone", example: { error: "gone", message: "Resource deleted" } },
+  { value: 411, label: "411 - Length Required", example: { error: "length required" } },
+  { value: 412, label: "412 - Precondition Failed", example: { error: "precondition failed" } },
+  { value: 413, label: "413 - Payload Too Large", example: { error: "payload too large" } },
+  { value: 414, label: "414 - URI Too Long", example: { error: "uri too long" } },
+  { value: 415, label: "415 - Unsupported Media Type", example: { error: "unsupported media type" } },
+  { value: 416, label: "416 - Range Not Satisfiable", example: { error: "range not satisfiable" } },
+  { value: 417, label: "417 - Expectation Failed", example: { error: "expectation failed" } },
+  { value: 418, label: "418 - I'm a teapot", example: { error: "i'm a teapot" } },
+  { value: 419, label: "419 - Authentication Timeout", example: { error: "authentication timeout" } },
+  { value: 421, label: "421 - Misdirected Request", example: { error: "misdirected request" } },
   { value: 422, label: "422 - Unprocessable Entity", example: { error: "validation failed", details: [] } },
+  { value: 423, label: "423 - Locked", example: { error: "locked" } },
+  { value: 424, label: "424 - Failed Dependency", example: { error: "failed dependency" } },
+  { value: 425, label: "425 - Too Early", example: { error: "too early" } },
+  { value: 426, label: "426 - Upgrade Required", example: { error: "upgrade required" } },
+  { value: 428, label: "428 - Precondition Required", example: { error: "precondition required" } },
+  { value: 429, label: "429 - Too Many Requests", example: { error: "too many requests" } },
+  { value: 431, label: "431 - Request Header Fields Too Large", example: { error: "headers too large" } },
+  { value: 449, label: "449 - Retry With", example: { error: "retry with" } },
+  { value: 451, label: "451 - Unavailable For Legal Reasons", example: { error: "unavailable for legal reasons" } },
+  { value: 499, label: "499 - Client Closed Request", example: { error: "client closed request" } },
+
+  // 5xx: Server Error
   { value: 500, label: "500 - Internal Server Error", example: { error: "internal server error", message: "Something went wrong" } },
+  { value: 501, label: "501 - Not Implemented", example: { error: "not implemented" } },
   { value: 502, label: "502 - Bad Gateway", example: { error: "bad gateway", message: "Upstream server error" } },
-  { value: 503, label: "503 - Service Unavailable", example: { error: "service unavailable", message: "Service temporarily unavailable" } }
+  { value: 503, label: "503 - Service Unavailable", example: { error: "service unavailable", message: "Service temporarily unavailable" } },
+  { value: 504, label: "504 - Gateway Timeout", example: { error: "gateway timeout" } },
+  { value: 505, label: "505 - HTTP Version Not Supported", example: { error: "http version not supported" } },
+  { value: 506, label: "506 - Variant Also Negotiates", example: { error: "variant also negotiates" } },
+  { value: 507, label: "507 - Insufficient Storage", example: { error: "insufficient storage" } },
+  { value: 508, label: "508 - Loop Detected", example: { error: "loop detected" } },
+  { value: 509, label: "509 - Bandwidth Limit Exceeded", example: { error: "bandwidth limit exceeded" } },
+  { value: 510, label: "510 - Not Extended", example: { error: "not extended" } },
+  { value: 511, label: "511 - Network Authentication Required", example: { error: "network authentication required" } },
+  { value: 520, label: "520 - Unknown Error", example: { error: "unknown error" } },
+  { value: 521, label: "521 - Web Server Is Down", example: { error: "web server is down" } },
+  { value: 522, label: "522 - Connection Timed Out", example: { error: "connection timed out" } },
+  { value: 523, label: "523 - Origin Is Unreachable", example: { error: "origin is unreachable" } },
+  { value: 524, label: "524 - A Timeout Occurred", example: { error: "timeout occurred" } },
+  { value: 525, label: "525 - SSL Handshake Failed", example: { error: "ssl handshake failed" } },
+  { value: 526, label: "526 - Invalid SSL Certificate", example: { error: "invalid ssl certificate" } }
+];
+
+// Режимы тела запроса
+const REQUEST_BODY_MODES = [
+  { value: "none", label: "none" },
+  { value: "raw", label: "raw (JSON)" },
+  { value: "form-data", label: "form-data" },
+  { value: "urlencoded", label: "x-www-form-urlencoded" }
 ];
 
 function getBackendUrl() {
@@ -108,12 +190,24 @@ export default function App() {
   const [folderToRename, setFolderToRename] = useState(null);
   const [editing, setEditing] = useState(null);
   const [host, setHost] = useState(getBackendUrl());
+  const [theme, setTheme] = useState("light");
   const screens = useBreakpoint();
   const fileInputRef = useRef();
 
   useEffect(() => {
-    document.body.style.background = "#f0f2f5";
+    const savedTheme = localStorage.getItem("mockl-theme") || "light";
+    setTheme(savedTheme);
   }, []);
+
+  useEffect(() => {
+    document.body.style.background = theme === "light" ? "#f0f2f5" : "#141414";
+  }, [theme]);
+
+  const toggleTheme = () => {
+    const newTheme = theme === "light" ? "dark" : "light";
+    setTheme(newTheme);
+    localStorage.setItem("mockl-theme", newTheme);
+  };
 
   const copyToClipboard = text => {
     navigator.clipboard.writeText(text)
@@ -238,7 +332,10 @@ export default function App() {
       status_code: 200,
       active: true,
       requestHeaders: [{ key: "", value: "" }],
+      request_body_mode: "none",
       request_body_contains: "",
+      request_body_params: [{ key: "", value: "" }],
+      request_body_formdata: [{ key: "", value: "" }],
       responseHeaders: [{ key: "", value: "" }],
       response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
     });
@@ -257,6 +354,7 @@ export default function App() {
     let request_body_mode = "raw";
     let request_body_raw = bodyContains;
     let request_body_params = [{ key: "", value: "" }];
+    let request_body_formdata = [{ key: "", value: "" }];
 
     if (/application\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
       request_body_mode = "urlencoded";
@@ -269,7 +367,12 @@ export default function App() {
             value: decodeURIComponent(v)
           };
         }) || [{ key: "", value: "" }];
+    } else if (/multipart\/form-data/i.test(contentType)) {
+      request_body_mode = "form-data";
+    } else if (!bodyContains) {
+      request_body_mode = "none";
     }
+
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
@@ -279,6 +382,7 @@ export default function App() {
       request_body_mode,
       request_body_raw,
       request_body_params,
+      request_body_formdata,
       status_code: m.response_config.status_code,
       active: m.active !== false,
       responseHeaders: headersToFormList(m.response_config.headers),
@@ -300,8 +404,10 @@ export default function App() {
       const responseHeadersObj = toHeaderObject(vals.responseHeaders || []);
       const requestHeadersObj = toHeaderObject(vals.requestHeaders || []);
 
-      const bodyMode = vals.request_body_mode || "raw";
+      const bodyMode = vals.request_body_mode || "none";
       let bodyContains = "";
+      let contentType = "";
+
       if (bodyMode === "urlencoded") {
         const params = vals.request_body_params || [];
         bodyContains = params
@@ -313,12 +419,20 @@ export default function App() {
               )}`
           )
           .join("&");
-      } else {
+        contentType = "application/x-www-form-urlencoded";
+      } else if (bodyMode === "form-data") {
+        contentType = "multipart/form-data";
+        bodyContains = "";
+      } else if (bodyMode === "raw") {
         bodyContains = (vals.request_body_raw || "").trim();
       }
 
+      if (contentType) {
+        requestHeadersObj["Content-Type"] = contentType;
+      }
+
       const entry = {
-        id: vals.id || uuidv4(),
+        id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
         active: vals.active !== false,
         request_condition: {
@@ -519,10 +633,19 @@ export default function App() {
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
   };
 
+  const themeConfig = {
+    algorithm: theme === "dark" ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+    token: {
+      colorBgBase: theme === "light" ? "#f0f2f5" : "#141414",
+      colorPrimary: theme === "dark" ? "#177ddc" : "#1890ff",
+      borderRadius: 8,
+    }
+  };
+
   const actionToolbar = (
     <div style={{ position: "sticky", top: stickyTopOffset, zIndex: 10, marginBottom: 24 }}>
       <div style={{
-        background: "#fff",
+        background: theme === "light" ? "#fff" : "#1f1f1f",
         borderRadius: 12,
         padding: isDesktop ? 20 : 16,
         boxShadow: "0 15px 35px rgba(15,23,42,0.08)",
@@ -584,10 +707,10 @@ export default function App() {
 
   return (
     <DndProvider backend={HTML5Backend}>
-      <ConfigProvider theme={{ algorithm: antdTheme.defaultAlgorithm, token: { colorBgBase: "#f0f2f5" } }}>
-        <Layout style={{ minHeight: "100vh" }}>
+      <ConfigProvider theme={themeConfig}>
+        <Layout style={{ minHeight: "100vh", background: theme === "light" ? "#f0f2f5" : "#141414" }}>
           <Header style={{
-            background: "#fff",
+            background: theme === "light" ? "#fff" : "#1f1f1f",
             padding: isDesktop ? "0 80px" : "12px 16px",
             display: "flex",
             flexWrap: "wrap",
@@ -600,6 +723,13 @@ export default function App() {
               <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
               <Typography.Text type="secondary">гибкий mock-сервер</Typography.Text>
             </div>
+            <Button
+              icon={<BgColorsOutlined />}
+              onClick={toggleTheme}
+              type="text"
+            >
+              {theme === "light" ? "🌙 Dark" : "☀️ Light"}
+            </Button>
             <div style={{
               display: "flex",
               alignItems: "center",
@@ -619,7 +749,7 @@ export default function App() {
                 onChange={e => setHost(e.target.value)}
                 placeholder="Адрес бэкенда"
                 size="small"
-                  style={{ flex: 1 }}
+                style={{ flex: 1 }}
               />
             </div>
           </Header>
@@ -640,7 +770,7 @@ export default function App() {
                 }}
               >
                 <div style={{
-                  background: "#fff",
+                  background: theme === "light" ? "#fff" : "#1f1f1f",
                   borderRadius: 12,
                   padding: 16,
                   boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
@@ -673,7 +803,7 @@ export default function App() {
               <Content style={{ width: "100%" }}>
                 {isDefaultFolder && (
                   <div style={{
-                    background: "#fff",
+                    background: theme === "light" ? "#fff" : "#1f1f1f",
                     borderRadius: 12,
                     padding: isDesktop ? 24 : 16,
                     boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
@@ -702,7 +832,7 @@ export default function App() {
                 )}
 
                 <div style={{
-                  background: "#fff",
+                  background: theme === "light" ? "#fff" : "#1f1f1f",
                   borderRadius: 12,
                   padding: isDesktop ? 24 : 16,
                   boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
@@ -816,9 +946,10 @@ export default function App() {
                 status_code: 200,
                 active: true,
                 requestHeaders: [{ key: "", value: "" }],
-                request_body_mode: "raw",
+                request_body_mode: "none",
                 request_body_raw: "",
                 request_body_params: [{ key: "", value: "" }],
+                request_body_formdata: [{ key: "", value: "" }],
                 responseHeaders: [{ key: "", value: "" }]
               }}
             >
@@ -878,11 +1009,8 @@ export default function App() {
               <Form.Item label="Тело запроса">
                 <Form.Item name="request_body_mode" noStyle>
                   <Select
-                    style={{ width: 220, marginBottom: 8 }}
-                    options={[
-                      { label: "raw (JSON)", value: "raw" },
-                      { label: "x-www-form-urlencoded", value: "urlencoded" }
-                    ]}
+                    style={{ width: "100%", marginBottom: 8 }}
+                    options={REQUEST_BODY_MODES}
                   />
                 </Form.Item>
                 <Form.Item
@@ -892,7 +1020,12 @@ export default function App() {
                   }
                 >
                   {({ getFieldValue }) => {
-                    const mode = getFieldValue("request_body_mode") || "raw";
+                    const mode = getFieldValue("request_body_mode") || "none";
+                    
+                    if (mode === "none") {
+                      return <Typography.Text type="secondary">Без тела запроса</Typography.Text>;
+                    }
+                    
                     if (mode === "urlencoded") {
                       return (
                         <Form.List name="request_body_params">
@@ -947,6 +1080,62 @@ export default function App() {
                         </Form.List>
                       );
                     }
+                    
+                    if (mode === "form-data") {
+                      return (
+                        <Form.List name="request_body_formdata">
+                          {(fields, { add, remove }) => (
+                            <>
+                              {fields.map(field => (
+                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                                  <Input.Group
+                                    compact
+                                    style={{ display: "flex", gap: 8 }}
+                                  >
+                                    <Form.Item
+                                      {...field}
+                                      name={[field.name, "key"]}
+                                      noStyle
+                                    >
+                                      <Input
+                                        placeholder="Ключ"
+                                        style={{ width: "40%" }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      {...field}
+                                      name={[field.name, "value"]}
+                                      noStyle
+                                    >
+                                      <Input
+                                        placeholder="Значение"
+                                        style={{ flex: 1 }}
+                                      />
+                                    </Form.Item>
+                                    {fields.length > 1 && (
+                                      <MinusCircleOutlined
+                                        onClick={() => remove(field.name)}
+                                        style={{ color: "red", fontSize: 20 }}
+                                      />
+                                    )}
+                                  </Input.Group>
+                                </Form.Item>
+                              ))}
+                              <Button
+                                type="dashed"
+                                block
+                                icon={<PlusOutlined />}
+                                onClick={() => add()}
+                                style={{ marginTop: 8 }}
+                              >
+                                Добавить поле
+                              </Button>
+                            </>
+                          )}
+                        </Form.List>
+                      );
+                    }
+                    
                     return (
                       <Form.Item
                         name="request_body_raw"
@@ -960,7 +1149,14 @@ export default function App() {
               </Form.Item>
 
               <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
-                <Select options={HTTP_STATUSES} onChange={handleStatusChange} />
+                <Select 
+                  options={HTTP_STATUSES} 
+                  onChange={handleStatusChange}
+                  showSearch
+                  filterOption={(input, option) =>
+                    (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                  }
+                />
               </Form.Item>
 
               <Form.List name="responseHeaders">
@@ -1038,7 +1234,7 @@ export default function App() {
                 <Input placeholder="Новое имя" />
               </Form.Item>
               <Form.Item>
-                <Button type="primary" htmlType="submit" block>Сохранить</Button>
+                <Button type="primary" htmlType="submit" block>Переименовать</Button>
               </Form.Item>
             </Form>
           </Modal>
