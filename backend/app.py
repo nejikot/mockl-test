@@ -667,15 +667,20 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     mock.folder_name = entry.folder
     mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
-    mock.path = _normalize_path_for_storage(entry.request_condition.path)
+    normalized_path = _normalize_path_for_storage(entry.request_condition.path)
+    mock.path = normalized_path
+    logger.debug(f"_save_mock_entry: normalizing path '{entry.request_condition.path}' -> '{normalized_path}'")
+    
     # Сохраняем заголовки: None или пустой dict {} означает не проверять заголовки
     # В SQLAlchemy JSON колонка не может хранить None, поэтому используем {}
     headers_to_save = entry.request_condition.headers
     if headers_to_save is None or (isinstance(headers_to_save, dict) and len(headers_to_save) == 0):
         # Пустой словарь означает, что заголовки не важны
         mock.headers = {}
+        logger.debug(f"_save_mock_entry: no headers to check (headers={headers_to_save})")
     else:
         mock.headers = headers_to_save
+        logger.debug(f"_save_mock_entry: saving headers: {headers_to_save}")
     mock.body_contains = entry.request_condition.body_contains
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
@@ -1436,7 +1441,13 @@ async def import_postman_collection(
             request_headers = {}
             for h in req.get("header", []):
                 if isinstance(h, dict) and "key" in h:
-                    request_headers[h["key"]] = h.get("value", "")
+                    key = h.get("key", "").strip()
+                    if key:  # Игнорируем пустые ключи
+                        request_headers[key] = h.get("value", "")
+            
+            # Если заголовков нет, используем None вместо пустого словаря
+            if not request_headers:
+                request_headers = None
 
             # Обработка тела запроса
             body_contains = None
@@ -1527,13 +1538,16 @@ async def import_postman_collection(
                 except (ValueError, TypeError):
                     status_code = 200
 
+            # Логируем информацию о создаваемом моке для отладки
+            logger.debug(f"Importing mock: folder={folder_name}, method={req.get('method', 'GET')}, path={path}, headers={request_headers}, body_contains={'yes' if body_contains else 'no'}")
+            
             entry = MockEntry(
                 folder=folder_name,
                 name=item.get("name"),
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
                     path=path,
-                    headers=request_headers if request_headers else None,
+                    headers=request_headers,
                     body_contains=body_contains
                 ),
                 response_config=MockResponseConfig(
@@ -1546,6 +1560,10 @@ async def import_postman_collection(
 
             # Используем _save_mock_entry для единообразного сохранения
             _save_mock_entry(entry, db)
+            # Логируем сохраненный мок для отладки
+            saved_mock = db.query(Mock).filter_by(id=entry.id).first()
+            if saved_mock:
+                logger.info(f"Saved mock from Postman: id={saved_mock.id}, folder={saved_mock.folder_name}, method={saved_mock.method}, path='{saved_mock.path}', headers={saved_mock.headers}, active={saved_mock.active}")
             imported.append(entry.id)
 
         # Обрабатываем все элементы коллекции
@@ -1792,6 +1810,7 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     """
     # Проверка метода
     if req.method.upper() != m.method.upper():
+        logger.debug(f"Method mismatch for mock {m.id}: {req.method.upper()} != {m.method.upper()}")
         return False
     
     # Нормализуем пути для сравнения
@@ -1805,8 +1824,11 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     mock_path_base, mock_query = normalize_path(m.path)
     request_path_base, request_query = normalize_path(full_path)
     
+    logger.debug(f"Path comparison for mock {m.id}: mock_path='{m.path}' -> base='{mock_path_base}' query='{mock_query}', request_path='{full_path}' -> base='{request_path_base}' query='{request_query}'")
+    
     # Сравниваем базовые пути
     if mock_path_base != request_path_base:
+        logger.info(f"Path mismatch for mock {m.id}: '{mock_path_base}' != '{request_path_base}'")
         return False
     
     # Если в моке есть query параметры, они должны полностью совпадать
@@ -1835,8 +1857,9 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     break
             
             if req_header_value != hv:
-                logger.debug(f"Header mismatch: {hk}={hv} vs request={req_header_value}")
+                logger.info(f"Header mismatch for mock {m.id}: header '{hk}' expected='{hv}' got='{req_header_value}'")
                 return False
+        logger.debug(f"All headers matched for mock {m.id}")
     
     # Проверка содержимого тела
     if m.body_contains:
@@ -2029,11 +2052,15 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
     # Ищем подходящий мок только в выбранной папке
     mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name).all()
-    logger.debug(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    logger.info(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    
+    # Логируем все заголовки запроса для отладки
+    request_headers_dict = {k: v for k, v in request.headers.items()}
+    logger.debug(f"Request headers: {request_headers_dict}")
     
     for m in mocks:
         matched = await match_condition(request, m, full_inner)
-        logger.debug(f"Mock {m.id} ({m.method} {m.path}): matched={matched}, headers={m.headers}, body_contains={'yes' if m.body_contains else 'no'}")
+        logger.info(f"Mock {m.id} ({m.method} {m.path}): matched={matched}, mock_headers={m.headers}, mock_body_contains={'yes' if m.body_contains else 'no'}, request_path={full_inner}")
         if matched:
             body = m.response_body
 
