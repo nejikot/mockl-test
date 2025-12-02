@@ -1438,16 +1438,35 @@ async def import_postman_collection(
             path = extract_path_from_url(url)
 
             # Обработка заголовков запроса
+            # Системные заголовки, которые не должны использоваться для сопоставления моков
+            # (они могут различаться между клиентами)
+            SYSTEM_HEADERS_TO_IGNORE = {
+                "accept-encoding",  # Может быть gzip, br, deflate и т.д.
+                "connection",       # Может быть keep-alive, close и т.д.
+                "user-agent",       # Различается между клиентами
+                "host",             # Всегда разный для разных серверов
+                "content-length",   # Вычисляется автоматически
+                "transfer-encoding", # Может различаться
+                "upgrade",          # Может быть в запросах
+                "via",             # Прокси-заголовки
+                "x-forwarded-for", # Прокси-заголовки
+                "x-forwarded-proto", # Прокси-заголовки
+                "x-real-ip",       # Прокси-заголовки
+            }
+            
             request_headers = {}
             for h in req.get("header", []):
                 if isinstance(h, dict) and "key" in h:
                     key = h.get("key", "").strip()
-                    if key:  # Игнорируем пустые ключи
+                    # Игнорируем пустые ключи и системные заголовки
+                    if key and key.lower() not in SYSTEM_HEADERS_TO_IGNORE:
                         request_headers[key] = h.get("value", "")
             
             # Если заголовков нет, используем None вместо пустого словаря
             if not request_headers:
                 request_headers = None
+            else:
+                logger.debug(f"Filtered headers for import: kept {len(request_headers)} headers, ignored system headers")
 
             # Обработка тела запроса
             body_contains = None
@@ -1515,9 +1534,19 @@ async def import_postman_collection(
 
             # Обработка заголовков ответа
             response_headers = {}
+            # Системные заголовки, которые не нужно сохранять (вычисляются автоматически)
+            system_response_headers = {
+                "content-length", "connection", "date", "server", 
+                "transfer-encoding", "content-encoding",
+                "strict-transport-security", "x-xss-protection", 
+                "x-frame-options", "x-content-type-options", 
+                "referrer-policy", "content-security-policy"
+            }
             for h in res.get("header", []):
                 if isinstance(h, dict) and "key" in h:
-                    response_headers[h["key"]] = h.get("value", "")
+                    key = h.get("key", "").strip()
+                    if key and key.lower() not in system_response_headers:
+                        response_headers[key] = h.get("value", "")
 
             # Обработка тела ответа
             response_body = res.get("body", "{}")
@@ -1745,7 +1774,14 @@ def extract_path_from_url(url) -> str:
         # Предпочитаем field path[] если он есть
         path_segments = url.get("path", [])
         if path_segments:
-            path = "/" + "/".join(str(segment) for segment in path_segments)
+            # Фильтруем пустые сегменты и нормализуем путь
+            filtered_segments = [str(seg) for seg in path_segments if seg]
+            if filtered_segments:
+                path = "/" + "/".join(filtered_segments)
+            else:
+                path = "/"
+            # Нормализуем путь (убираем завершающий слэш, если он есть)
+            path = path.rstrip("/") or "/"
             return path + query_str
         
         # Пробуем raw URL
@@ -1848,7 +1884,29 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     # Если в моке указаны заголовки (непустой словарь), проверяем их
     # Пустой словарь {} означает, что заголовки не важны для этого мока
     if m.headers and isinstance(m.headers, dict) and len(m.headers) > 0:
+        # Системные заголовки, которые не должны использоваться для сопоставления
+        # (они могут различаться между клиентами и не должны блокировать моки)
+        SYSTEM_HEADERS_TO_IGNORE = {
+            "accept-encoding",  # Может быть gzip, br, deflate и т.д.
+            "connection",       # Может быть keep-alive, close и т.д.
+            "user-agent",       # Различается между клиентами
+            "host",             # Всегда разный для разных серверов
+            "content-length",   # Вычисляется автоматически
+            "transfer-encoding", # Может различаться
+            "upgrade",          # Может быть в запросах
+            "via",             # Прокси-заголовки
+            "x-forwarded-for", # Прокси-заголовки
+            "x-forwarded-proto", # Прокси-заголовки
+            "x-real-ip",       # Прокси-заголовки
+        }
+        
+        logger.debug(f"Checking headers for mock {m.id}: required_headers={m.headers}")
         for hk, hv in m.headers.items():
+            # Пропускаем системные заголовки - они не должны блокировать сопоставление
+            if hk.lower() in SYSTEM_HEADERS_TO_IGNORE:
+                logger.debug(f"Skipping system header '{hk}' for mock {m.id}")
+                continue
+            
             # Заголовки в HTTP нечувствительны к регистру ключей
             req_header_value = None
             for req_key, req_val in req.headers.items():
@@ -1856,10 +1914,16 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     req_header_value = req_val
                     break
             
+            if req_header_value is None:
+                logger.info(f"Header missing for mock {m.id}: header '{hk}' not found in request. Request headers: {dict(req.headers)}")
+                return False
+            
             if req_header_value != hv:
                 logger.info(f"Header mismatch for mock {m.id}: header '{hk}' expected='{hv}' got='{req_header_value}'")
                 return False
         logger.debug(f"All headers matched for mock {m.id}")
+    else:
+        logger.debug(f"No headers to check for mock {m.id} (headers={m.headers})")
     
     # Проверка содержимого тела
     if m.body_contains:
@@ -1875,15 +1939,19 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     # Если тело есть (нестандартно для GET, но возможно), проверяем его
                     body = body_bytes.decode("utf-8")
                     if m.body_contains not in body:
+                        logger.debug(f"Body mismatch for mock {m.id} (GET with body): body_contains='{m.body_contains[:50]}...' not in request body")
                         return False
-                # Если тело пустое, игнорируем условие body_contains для GET запросов
-                # (мок может сработать без проверки тела)
+                else:
+                    # Если тело пустое, игнорируем условие body_contains для GET запросов
+                    logger.debug(f"Ignoring body_contains for mock {m.id} (GET request with empty body)")
             else:
                 # Для POST, PUT, PATCH, DELETE проверяем тело
                 body = (await req.body()).decode("utf-8")
                 if m.body_contains not in body:
+                    logger.debug(f"Body mismatch for mock {m.id}: body_contains='{m.body_contains[:50]}...' not in request body")
                     return False
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error checking body for mock {m.id}: {e}")
             return False
     
     return True
@@ -2149,7 +2217,14 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
             # Заголовки ответа с подстановками
+            # Игнорируем системные заголовки, которые вычисляются автоматически
+            system_headers = {
+                "content-length", "connection", "date", "server", 
+                "transfer-encoding", "content-encoding"
+            }
             for k, v in (m.response_headers or {}).items():
+                if k.lower() in system_headers:
+                    continue  # Пропускаем системные заголовки
                 if isinstance(v, str):
                     v = _apply_templates(v, request, full_inner)
                 resp.headers[k] = v
