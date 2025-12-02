@@ -235,6 +235,9 @@ export default function App() {
   const [responseFile, setResponseFile] = useState(null);
   const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
   const [folderSettingsForm] = Form.useForm();
+  const [isDuplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [duplicateForm] = Form.useForm();
+  const [folderToDuplicate, setFolderToDuplicate] = useState(null);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("mockl-theme") || "light";
@@ -364,7 +367,7 @@ export default function App() {
       });
       setFolderSettingsModalOpen(true);
     } catch (e) {
-      message.error("Не удалось загрузить настройки папки");
+      message.error("Не удалось загрузить настройки proxy");
     }
   };
 
@@ -379,10 +382,10 @@ export default function App() {
         })
       });
       if (!res.ok) throw new Error();
-      message.success("Настройки папки сохранены");
+      message.success("Настройки proxy сохранены");
       setFolderSettingsModalOpen(false);
     } catch (e) {
-      message.error("Ошибка сохранения настроек папки");
+      message.error("Ошибка сохранения настроек proxy");
     }
   };
 
@@ -836,6 +839,40 @@ export default function App() {
     }
   };
 
+  const startDuplicateFolder = name => {
+    setFolderToDuplicate(name);
+    duplicateForm.setFieldsValue({
+      new_name: `${name}-copy`
+    });
+    setDuplicateModalOpen(true);
+  };
+
+  const duplicateFolder = async vals => {
+    const newName = (vals.new_name || "").trim();
+    if (!folderToDuplicate || !newName) {
+      setDuplicateModalOpen(false);
+      return;
+    }
+    if (folders.includes(newName)) {
+      return message.error("Папка с таким именем уже существует");
+    }
+    try {
+      const res = await fetch(`${host}/api/folders/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_name: folderToDuplicate, new_name: newName })
+      });
+      if (!res.ok) throw new Error();
+      message.success("Страница продублирована");
+      setDuplicateModalOpen(false);
+      await fetchFolders();
+      setSelectedFolder(newName);
+      await fetchMocks();
+    } catch (e) {
+      message.error("Ошибка дублирования страницы");
+    }
+  };
+
   const isDesktop = screens.md ?? false;
   const stickyTopOffset = isDesktop ? 88 : 64;
   const isDefaultFolder = selectedFolder === "default";
@@ -1076,26 +1113,36 @@ export default function App() {
                       <Typography.Text type="secondary">
                         {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
                       </Typography.Text>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          Базовый URL этой страницы: {baseFolderUrl || "—"}
-                        </Typography.Text>
-                        {baseFolderUrl && (
-                          <Tooltip title="Копировать базовый URL">
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            Базовый URL этой страницы: {baseFolderUrl || "—"}
+                          </Typography.Text>
+                          {baseFolderUrl && (
+                            <Tooltip title="Копировать базовый URL">
+                              <Button
+                                size="small"
+                                icon={<CopyOutlined />}
+                                type="text"
+                                onClick={() => copyToClipboard(baseFolderUrl)}
+                              />
+                            </Tooltip>
+                          )}
+                        </div>
+                        {!isDefaultFolder && (
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <Button size="small" onClick={openFolderSettings}>
+                              Настройки proxy
+                            </Button>
                             <Button
                               size="small"
-                              icon={<CopyOutlined />}
-                              type="text"
-                              onClick={() => copyToClipboard(baseFolderUrl)}
-                            />
-                          </Tooltip>
+                              onClick={() => startDuplicateFolder(selectedFolder)}
+                            >
+                              Дублировать страницу
+                            </Button>
+                          </div>
                         )}
                       </div>
-                      {!isDefaultFolder && (
-                        <Button size="small" onClick={openFolderSettings}>
-                          Настройки папки
-                        </Button>
-                      )}
                     </div>
                   </div>
 
@@ -1560,7 +1607,7 @@ export default function App() {
           </Modal>
 
           <Modal
-            title={`Настройки папки "${folderTitle}"`}
+            title={`Настройки proxy "${folderTitle}"`}
             open={isFolderSettingsModalOpen}
             onCancel={() => setFolderSettingsModalOpen(false)}
             footer={null}

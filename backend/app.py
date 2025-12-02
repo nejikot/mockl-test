@@ -250,6 +250,15 @@ class FolderRenamePayload(BaseModel):
 
 
 
+class FolderDuplicatePayload(BaseModel):
+    """Модель запроса для дублирования папки."""
+
+
+    old_name: str = Field(..., description="Имя папки, которую нужно продублировать")
+    new_name: str = Field(..., description="Имя новой папки‑копии")
+
+
+
 class FolderSettings(BaseModel):
     """Настройки папки (прокси и пр.)."""
 
@@ -438,6 +447,80 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
+
+
+
+@app.post(
+    "/api/folders/duplicate",
+    summary="Продублировать папку и все её моки",
+    description=(
+        "Создаёт новую папку с указанным именем и копирует в неё все моки и настройки из исходной папки.\n\n"
+        "Имена и содержимое моков копируются, для каждой копии генерируется новый UUID."
+    ),
+)
+def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_db)):
+    """Дублирует папку: создаёт новую и копирует в неё все моки и настройки."""
+    try:
+        src = payload.old_name.strip()
+        dst = payload.new_name.strip()
+
+        if not src or not dst:
+            raise HTTPException(400, "Имя папки не может быть пустым")
+        if src == dst:
+            raise HTTPException(400, "Имя новой папки должно отличаться от исходного")
+
+        src_folder = db.query(Folder).filter_by(name=src).first()
+        if not src_folder:
+            raise HTTPException(404, "Исходная папка не найдена")
+
+        if db.query(Folder).filter_by(name=dst).first():
+            raise HTTPException(400, "Папка с таким именем уже существует")
+
+        # Создаём новую папку, копируя настройки прокси
+        new_folder = Folder(
+            name=dst,
+            proxy_enabled=src_folder.proxy_enabled or False,
+            proxy_base_url=src_folder.proxy_base_url,
+        )
+        db.add(new_folder)
+        db.flush()
+
+        # Копируем все моки
+        src_mocks = db.query(Mock).filter_by(folder_name=src).all()
+        copied_ids = []
+        for m in src_mocks:
+            new_id = str(uuid4())
+            copied = Mock(
+                id=new_id,
+                folder_name=dst,
+                name=m.name,
+                method=m.method,
+                path=m.path,
+                headers=m.headers if m.headers else {},
+                body_contains=m.body_contains,
+                status_code=m.status_code,
+                response_headers=m.response_headers if m.response_headers else {},
+                response_body=m.response_body,
+                active=m.active,
+                delay_ms=m.delay_ms or 0,
+            )
+            db.add(copied)
+            copied_ids.append(new_id)
+
+        db.commit()
+        return {
+            "message": f"Папка '{src}' продублирована в '{dst}'",
+            "source": src,
+            "target": dst,
+            "copied_mocks": len(copied_ids),
+            "mock_ids": copied_ids,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Ошибка при дублировании папки: {str(e)}")
 
 
 
