@@ -339,17 +339,18 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if db.query(Folder).filter_by(name=new).first():
             raise HTTPException(400, "Папка с таким именем уже существует")
 
-        # ШАГ 1: Сначала обновляем саму папку
-        folder.name = new
-        db.flush()  # Записываем изменение в папке, но не коммитим
-        
-        # ШАГ 2: Затем обновляем все моки в этой папке
+        # Важно: из‑за внешнего ключа сначала обновляем моки, затем папку.
+        # Иначе при смене имени папки БД ругается на ссылки из mocks.folder_name.
         db.query(Mock).filter_by(folder_name=old).update(
             {"folder_name": new},
             synchronize_session=False
         )
+
+        # Теперь можно переименовать саму папку
+        folder.name = new
+        db.flush()
         
-        # ШАГ 3: Коммитим всё разом
+        # Коммитим всё разом
         db.commit()
         return {"message": "Папка переименована", "old": old, "new": new}
     
@@ -857,10 +858,18 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 if filename:
                     resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
             else:
-                resp = JSONResponse(
-                    content=body,
-                    status_code=m.status_code
-                )
+                # Если по ошибке в БД лежит строка, а не JSON, просто вернём текст
+                if isinstance(body, str):
+                    resp = Response(
+                        content=body,
+                        status_code=m.status_code,
+                        media_type="text/plain; charset=utf-8",
+                    )
+                else:
+                    resp = JSONResponse(
+                        content=body,
+                        status_code=m.status_code
+                    )
 
             for k, v in (m.response_headers or {}).items():
                 resp.headers[k] = v
