@@ -8,7 +8,7 @@ import {
   PlusOutlined, MinusCircleOutlined, DeleteOutlined,
   ExclamationCircleOutlined, CopyOutlined,
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
-  SnippetsOutlined, BgColorsOutlined
+  SnippetsOutlined, BgColorsOutlined, DownloadOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -326,6 +326,70 @@ export default function App() {
       setMocks([]);
       message.error("Ошибка получения моков");
     }
+  };
+
+  const buildPostmanCollection = (folderName, mocksToExport) => {
+    const items = (mocksToExport || []).map(m => {
+      const reqHeaders = Object.entries(m.request_condition.headers || {}).map(
+        ([key, value]) => ({ key, value })
+      );
+      const resHeaders = Object.entries(m.response_config.headers || {}).map(
+        ([key, value]) => ({ key, value })
+      );
+
+      const path = m.request_condition.path || "/";
+      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+
+      const request = {
+        method: (m.request_condition.method || "GET").toUpperCase(),
+        header: reqHeaders,
+        url: {
+          raw: path,
+          path: cleanPath ? cleanPath.split("/") : []
+        }
+      };
+
+      return {
+        name: `${request.method} ${path}`,
+        request,
+        response: [
+          {
+            name: `Example ${m.response_config.status_code}`,
+            originalRequest: request,
+            status: String(m.response_config.status_code),
+            code: m.response_config.status_code,
+            header: resHeaders,
+            body: JSON.stringify(m.response_config.body ?? {}, null, 2)
+          }
+        ]
+      };
+    });
+
+    return {
+      info: {
+        name: folderName || "mock-collection",
+        schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+      },
+      item: items
+    };
+  };
+
+  const exportCurrentFolder = () => {
+    if (!mocks.length) {
+      message.warning("Нет моков для экспорта");
+      return;
+    }
+    const collection = buildPostmanCollection(folderTitle, mocks);
+    const blob = new Blob([JSON.stringify(collection, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${folderTitle || "mock-collection"}.postman_collection.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    message.success("Экспорт выполнен");
   };
 
   useEffect(() => { fetchFolders(); }, [host]);
@@ -696,6 +760,14 @@ export default function App() {
             style={primaryButtonStyle}
           >
             Импорт
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={exportCurrentFolder}
+            style={primaryButtonStyle}
+            disabled={!mocks.length}
+          >
+            Экспорт
           </Button>
           <input
             type="file"
