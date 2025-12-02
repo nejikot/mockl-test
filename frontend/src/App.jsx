@@ -1805,6 +1805,29 @@ export default function App() {
           </Modal>
 
           <Modal
+            title="Дублировать страницу"
+            open={isDuplicateModalOpen}
+            onCancel={() => setDuplicateModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={duplicateForm} onFinish={duplicateFolder} layout="vertical">
+              <Form.Item
+                name="new_name"
+                label="Имя новой страницы"
+                rules={[{ required: true, message: "Введите имя новой страницы" }]}
+              >
+                <Input placeholder="Например lost-copy" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Продублировать
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
             title={`Настройки proxy "${folderTitle}"`}
             open={isFolderSettingsModalOpen}
             onCancel={() => setFolderSettingsModalOpen(false)}
