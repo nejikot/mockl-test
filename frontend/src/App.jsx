@@ -680,6 +680,15 @@ export default function App() {
         throw new Error("Некорректный JSON в теле ответа");
       }
 
+      // Если тип ответа изменился с "file" на "json", очищаем структуру файла
+      if (vals.response_type === "json" && responseBodyObj && typeof responseBodyObj === "object" && responseBodyObj.__file__) {
+        // Удаляем все поля, связанные с файлом
+        delete responseBodyObj.__file__;
+        delete responseBodyObj.filename;
+        delete responseBodyObj.mime_type;
+        delete responseBodyObj.data_base64;
+      }
+
       // Настройки кэша из формы мока
       const cacheEnabled = !!vals.cache_enabled;
       const cacheTtl = Number(vals.cache_ttl || 0);
@@ -719,6 +728,14 @@ export default function App() {
         res = await fetch(`${host}/api/mocks`, {
           method: "POST",
           body: formData
+        });
+      } else if ((vals.response_type === "file") && responseBodyObj && responseBodyObj.__file__ && responseBodyObj.data_base64) {
+        // Если тип "file", но нового файла нет, но есть существующий файл с base64,
+        // отправляем JSON с полной структурой файла (редактирование без замены файла)
+        res = await fetch(`${host}/api/mocks`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry)
         });
       } else {
         // Обычный JSON‑вариант без отдельного файла

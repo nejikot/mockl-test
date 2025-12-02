@@ -966,6 +966,12 @@ async def create_or_update_mock(
             "mime_type": upload_file.content_type or "application/octet-stream",
             "data_base64": data_b64,
         }
+    # Если файл не пришёл, но в body уже есть структура __file__ с data_base64,
+    # значит это редактирование существующего мока с файлом - оставляем как есть
+    elif isinstance(entry.response_config.body, dict) and entry.response_config.body.get("__file__") is True:
+        # Проверяем, что есть data_base64, иначе это некорректная структура
+        if "data_base64" not in entry.response_config.body or not entry.response_config.body.get("data_base64"):
+            raise HTTPException(400, "Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64")
 
     _save_mock_entry(entry, db)
     db.commit()
