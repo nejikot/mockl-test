@@ -706,24 +706,58 @@ def load_rules_from_directory():
         db.close()
 
 
+def _slugify_folder_name(raw: str) -> str:
+    """Простейший slug для имени папки из OpenAPI‑спеки."""
+    if not raw:
+        return "openapi"
+    name = raw.strip()
+    # Заменяем пробелы на дефисы, убираем лишние слэши
+    name = name.replace("/", "-").replace("\\", "-")
+    name = "-".join(part for part in name.split() if part)
+    return name or "openapi"
+
+
+def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str:
+    """Создаёт (если нужно) папку для OpenAPI‑спеки и возвращает её имя."""
+    folder_name = _slugify_folder_name(spec_name)
+    own = False
+    if db is None:
+        db = SessionLocal()
+        own = True
+    try:
+        existing = db.query(Folder).filter_by(name=folder_name).first()
+        if not existing:
+            db.add(Folder(name=folder_name))
+            db.commit()
+        return folder_name
+    finally:
+        if own:
+            db.close()
+
+
 def load_openapi_specs_from_env():
     """Загрузка OpenAPI спецификаций из директории и/или по URL при старте."""
     # Локальные файлы
     if OPENAPI_SPECS_DIR and os.path.isdir(OPENAPI_SPECS_DIR):
-        for fname in os.listdir(OPENAPI_SPECS_DIR):
-            if not (fname.lower().endswith(".json") or fname.lower().endswith((".yaml", ".yml"))):
-                continue
-            full_path = os.path.join(OPENAPI_SPECS_DIR, fname)
-            try:
-                with open(full_path, "r", encoding="utf-8") as f:
-                    if fname.lower().endswith(".json"):
-                        spec = json.load(f)
-                    else:
-                        spec = yaml.safe_load(f)
-                name = spec.get("info", {}).get("title") or os.path.splitext(fname)[0]
-                OPENAPI_SPECS[name] = spec
-            except Exception as e:
-                logger.error(f"Failed to load OpenAPI spec from {full_path}: {e}")
+        db = SessionLocal()
+        try:
+            for fname in os.listdir(OPENAPI_SPECS_DIR):
+                if not (fname.lower().endswith(".json") or fname.lower().endswith((".yaml", ".yml"))):
+                    continue
+                full_path = os.path.join(OPENAPI_SPECS_DIR, fname)
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        if fname.lower().endswith(".json"):
+                            spec = json.load(f)
+                        else:
+                            spec = yaml.safe_load(f)
+                    name = spec.get("info", {}).get("title") or os.path.splitext(fname)[0]
+                    OPENAPI_SPECS[name] = spec
+                    _ensure_folder_for_spec(name, db=db)
+                except Exception as e:
+                    logger.error(f"Failed to load OpenAPI spec from {full_path}: {e}")
+        finally:
+            db.close()
 
     # Загрузка по URL
     for url in [u.strip() for u in OPENAPI_SPECS_URLS.split(",") if u.strip()]:
@@ -737,6 +771,7 @@ def load_openapi_specs_from_env():
                 spec = yaml.safe_load(text_body)
             name = spec.get("info", {}).get("title") or url
             OPENAPI_SPECS[name] = spec
+            _ensure_folder_for_spec(name)
         except Exception as e:
             logger.error(f"Failed to load OpenAPI spec from URL {url}: {e}")
 
@@ -1204,7 +1239,8 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             spec = yaml.safe_load(text_body)
         name = payload.name or spec.get("info", {}).get("title") or payload.url
         OPENAPI_SPECS[name] = spec
-        return {"message": "spec loaded", "name": name}
+        folder_name = _ensure_folder_for_spec(name)
+        return {"message": "spec loaded", "name": name, "folder_name": folder_name}
     except Exception as e:
         raise HTTPException(400, f"Failed to load spec: {str(e)}")
 
@@ -1225,10 +1261,11 @@ async def upload_openapi_specs(files: List[UploadFile] = File(...)):
                 spec = yaml.safe_load(text_body)
             name = spec.get("info", {}).get("title") or file.filename
             OPENAPI_SPECS[name] = spec
-            loaded.append(name)
+            folder_name = _ensure_folder_for_spec(name)
+            loaded.append({"name": name, "folder_name": folder_name})
         except Exception as e:
             logger.error(f"Failed to load OpenAPI spec from upload {file.filename}: {e}")
-    return {"message": f"Loaded {len(loaded)} specs", "names": loaded}
+    return {"message": f"Loaded {len(loaded)} specs", "items": loaded}
 
 
 @app.delete(
