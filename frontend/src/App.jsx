@@ -110,7 +110,8 @@ const REQUEST_BODY_MODES = [
   { value: "none", label: "none" },
   { value: "raw", label: "raw (JSON)" },
   { value: "form-data", label: "form-data" },
-  { value: "urlencoded", label: "x-www-form-urlencoded" }
+  { value: "urlencoded", label: "x-www-form-urlencoded" },
+  { value: "file", label: "file (файл)" }
 ];
 
 function getBackendUrl() {
@@ -233,6 +234,7 @@ export default function App() {
   const responseFileInputRef = useRef();
   const requestFileInputRef = useRef();
   const [responseFile, setResponseFile] = useState(null);
+  const [requestFile, setRequestFile] = useState(null);
   const [originalFileBody, setOriginalFileBody] = useState(null);
   const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
   const [folderSettingsForm] = Form.useForm();
@@ -433,42 +435,67 @@ export default function App() {
     e.target.value = "";
     if (!file) return;
 
-    const reader = new FileReader();
-    const isText = /^text\/|\/json$|\/xml$|csv$/.test(file.type) || /\.(csv|xml|json|txt)$/i.test(file.name);
-
-    reader.onload = () => {
-      const content = reader.result;
+    // Сохраняем файл отдельно для режима "file"
+    const currentMode = form.getFieldValue("request_body_mode");
+    if (currentMode === "file") {
+      setRequestFile(file);
       form.setFieldsValue({
-        request_body_raw: isText ? content : btoa(content)
+        request_body_raw: ""
       });
-      message.success("Файл загружен в тело запроса");
-    };
-
-    if (isText) {
-      reader.readAsText(file);
+      message.success("Файл для запроса загружен");
     } else {
-      reader.readAsBinaryString(file);
+      // Для режима "raw" - читаем содержимое файла
+      const reader = new FileReader();
+      const isText = /^text\/|\/json$|\/xml$|csv$/.test(file.type) || /\.(csv|xml|json|txt)$/i.test(file.name);
+
+      reader.onload = () => {
+        const content = reader.result;
+        form.setFieldsValue({
+          request_body_raw: isText ? content : btoa(content)
+        });
+        message.success("Файл загружен в тело запроса");
+      };
+
+      if (isText) {
+        reader.readAsText(file);
+      } else {
+        reader.readAsBinaryString(file);
+      }
     }
   };
 
-  const handleResponseFileUpload = e => {
+  const handleResponseFileUpload = async e => {
     const file = e.target.files[0];
     e.target.value = "";
     if (!file) return;
 
-    // Сохраняем сам файл отдельно, а в JSON‑теле оставляем только метаданные,
-    // без base64 — файл будет отправлен отдельным параметром.
+    // Сохраняем сам файл отдельно
     setResponseFile(file);
-    const body = {
-      __file__: true,
-      filename: file.name,
-      mime_type: file.type || "application/octet-stream"
+    
+    // Читаем файл и конвертируем в base64 для отображения в форме
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = reader.result;
+      // Для бинарных файлов конвертируем в base64
+      const base64Content = typeof content === 'string' 
+        ? btoa(content) 
+        : btoa(String.fromCharCode(...new Uint8Array(content)));
+      
+      const body = {
+        __file__: true,
+        filename: file.name,
+        mime_type: file.type || "application/octet-stream",
+        data_base64: base64Content
+      };
+      form.setFieldsValue({
+        response_type: "file",
+        response_body: JSON.stringify(body, null, 2)
+      });
+      message.success("Файл для ответа загружен");
     };
-    form.setFieldsValue({
-      response_type: "file",
-      response_body: JSON.stringify(body, null, 2)
-    });
-    message.success("Файл для ответа загружен");
+    
+    // Читаем файл как бинарную строку для корректной конвертации в base64
+    reader.readAsBinaryString(file);
   };
 
   const buildPostmanCollection = (folderName, mocksToExport) => {
@@ -546,6 +573,7 @@ export default function App() {
   const openAddMock = () => {
     setEditing(null);
     setResponseFile(null);
+    setRequestFile(null);
     setOriginalFileBody(null);
     form.resetFields();
     form.setFieldsValue({
@@ -675,6 +703,22 @@ export default function App() {
         bodyContains = "";
       } else if (bodyMode === "raw") {
         bodyContains = (vals.request_body_raw || "").trim();
+      } else if (bodyMode === "file") {
+        // Для режима "file" используем содержимое загруженного файла
+        if (requestFile) {
+          // Читаем файл асинхронно и конвертируем в base64 для bodyContains
+          const fileContent = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsBinaryString(requestFile);
+          });
+          bodyContains = btoa(fileContent);
+          contentType = requestFile.type || "application/octet-stream";
+        } else {
+          // Если файл не загружен, используем raw содержимое если есть
+          bodyContains = (vals.request_body_raw || "").trim();
+        }
       }
 
       if (contentType) {
@@ -727,9 +771,15 @@ export default function App() {
 
       let res;
       // Если ответ — файл и он выбран, отправляем multipart/form-data:
-      // - поле "entry" с JSON‑описанием
+      // - поле "entry" с JSON‑описанием (без base64, так как файл отправляется отдельно)
       // - поле "file" с бинарным файлом
       if ((vals.response_type === "file") && responseFile) {
+        // Удаляем data_base64 из entry, так как файл будет отправлен отдельно
+        // Backend сам добавит data_base64 при получении файла
+        if (entry.response_config.body && entry.response_config.body.__file__) {
+          const { data_base64, ...bodyWithoutBase64 } = entry.response_config.body;
+          entry.response_config.body = bodyWithoutBase64;
+        }
         const formData = new FormData();
         formData.append("entry", JSON.stringify(entry));
         formData.append("file", responseFile);
@@ -1670,33 +1720,43 @@ export default function App() {
                             );
                           }
                           
-                          return (
-                            <>
-                              <Form.Item
-                                name="request_body_raw"
-                                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                              >
-                                <TextArea rows={3} placeholder='Например {"user":"123"}' />
-                              </Form.Item>
-                              <Form.Item
-                                label="Файл для тела запроса (опционально)"
-                                tooltip="Можно загрузить файл, его содержимое будет подставлено в тело запроса при проверке условия"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Button
-                                  type="dashed"
-                                  onClick={() => requestFileInputRef.current?.click()}
+                          if (mode === "file") {
+                            return (
+                              <>
+                                <Form.Item
+                                  label="Файл для тела запроса"
+                                  tooltip="Можно загрузить файл, его содержимое будет подставлено в тело запроса при проверке условия"
                                 >
-                                  Выбрать файл
-                                </Button>
-                                <input
-                                  type="file"
-                                  ref={requestFileInputRef}
-                                  style={{ display: "none" }}
-                                  onChange={handleRequestFileUpload}
-                                />
-                              </Form.Item>
-                            </>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => requestFileInputRef.current?.click()}
+                                    block
+                                  >
+                                    {requestFile ? requestFile.name : "Выбрать файл"}
+                                  </Button>
+                                  <input
+                                    type="file"
+                                    ref={requestFileInputRef}
+                                    style={{ display: "none" }}
+                                    onChange={handleRequestFileUpload}
+                                  />
+                                </Form.Item>
+                                {requestFile && (
+                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                    Файл: {requestFile.name} ({(requestFile.size / 1024).toFixed(2)} KB)
+                                  </Typography.Text>
+                                )}
+                              </>
+                            );
+                          }
+                          
+                          return (
+                            <Form.Item
+                              name="request_body_raw"
+                              tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                            >
+                              <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                            </Form.Item>
                           );
                         }}
                       </Form.Item>
