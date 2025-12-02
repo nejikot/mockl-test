@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, List, Any
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -225,8 +225,41 @@ def get_db():
         db.close()
 
 
+def ensure_migrations():
+    """Примитивные миграции: добавляем недостающие столбцы, если их ещё нет.
+
+    Render уже создал таблицы по старой схеме, create_all не добавляет новые столбцы,
+    поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
+    """
+    with engine.connect() as conn:
+        # Новые поля в folders
+        conn.execute(
+            text(
+                "ALTER TABLE folders "
+                "ADD COLUMN IF NOT EXISTS proxy_enabled BOOLEAN DEFAULT FALSE"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE folders "
+                "ADD COLUMN IF NOT EXISTS proxy_base_url VARCHAR NULL"
+            )
+        )
+        # Новые поля в mocks
+        conn.execute(
+            text(
+                "ALTER TABLE mocks "
+                "ADD COLUMN IF NOT EXISTS delay_ms INTEGER DEFAULT 0"
+            )
+        )
+        conn.commit()
+
+
 @app.on_event("startup")
 def ensure_default_folder():
+    # Сначала убеждаемся, что схема обновлена
+    ensure_migrations()
+
     db = SessionLocal()
     try:
         if not db.query(Folder).filter_by(name="default").first():
