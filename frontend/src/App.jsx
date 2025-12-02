@@ -125,11 +125,10 @@ function buildFolderHost(baseHost, folder) {
     const parts = host.split(".");
     if (parts.length < 2) return baseHost;
 
-    // Новая схема: добавляем имя папки к "основному" домену перед зоной.
-    // Было: mockl-test-cnsgate.onrender.com
-    // Стало: mockl-test.onrender-cnsgate.com
-    const idx = parts.length - 2;
-    parts[idx] = `${parts[idx]}-${folder}`;
+    // Новая схема: добавляем имя папки к левому поддомену.
+    // Было: mockl-test.onrender.com
+    // Стало: mockl-test-cnsgate.onrender.com
+    parts[0] = `${parts[0]}-${folder}`;
 
     url.hostname = parts.join(".");
     return url.toString().replace(/\/+$/, "");
