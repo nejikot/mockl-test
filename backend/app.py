@@ -1334,18 +1334,16 @@ async def import_postman_collection(
         items = coll.get("item", [])
         imported = []
 
-        def process_item(item, folder_name_prefix=""):
+        def process_item(item):
             """Рекурсивно обрабатывает элементы Postman коллекции (запросы и папки)."""
             if not isinstance(item, dict):
                 return
             
             # Если это папка (folder) с вложенными элементами
             if "item" in item and isinstance(item.get("item"), list):
-                folder_name = item.get("name", "")
-                if folder_name:
-                    # Обрабатываем вложенные элементы
-                    for sub_item in item.get("item", []):
-                        process_item(sub_item, folder_name_prefix)
+                # Обрабатываем вложенные элементы рекурсивно
+                for sub_item in item.get("item", []):
+                    process_item(sub_item)
                 return
             
             # Если это запрос
