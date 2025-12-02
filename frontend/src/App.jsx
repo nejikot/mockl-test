@@ -834,7 +834,7 @@ export default function App() {
                 onClick={toggleTheme}
                 type="text"
               >
-                {theme === "light" ? "🌙 Dark" : "☀️ Light"}
+                {theme === "light" ? "Dark" : "Light"}
               </Button>
             </div>
           </Header>
