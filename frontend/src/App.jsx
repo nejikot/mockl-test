@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox
+  ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox, Row, Col, Divider
 } from "antd";
 import { theme as antdTheme } from "antd";
 import {
@@ -1408,8 +1408,8 @@ export default function App() {
             open={modalOpen}
             onCancel={() => setModalOpen(false)}
             onOk={() => form.submit()}
-            width={700}
-            bodyStyle={{ maxHeight: "70vh", overflowY: "auto" }}
+            width={1200}
+            bodyStyle={{ maxHeight: "80vh", overflowY: "auto", padding: "24px" }}
             destroyOnClose
           >
             <Form
@@ -1435,330 +1435,371 @@ export default function App() {
             >
               <Form.Item name="id" hidden><Input /></Form.Item>
 
-              <Form.Item name="folder" label="Папка" rules={[{ required: true }]}>
-                <Select options={folders.map(f => ({
-                  label: f === "default" ? "Главная" : f,
-                  value: f
-                }))} />
-              </Form.Item>
+              {/* Общие настройки */}
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={12}>
+                  <Form.Item name="folder" label="Папка" rules={[{ required: true }]}>
+                    <Select options={folders.map(f => ({
+                      label: f === "default" ? "Главная" : f,
+                      value: f
+                    }))} />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="name" label="Наименование">
+                    <Input placeholder="Например: Успешный ответ /users" />
+                  </Form.Item>
+                </Col>
+              </Row>
 
-              <Form.Item name="name" label="Наименование">
-                <Input placeholder="Например: Успешный ответ /users" />
-              </Form.Item>
-
-              <Form.Item name="active" valuePropName="checked">
+              <Form.Item name="active" valuePropName="checked" style={{ marginBottom: 24 }}>
                 <Checkbox>Активный мок</Checkbox>
               </Form.Item>
 
-              <Form.Item label="Метод и путь" required>
-                <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                  <Form.Item name="method" noStyle rules={[{ required: true }]}>
-                    <Select options={METHODS.map(m => ({ label: m, value: m }))} style={{ width: 120 }} />
-                  </Form.Item>
-                  <Form.Item name="path" noStyle rules={[{ required: true }]}>
-                    <Input style={{ flex: 1 }} placeholder="/path" />
-                  </Form.Item>
-                </Input.Group>
-              </Form.Item>
+              <Divider style={{ margin: "16px 0" }} />
 
-              <Form.List name="requestHeaders">
-                {(fields, { add, remove }) => (
-                  <>
-                    <Typography.Text strong>Заголовки запроса</Typography.Text>
-                    {fields.map(field => (
-                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                        <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                          <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                            <Input placeholder="Ключ" style={{ width: '35%' }} />
-                          </Form.Item>
-                          <Form.Item {...field} name={[field.name, 'value']} noStyle>
-                            <Input placeholder="Значение" style={{ flex: 1 }} />
-                          </Form.Item>
-                          {fields.length > 1 && (
-                            <MinusCircleOutlined
-                              onClick={() => remove(field.name)}
-                              style={{ color: 'red', fontSize: 20 }}
-                            />
-                          )}
-                        </Input.Group>
-                      </Form.Item>
-                    ))}
-                    <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
-                      Добавить заголовок
-                    </Button>
-                  </>
-                )}
-              </Form.List>
+              {/* Две колонки: Запрос и Ответ */}
+              <Row gutter={24}>
+                {/* Левая колонка: Настройки запроса */}
+                <Col span={12}>
+                  <div style={{ 
+                    padding: "16px", 
+                    background: theme === "light" ? "#fafafa" : "#1f1f1f",
+                    borderRadius: 8,
+                    border: `1px solid ${theme === "light" ? "#d9d9d9" : "#434343"}`,
+                    height: "100%"
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Настройки запроса
+                    </Typography.Title>
 
-              <Form.Item label="Тело запроса">
-                <Form.Item name="request_body_mode" noStyle>
-                  <Select
-                    style={{ width: "100%", marginBottom: 8 }}
-                    options={REQUEST_BODY_MODES}
-                  />
-                </Form.Item>
-                <Form.Item
-                  noStyle
-                  shouldUpdate={(prev, cur) =>
-                    prev.request_body_mode !== cur.request_body_mode
-                  }
-                >
-                  {({ getFieldValue }) => {
-                    const mode = getFieldValue("request_body_mode") || "none";
-                    
-                    if (mode === "none") {
-                      return <Typography.Text type="secondary">Без тела запроса</Typography.Text>;
-                    }
-                    
-                    if (mode === "urlencoded") {
-                      return (
-                        <Form.List name="request_body_params">
-                          {(fields, { add, remove }) => (
-                            <>
-                              {fields.map(field => (
-                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                                  <Input.Group
-                                    compact
-                                    style={{ display: "flex", gap: 8 }}
-                                  >
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "key"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Ключ"
-                                        style={{ width: "40%" }}
-                                      />
-                                    </Form.Item>
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "value"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Значение"
-                                        style={{ flex: 1 }}
-                                      />
-                                    </Form.Item>
-                                    {fields.length > 1 && (
-                                      <MinusCircleOutlined
-                                        onClick={() => remove(field.name)}
-                                        style={{ color: "red", fontSize: 20 }}
-                                      />
-                                    )}
-                                  </Input.Group>
-                                </Form.Item>
-                              ))}
-                              <Button
-                                type="dashed"
-                                block
-                                icon={<PlusOutlined />}
-                                onClick={() => add()}
-                                style={{ marginTop: 8 }}
-                              >
-                                Добавить параметр
-                              </Button>
-                            </>
-                          )}
-                        </Form.List>
-                      );
-                    }
-                    
-                    if (mode === "form-data") {
-                      return (
-                        <Form.List name="request_body_formdata">
-                          {(fields, { add, remove }) => (
-                            <>
-                              {fields.map(field => (
-                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                                  <Input.Group
-                                    compact
-                                    style={{ display: "flex", gap: 8 }}
-                                  >
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "key"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Ключ"
-                                        style={{ width: "40%" }}
-                                      />
-                                    </Form.Item>
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "value"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Значение"
-                                        style={{ flex: 1 }}
-                                      />
-                                    </Form.Item>
-                                    {fields.length > 1 && (
-                                      <MinusCircleOutlined
-                                        onClick={() => remove(field.name)}
-                                        style={{ color: "red", fontSize: 20 }}
-                                      />
-                                    )}
-                                  </Input.Group>
-                                </Form.Item>
-                              ))}
-                              <Button
-                                type="dashed"
-                                block
-                                icon={<PlusOutlined />}
-                                onClick={() => add()}
-                                style={{ marginTop: 8 }}
-                              >
-                                Добавить поле
-                              </Button>
-                            </>
-                          )}
-                        </Form.List>
-                      );
-                    }
-                    
-                    return (
-                      <>
-                        <Form.Item
-                          name="request_body_raw"
-                          tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                        >
-                          <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                    <Form.Item label="Метод и путь" required>
+                      <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                        <Form.Item name="method" noStyle rules={[{ required: true }]}>
+                          <Select options={METHODS.map(m => ({ label: m, value: m }))} style={{ width: 120 }} />
                         </Form.Item>
-                        <Form.Item
-                          label="Файл для тела запроса (опционально)"
-                          tooltip="Можно загрузить файл, его содержимое будет подставлено в тело запроса при проверке условия"
-                          style={{ marginBottom: 0 }}
-                        >
-                          <Button
-                            type="dashed"
-                            onClick={() => requestFileInputRef.current?.click()}
-                          >
-                            Выбрать файл
+                        <Form.Item name="path" noStyle rules={[{ required: true }]}>
+                          <Input style={{ flex: 1 }} placeholder="/path" />
+                        </Form.Item>
+                      </Input.Group>
+                    </Form.Item>
+
+                    <Form.List name="requestHeaders">
+                      {(fields, { add, remove }) => (
+                        <>
+                          <Typography.Text strong>Заголовки запроса</Typography.Text>
+                          {fields.map(field => (
+                            <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                              <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                                <Form.Item {...field} name={[field.name, 'key']} noStyle>
+                                  <Input placeholder="Ключ" style={{ width: '35%' }} />
+                                </Form.Item>
+                                <Form.Item {...field} name={[field.name, 'value']} noStyle>
+                                  <Input placeholder="Значение" style={{ flex: 1 }} />
+                                </Form.Item>
+                                {fields.length > 1 && (
+                                  <MinusCircleOutlined
+                                    onClick={() => remove(field.name)}
+                                    style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
+                                  />
+                                )}
+                              </Input.Group>
+                            </Form.Item>
+                          ))}
+                          <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
+                            Добавить заголовок
                           </Button>
-                          <input
-                            type="file"
-                            ref={requestFileInputRef}
-                            style={{ display: "none" }}
-                            onChange={handleRequestFileUpload}
-                          />
-                        </Form.Item>
-                      </>
-                    );
-                  }}
-                </Form.Item>
-              </Form.Item>
+                        </>
+                      )}
+                    </Form.List>
 
-              <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
-                <Select 
-                  options={HTTP_STATUSES} 
-                  onChange={handleStatusChange}
-                  showSearch
-                  filterOption={(input, option) =>
-                    (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-                  }
-                />
-              </Form.Item>
-
-              <Form.List name="responseHeaders">
-                {(fields, { add, remove }) => (
-                  <>
-                    <Typography.Text strong>Заголовки ответа</Typography.Text>
-                    {fields.map(field => (
-                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                        <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                          <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                            <Input placeholder="Ключ" style={{ width: '35%' }} />
-                          </Form.Item>
-                          <Form.Item {...field} name={[field.name, 'value']} noStyle>
-                            <Input placeholder="Значение" style={{ flex: 1 }} />
-                          </Form.Item>
-                          {fields.length > 1 && (
-                            <MinusCircleOutlined
-                              onClick={() => remove(field.name)}
-                              style={{ color: 'red', fontSize: 20 }}
-                            />
-                          )}
-                        </Input.Group>
+                    <Form.Item label="Тело запроса" style={{ marginTop: 16 }}>
+                      <Form.Item name="request_body_mode" noStyle>
+                        <Select
+                          style={{ width: "100%", marginBottom: 8 }}
+                          options={REQUEST_BODY_MODES}
+                        />
                       </Form.Item>
-                    ))}
-                    <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
-                      Добавить заголовок
-                    </Button>
-                  </>
-                )}
-              </Form.List>
+                      <Form.Item
+                        noStyle
+                        shouldUpdate={(prev, cur) =>
+                          prev.request_body_mode !== cur.request_body_mode
+                        }
+                      >
+                        {({ getFieldValue }) => {
+                          const mode = getFieldValue("request_body_mode") || "none";
+                          
+                          if (mode === "none") {
+                            return <Typography.Text type="secondary">Без тела запроса</Typography.Text>;
+                          }
+                          
+                          if (mode === "urlencoded") {
+                            return (
+                              <Form.List name="request_body_params">
+                                {(fields, { add, remove }) => (
+                                  <>
+                                    {fields.map(field => (
+                                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                                        <Input.Group
+                                          compact
+                                          style={{ display: "flex", gap: 8 }}
+                                        >
+                                          <Form.Item
+                                            {...field}
+                                            name={[field.name, "key"]}
+                                            noStyle
+                                          >
+                                            <Input
+                                              placeholder="Ключ"
+                                              style={{ width: "40%" }}
+                                            />
+                                          </Form.Item>
+                                          <Form.Item
+                                            {...field}
+                                            name={[field.name, "value"]}
+                                            noStyle
+                                          >
+                                            <Input
+                                              placeholder="Значение"
+                                              style={{ flex: 1 }}
+                                            />
+                                          </Form.Item>
+                                          {fields.length > 1 && (
+                                            <MinusCircleOutlined
+                                              onClick={() => remove(field.name)}
+                                              style={{ color: "red", fontSize: 20, cursor: 'pointer' }}
+                                            />
+                                          )}
+                                        </Input.Group>
+                                      </Form.Item>
+                                    ))}
+                                    <Button
+                                      type="dashed"
+                                      block
+                                      icon={<PlusOutlined />}
+                                      onClick={() => add()}
+                                      style={{ marginTop: 8 }}
+                                    >
+                                      Добавить параметр
+                                    </Button>
+                                  </>
+                                )}
+                              </Form.List>
+                            );
+                          }
+                          
+                          if (mode === "form-data") {
+                            return (
+                              <Form.List name="request_body_formdata">
+                                {(fields, { add, remove }) => (
+                                  <>
+                                    {fields.map(field => (
+                                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                                        <Input.Group
+                                          compact
+                                          style={{ display: "flex", gap: 8 }}
+                                        >
+                                          <Form.Item
+                                            {...field}
+                                            name={[field.name, "key"]}
+                                            noStyle
+                                          >
+                                            <Input
+                                              placeholder="Ключ"
+                                              style={{ width: "40%" }}
+                                            />
+                                          </Form.Item>
+                                          <Form.Item
+                                            {...field}
+                                            name={[field.name, "value"]}
+                                            noStyle
+                                          >
+                                            <Input
+                                              placeholder="Значение"
+                                              style={{ flex: 1 }}
+                                            />
+                                          </Form.Item>
+                                          {fields.length > 1 && (
+                                            <MinusCircleOutlined
+                                              onClick={() => remove(field.name)}
+                                              style={{ color: "red", fontSize: 20, cursor: 'pointer' }}
+                                            />
+                                          )}
+                                        </Input.Group>
+                                      </Form.Item>
+                                    ))}
+                                    <Button
+                                      type="dashed"
+                                      block
+                                      icon={<PlusOutlined />}
+                                      onClick={() => add()}
+                                      style={{ marginTop: 8 }}
+                                    >
+                                      Добавить поле
+                                    </Button>
+                                  </>
+                                )}
+                              </Form.List>
+                            );
+                          }
+                          
+                          return (
+                            <>
+                              <Form.Item
+                                name="request_body_raw"
+                                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                              >
+                                <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                              </Form.Item>
+                              <Form.Item
+                                label="Файл для тела запроса (опционально)"
+                                tooltip="Можно загрузить файл, его содержимое будет подставлено в тело запроса при проверке условия"
+                                style={{ marginBottom: 0 }}
+                              >
+                                <Button
+                                  type="dashed"
+                                  onClick={() => requestFileInputRef.current?.click()}
+                                >
+                                  Выбрать файл
+                                </Button>
+                                <input
+                                  type="file"
+                                  ref={requestFileInputRef}
+                                  style={{ display: "none" }}
+                                  onChange={handleRequestFileUpload}
+                                />
+                              </Form.Item>
+                            </>
+                          );
+                        }}
+                      </Form.Item>
+                    </Form.Item>
+                  </div>
+                </Col>
 
-              <Form.Item label="Задержка ответа (мс)" name="delay_ms">
-                <Input type="number" min={0} placeholder="Например 500 для 0.5 секунды" />
-              </Form.Item>
+                {/* Правая колонка: Настройки ответа */}
+                <Col span={12}>
+                  <div style={{ 
+                    padding: "16px", 
+                    background: theme === "light" ? "#fafafa" : "#1f1f1f",
+                    borderRadius: 8,
+                    border: `1px solid ${theme === "light" ? "#d9d9d9" : "#434343"}`,
+                    height: "100%"
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Настройки ответа
+                    </Typography.Title>
 
-              <Form.Item name="cache_enabled" valuePropName="checked">
-                <Checkbox>Включить кэширование ответа</Checkbox>
-              </Form.Item>
+                    <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
+                      <Select 
+                        options={HTTP_STATUSES} 
+                        onChange={handleStatusChange}
+                        showSearch
+                        filterOption={(input, option) =>
+                          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      />
+                    </Form.Item>
 
-              <Form.Item
-                label="TTL кэша (сек)"
-                name="cache_ttl"
-                tooltip="Через сколько секунд кэш для этого мока будет считаться устаревшим"
-              >
-                <Input type="number" min={0} placeholder="Например 60" />
-              </Form.Item>
+                    <Form.List name="responseHeaders">
+                      {(fields, { add, remove }) => (
+                        <>
+                          <Typography.Text strong>Заголовки ответа</Typography.Text>
+                          {fields.map(field => (
+                            <Form.Item key={field.key} style={{ marginTop: 8 }}>
+                              <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                                <Form.Item {...field} name={[field.name, 'key']} noStyle>
+                                  <Input placeholder="Ключ" style={{ width: '35%' }} />
+                                </Form.Item>
+                                <Form.Item {...field} name={[field.name, 'value']} noStyle>
+                                  <Input placeholder="Значение" style={{ flex: 1 }} />
+                                </Form.Item>
+                                {fields.length > 1 && (
+                                  <MinusCircleOutlined
+                                    onClick={() => remove(field.name)}
+                                    style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
+                                  />
+                                )}
+                              </Input.Group>
+                            </Form.Item>
+                          ))}
+                          <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
+                            Добавить заголовок
+                          </Button>
+                        </>
+                      )}
+                    </Form.List>
 
-              <Form.Item label="Тип ответа" name="response_type">
-                <Select
-                  options={[
-                    { label: "JSON", value: "json" },
-                    { label: "Файл (изображение, CSV, XML, JSON и т.п.)", value: "file" }
-                  ]}
-                />
-              </Form.Item>
+                    <Form.Item label="Задержка ответа (мс)" name="delay_ms" style={{ marginTop: 16 }}>
+                      <Input type="number" min={0} placeholder="Например 500 для 0.5 секунды" />
+                    </Form.Item>
 
-              <Form.Item label="Тело ответа" required>
-                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.response_type !== cur.response_type}>
-                  {({ getFieldValue }) => {
-                    const type = getFieldValue("response_type") || "json";
+                    <Form.Item name="cache_enabled" valuePropName="checked" style={{ marginTop: 16 }}>
+                      <Checkbox>Включить кэширование ответа</Checkbox>
+                    </Form.Item>
 
-                    return (
-                      <>
-                        <Form.Item
-                          name="response_body"
-                          style={{ marginBottom: 8 }}
-                          rules={[{ required: true, message: "Укажите тело ответа" }]}
-                        >
-                          <TextArea
-                            rows={6}
-                            placeholder={
-                              type === "json"
-                                ? '{"message":"ok"}'
-                                : '{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}'
-                            }
-                          />
-                        </Form.Item>
-                        {type === "file" && (
-                          <>
-                            <Button
-                              type="dashed"
-                              onClick={() => responseFileInputRef.current?.click()}
-                            >
-                              Загрузить файл для ответа
-                            </Button>
-                            <input
-                              type="file"
-                              ref={responseFileInputRef}
-                              style={{ display: "none" }}
-                              onChange={handleResponseFileUpload}
-                            />
-                          </>
-                        )}
-                      </>
-                    );
-                  }}
-                </Form.Item>
-              </Form.Item>
+                    <Form.Item
+                      label="TTL кэша (сек)"
+                      name="cache_ttl"
+                      tooltip="Через сколько секунд кэш для этого мока будет считаться устаревшим"
+                    >
+                      <Input type="number" min={0} placeholder="Например 60" />
+                    </Form.Item>
+
+                    <Form.Item label="Тип ответа" name="response_type" style={{ marginTop: 16 }}>
+                      <Select
+                        options={[
+                          { label: "JSON", value: "json" },
+                          { label: "Файл (изображение, CSV, XML, JSON и т.п.)", value: "file" }
+                        ]}
+                      />
+                    </Form.Item>
+
+                    <Form.Item label="Тело ответа" required style={{ marginTop: 16 }}>
+                      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.response_type !== cur.response_type}>
+                        {({ getFieldValue }) => {
+                          const type = getFieldValue("response_type") || "json";
+
+                          return (
+                            <>
+                              <Form.Item
+                                name="response_body"
+                                style={{ marginBottom: 8 }}
+                                rules={[{ required: true, message: "Укажите тело ответа" }]}
+                              >
+                                <TextArea
+                                  rows={6}
+                                  placeholder={
+                                    type === "json"
+                                      ? '{"message":"ok"}'
+                                      : '{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}'
+                                  }
+                                />
+                              </Form.Item>
+                              {type === "file" && (
+                                <>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => responseFileInputRef.current?.click()}
+                                  >
+                                    Загрузить файл для ответа
+                                  </Button>
+                                  <input
+                                    type="file"
+                                    ref={responseFileInputRef}
+                                    style={{ display: "none" }}
+                                    onChange={handleResponseFileUpload}
+                                  />
+                                </>
+                              )}
+                            </>
+                          );
+                        }}
+                      </Form.Item>
+                    </Form.Item>
+                  </div>
+                </Col>
+              </Row>
             </Form>
           </Modal>
 
