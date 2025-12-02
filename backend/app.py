@@ -1907,6 +1907,22 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                 logger.debug(f"Skipping system header '{hk}' for mock {m.id}")
                 continue
             
+            # Поддержка нового формата с необязательными заголовками
+            # Формат 1 (старый, для обратной совместимости): {"header_name": "value"}
+            # Формат 2 (новый): {"header_name": {"value": "expected_value", "optional": false}}
+            # Формат 3 (необязательный): {"header_name": {"value": null, "optional": true}}
+            is_optional = False
+            expected_value = None
+            
+            if isinstance(hv, dict):
+                # Новый формат с объектом
+                is_optional = hv.get("optional", False)
+                expected_value = hv.get("value")
+            else:
+                # Старый формат - просто строка, обязательный заголовок
+                expected_value = hv
+                is_optional = False
+            
             # Заголовки в HTTP нечувствительны к регистру ключей
             req_header_value = None
             for req_key, req_val in req.headers.items():
@@ -1915,11 +1931,23 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     break
             
             if req_header_value is None:
-                logger.info(f"Header missing for mock {m.id}: header '{hk}' not found in request. Request headers: {dict(req.headers)}")
-                return False
+                if is_optional:
+                    # Необязательный заголовок отсутствует - это нормально
+                    logger.debug(f"Optional header '{hk}' missing for mock {m.id}, skipping")
+                    continue
+                else:
+                    # Обязательный заголовок отсутствует
+                    logger.info(f"Header missing for mock {m.id}: header '{hk}' not found in request. Request headers: {dict(req.headers)}")
+                    return False
             
-            if req_header_value != hv:
-                logger.info(f"Header mismatch for mock {m.id}: header '{hk}' expected='{hv}' got='{req_header_value}'")
+            # Если заголовок необязательный, проверяем только наличие (значение не важно)
+            if is_optional:
+                logger.debug(f"Optional header '{hk}' present for mock {m.id}, value check skipped")
+                continue
+            
+            # Для обязательных заголовков проверяем точное совпадение значения
+            if expected_value is not None and req_header_value != expected_value:
+                logger.info(f"Header mismatch for mock {m.id}: header '{hk}' expected='{expected_value}' got='{req_header_value}'")
                 return False
         logger.debug(f"All headers matched for mock {m.id}")
     else:

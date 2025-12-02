@@ -130,9 +130,35 @@ function buildFolderHost(baseHost, folder) {
   }
 }
 
+// Вспомогательная функция для извлечения значения заголовка из нового формата
+const getHeaderValue = (headerValue) => {
+  if (typeof headerValue === 'object' && headerValue !== null && ('value' in headerValue || 'optional' in headerValue)) {
+    return headerValue.value || "";
+  }
+  return headerValue || "";
+};
+
 const headersToFormList = headersObj => {
-  const list = Object.entries(headersObj || {}).map(([k, v]) => ({ key: k, value: v }));
-  return list.length ? list : [{ key: "", value: "" }];
+  if (!headersObj || typeof headersObj !== 'object') {
+    return [{ key: "", value: "", optional: false }];
+  }
+  const list = Object.entries(headersObj).map(([k, v]) => {
+    // Поддержка нового формата с необязательными заголовками
+    // Формат 1 (старый): {"header_name": "value"}
+    // Формат 2 (новый): {"header_name": {"value": "expected_value", "optional": false}}
+    // Формат 3 (необязательный): {"header_name": {"value": null, "optional": true}}
+    if (typeof v === 'object' && v !== null && ('optional' in v || 'value' in v)) {
+      return { 
+        key: k, 
+        value: v.value || "", 
+        optional: v.optional || false 
+      };
+    } else {
+      // Старый формат - просто строка
+      return { key: k, value: v || "", optional: false };
+    }
+  });
+  return list.length ? list : [{ key: "", value: "", optional: false }];
 };
 
 const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme }) => {
@@ -489,10 +515,10 @@ export default function App() {
   const buildPostmanCollection = (folderName, mocksToExport) => {
     const items = (mocksToExport || []).map(m => {
       const reqHeaders = Object.entries(m.request_condition.headers || {}).map(
-        ([key, value]) => ({ key, value })
+        ([key, value]) => ({ key, value: getHeaderValue(value) })
       );
       const resHeaders = Object.entries(m.response_config.headers || {}).map(
-        ([key, value]) => ({ key, value })
+        ([key, value]) => ({ key, value: getHeaderValue(value) })
       );
 
       const path = m.request_condition.path || "/";
@@ -570,7 +596,7 @@ export default function App() {
       status_code: 200,
       active: true,
       name: "",
-      requestHeaders: [{ key: "", value: "" }],
+      requestHeaders: [{ key: "", value: "", optional: false }],
       request_body_mode: "none",
       request_body_contains: "",
       request_body_params: [{ key: "", value: "" }],
@@ -597,7 +623,7 @@ export default function App() {
     const contentTypeKey = Object.keys(headers).find(
       k => k.toLowerCase() === "content-type"
     );
-    const contentType = contentTypeKey ? headers[contentTypeKey] : "";
+    const contentType = contentTypeKey ? getHeaderValue(headers[contentTypeKey]) : "";
     const bodyContains = m.request_condition.body_contains || "";
 
     let request_body_mode = "raw";
@@ -661,7 +687,21 @@ export default function App() {
       const toHeaderObject = list => {
         const obj = {};
         (list || []).forEach(it => {
-          if (it.key) obj[it.key] = it.value || "";
+          if (it.key) {
+            // Если заголовок помечен как необязательный, используем новый формат
+            if (it.optional) {
+              obj[it.key] = { value: it.value || null, optional: true };
+            } else {
+              // Для обязательных заголовков используем старый формат (просто строка) для обратной совместимости
+              // или новый формат, если значение пустое
+              if (it.value) {
+                obj[it.key] = it.value;
+              } else {
+                // Пустое значение для обязательного заголовка - используем пустую строку
+                obj[it.key] = "";
+              }
+            }
+          }
         });
         return obj;
       };
@@ -862,10 +902,12 @@ export default function App() {
 
     let contentType = "";
     Object.entries(headers).forEach(([key, value]) => {
+      const headerValue = getHeaderValue(value);
       if (key.toLowerCase() === "content-type") {
-        contentType = value || "";
+        contentType = headerValue || "";
       }
-      parts.push(`-H '${key}: ${value}'`);
+      // Для необязательных заголовков всё равно показываем их в curl (со значением, если оно есть)
+      parts.push(`-H '${key}: ${headerValue}'`);
     });
 
     // Для GET, HEAD, OPTIONS запросов не добавляем тело (даже если оно указано в моке)
@@ -1515,7 +1557,7 @@ export default function App() {
                 method: "GET",
                 status_code: 200,
                 active: true,
-                requestHeaders: [{ key: "", value: "" }],
+                requestHeaders: [{ key: "", value: "", optional: false }],
                 request_body_mode: "none",
                 request_body_raw: "",
                 request_body_params: [{ key: "", value: "" }],
@@ -1581,12 +1623,17 @@ export default function App() {
                           <Typography.Text strong>Заголовки запроса</Typography.Text>
                           {fields.map(field => (
                             <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                              <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                              <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                 <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                                  <Input placeholder="Ключ" style={{ width: '35%' }} />
+                                  <Input placeholder="Ключ" style={{ width: '30%' }} />
                                 </Form.Item>
                                 <Form.Item {...field} name={[field.name, 'value']} noStyle>
                                   <Input placeholder="Значение" style={{ flex: 1 }} />
+                                </Form.Item>
+                                <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
+                                  <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
+                                    <Checkbox>Авто</Checkbox>
+                                  </Tooltip>
                                 </Form.Item>
                                 {fields.length > 1 && (
                                   <MinusCircleOutlined
@@ -1597,7 +1644,7 @@ export default function App() {
                               </Input.Group>
                             </Form.Item>
                           ))}
-                          <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
+                          <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ key: "", value: "", optional: false })} style={{ marginTop: 8 }}>
                             Добавить заголовок
                           </Button>
                         </>
