@@ -1069,25 +1069,103 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      Mock — среда для создания моков 
+                      Mock — гибкий mock‑сервер и песочница API
                     </Typography.Title>
                     <Typography.Paragraph>
-                      Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов.
-                      Поддерживаются фильтры по HTTP-методу, пути, заголовкам и даже частям тела запроса,
-                      а ответ можно настроить с нужным статусом, заголовками и JSON.
+                      Этот сервис позволяет эмулировать backend‑эндпоинты без поднятия реальных сервисов, работать
+                      как с чистыми ручными правилами, так и на основе OpenAPI‑спецификаций, а также тестировать
+                      кэширование, задержки, ошибки, прокси и ограничения.
                     </Typography.Paragraph>
-                    <Typography.Title level={4}>Как пользоваться</Typography.Title>
+                    <Typography.Title level={4}>Базовый сценарий</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ol style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li>Настройте адрес работающего backend-а сверху, чтобы панель могла обращаться к API.</li>
+                        <li>Сверху задайте адрес backend‑сервера (по умолчанию Render‑URL вашего сервиса).</li>
                         <li>Создайте страницу (папку) для логической группы моков и выберите её слева.</li>
-                        <li>Нажмите «Создать mock», укажите метод, путь, необходимые заголовки/фрагмент тела и соберите желаемый ответ.</li>
-                        <li>Сохраните и убедитесь, что мок активен — он сразу начнёт перехватывать запросы.</li>
+                        <li>Нажмите «Создать mock», укажите метод, путь, заголовки и условия тела запроса.</li>
+                        <li>Заполните конфигурацию ответа (статус, заголовки, JSON или файл) и при необходимости задержку.</li>
+                        <li>Сохраните мок и убедитесь, что он активен — после этого запросы по указанному пути будут
+                            обрабатываться им, а базовый URL страницы указан над таблицей.</li>
                       </ol>
                     </Typography.Paragraph>
-                    <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
-                      Советы: используйте заголовки и поиск по телу запроса, чтобы разделять похожие вызовы,
-                      а с помощью кнопок сверху быстро переключайте сценарии и импортируйте коллекции Postman.
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Работа с OpenAPI</Typography.Title>
+                    <Typography.Paragraph>
+                      Сервис умеет работать с несколькими OpenAPI‑спецификациями (JSON/YAML), которые можно загрузить:
+                    </Typography.Paragraph>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>
+                      <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                        <li>при старте сервера из директории (переменная окружения <code>MOCKL_OPENAPI_SPECS_DIR</code>);</li>
+                        <li>по URL‑ам из переменной <code>MOCKL_OPENAPI_SPECS_URLS</code> (через запятую);</li>
+                        <li>через API <code>POST /api/openapi/specs/from-url</code> и <code>/api/openapi/specs/upload</code>.</li>
+                      </ul>
+                    </Typography.Paragraph>
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+                      Список загруженных спецификаций можно получить по <code>GET /api/openapi/specs</code>, полный текст —
+                      по <code>GET /api/openapi/specs/&lt;name&gt;</code>. На основе этих спецификаций вы можете создавать
+                      моки вручную, копируя пути и схемы ответов.
+                    </Typography.Paragraph>
+
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Расширенные возможности моков</Typography.Title>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>
+                      <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                        <li><b>Подстановки в ответах и заголовках</b> — в теле ответа и заголовках можно использовать
+                            плейсхолдеры вроде <code>{'{method}'}</code>, <code>{'{path}'}</code>, <code>{'{query_id}'}</code>,
+                            <code>{'{header_Authorization}'}</code>. Они будут автоматически подставлены из входящего запроса.</li>
+                        <li><b>Кэширование ответов</b> — добавьте в тело ответа поле <code>"__cache_ttl__": N</code>, чтобы
+                            включить кэширование ответа на N секунд. Кэш можно очистить через <code>DELETE /api/cache</code>
+                            (полностью или по префиксу пути).</li>
+                        <li><b>Задержки</b> — помимо поля <code>delay_ms</code> у мока, можно указать диапазон в теле
+                            ответа: <code>"__delay_range_ms__": {"{ \"min\": 100, \"max\": 500 }"}</code>, и задержка будет
+                            выбрана случайно из указанного диапазона.</li>
+                        <li><b>Имитация ошибок</b> — в теле ответа можно задать блок
+                            <code>"__error_simulation__": {"{ \"probability\": 0.2, \"status_code\": 500, \"delay_ms\": 1000 }"}</code>.
+                            В этом случае с заданной вероятностью вернётся искусственная ошибка с указанным статусом и задержкой.</li>
+                        <li><b>Файловые ответы</b> — выберите тип ответа «Файл» и загрузите файл. На стороне сервера он
+                            будет храниться в base64, а при ответе отдаваться как бинарный файл с корректным
+                            <code>Content-Disposition</code>.</li>
+                      </ul>
+                    </Typography.Paragraph>
+
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Прокси, редиректы и безопасность</Typography.Title>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>
+                      <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                        <li><b>Прокси‑режим</b> настраивается для каждой страницы через «Настройки proxy»: если подходящего
+                            мока нет, запрос уходит на указанный backend, а ответ (включая заголовки) прозрачно возвращается.</li>
+                        <li><b>Интеллектуальная обработка редиректов</b> — при ответах 3xx с заголовком <code>Location</code>
+                            абсолютные URL автоматически переписываются на текущий хост, чтобы редиректы оставались внутри mock‑сервера.</li>
+                        <li><b>Ограничение прокси‑хостов</b> — через переменную
+                            <code>MOCKL_ALLOWED_PROXY_HOSTS</code> можно задать список разрешённых хостов для <code>proxy_base_url</code>.</li>
+                        <li><b>Ограничение размера тела</b> — <code>MOCKL_MAX_REQUEST_BODY_BYTES</code> позволяет задать
+                            максимальный размер тела запроса (при превышении вернётся 413).</li>
+                      </ul>
+                    </Typography.Paragraph>
+
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Кэш, метрики и ограничения</Typography.Title>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>
+                      <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                        <li><b>Кэширование</b> — помимо пер‑мокового TTL через <code>__cache_ttl__</code>, можно настроить
+                            дефолтный TTL переменной <code>MOCKL_DEFAULT_CACHE_TTL</code>. Управлять кэшем можно через
+                            <code>DELETE /api/cache</code> с фильтрами <code>path_prefix</code>.</li>
+                        <li><b>Rate limiting</b> — переменные <code>MOCKL_RATE_LIMIT_REQUESTS</code> и
+                            <code>MOCKL_RATE_LIMIT_WINDOW_SECONDS</code> позволяют ограничить количество запросов в окно
+                            по IP. При превышении сервис вернёт 429.</li>
+                        <li><b>Метрики Prometheus</b> — по адресу <code>/metrics</code> доступны метрики по количеству
+                            запросов, попаданиям в моки, кэшу, прокси, rate limit и времени ответа.</li>
+                      </ul>
+                    </Typography.Paragraph>
+
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Загрузка правил и эксплуатация</Typography.Title>
+                    <Typography.Paragraph style={{ marginBottom: 0 }}>
+                      <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                        <li><b>Загрузка правил при старте</b> — если указать директорию в
+                            <code>MOCKL_RULES_DIR</code>, все <code>.json</code> файлы с описаниями <code>MockEntry</code>
+                            будут автоматически загружены в БД.</li>
+                        <li><b>Health/readiness</b> — <code>/healthz</code> показывает, что сервис жив, а
+                            <code>/readyz</code> дополнительно проверяет доступность БД и подходит для readiness‑проб.</li>
+                        <li><b>CORS</b> уже настроен глобально (разрешены любые origin’ы), а логирование ведётся
+                            в структурированном JSON‑формате с уровнями.</li>
+                        <li><b>Корректное завершение</b> — при остановке сервиса выполняется graceful shutdown, что
+                            позволяет корректно завершить активные операции.</li>
+                      </ul>
                     </Typography.Paragraph>
                   </div>
                 )}

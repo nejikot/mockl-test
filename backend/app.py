@@ -2,22 +2,28 @@ import os
 import json
 import asyncio
 import base64
+import logging
+import random
+import time
+from datetime import datetime, timedelta
 from uuid import uuid4
 from urllib.parse import urlparse, quote
 from urllib.parse import quote as url_quote
 
 
 import httpx
+import yaml
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 
 
@@ -34,6 +40,85 @@ if not all([DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS]):
 DATABASE_URL = (
     f"postgresql://{DB_USER}:{DB_PASS}"
     f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+
+
+# Параметры кэша и rate limiting из окружения
+DEFAULT_CACHE_TTL_SECONDS = int(os.getenv("MOCKL_DEFAULT_CACHE_TTL", "0"))
+RATE_LIMIT_REQUESTS = int(os.getenv("MOCKL_RATE_LIMIT_REQUESTS", "0"))  # 0 = выключено
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("MOCKL_RATE_LIMIT_WINDOW_SECONDS", "60"))
+MAX_REQUEST_BODY_BYTES = int(os.getenv("MOCKL_MAX_REQUEST_BODY_BYTES", "0"))  # 0 = нет ограничения
+RULES_DIR = os.getenv("MOCKL_RULES_DIR")
+OPENAPI_SPECS_DIR = os.getenv("MOCKL_OPENAPI_SPECS_DIR")
+OPENAPI_SPECS_URLS = os.getenv("MOCKL_OPENAPI_SPECS_URLS", "")
+ALLOWED_PROXY_HOSTS = {
+    h.strip().lower()
+    for h in os.getenv("MOCKL_ALLOWED_PROXY_HOSTS", "").split(",")
+    if h.strip()
+}
+
+
+# Глобальные структуры
+OPENAPI_SPECS: Dict[str, Dict[str, Any]] = {}
+RESPONSE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+RATE_LIMIT_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+# Логирование в структурированном (JSON) виде
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+logging.basicConfig(level=os.getenv("MOCKL_LOG_LEVEL", "INFO"))
+for h in logging.getLogger().handlers:
+    h.setFormatter(JsonFormatter())
+
+logger = logging.getLogger("mockl")
+
+
+# Метрики Prometheus
+REQUESTS_TOTAL = Counter(
+    "mockl_requests_total",
+    "Total HTTP requests",
+    ["method", "path", "folder", "outcome"],
+)
+MOCK_HITS = Counter(
+    "mockl_mock_hits_total",
+    "Total matched mocks",
+    ["folder"],
+)
+PROXY_REQUESTS = Counter(
+    "mockl_proxy_requests_total",
+    "Total proxied requests",
+    ["folder"],
+)
+ERRORS_SIMULATED = Counter(
+    "mockl_errors_simulated_total",
+    "Total simulated errors",
+    ["folder"],
+)
+RATE_LIMITED = Counter(
+    "mockl_rate_limited_total",
+    "Total rate limited requests",
+)
+CACHE_HITS = Counter(
+    "mockl_cache_hits_total",
+    "Total cache hits",
+    ["folder"],
+)
+RESPONSE_TIME = Histogram(
+    "mockl_response_time_seconds",
+    "Response time for mock handler",
+    ["folder"],
 )
 
 
@@ -120,6 +205,17 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint - не показывается в документации."""
     return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+async def readiness_check():
+    """Readiness‑проверка: проверяем подключение к БД."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Not ready: {str(e)}")
 
 
 
@@ -330,7 +426,6 @@ def ensure_default_folder():
     # Сначала убеждаемся, что схема обновлена
     ensure_migrations()
 
-
     db = SessionLocal()
     try:
         if not db.query(Folder).filter_by(name="default").first():
@@ -338,6 +433,23 @@ def ensure_default_folder():
             db.commit()
     finally:
         db.close()
+
+    # Загружаем правила и OpenAPI‑спеки при старте (если настроено)
+    try:
+        load_rules_from_directory()
+    except Exception as e:
+        logger.error(f"Failed to load rules from directory: {e}")
+
+    try:
+        load_openapi_specs_from_env()
+    except Exception as e:
+        logger.error(f"Failed to load OpenAPI specs: {e}")
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Хук корректного завершения (graceful shutdown)."""
+    logger.info("Shutting down mockl service")
 
 
 
@@ -524,6 +636,112 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
 
 
 
+def _save_mock_entry(entry: MockEntry, db: Session) -> None:
+    """Внутренний помощник: создаёт или обновляет мок в БД по MockEntry."""
+    if not entry.id:
+        entry.id = str(uuid4())
+
+    folder = db.query(Folder).filter_by(name=entry.folder).first()
+    if not folder:
+        folder = Folder(name=entry.folder)
+        db.add(folder)
+        db.flush()
+
+    mock = db.query(Mock).filter_by(id=entry.id).first()
+    if not mock:
+        mock = Mock(id=entry.id)
+        db.add(mock)
+
+    mock.folder_name = entry.folder
+    mock.name = entry.name
+    mock.method = entry.request_condition.method.upper()
+    mock.path = entry.request_condition.path
+    mock.headers = entry.request_condition.headers or {}
+    mock.body_contains = entry.request_condition.body_contains
+    mock.status_code = entry.response_config.status_code
+    mock.response_headers = entry.response_config.headers or {}
+    mock.response_body = entry.response_config.body
+    mock.active = entry.active if entry.active is not None else True
+    mock.delay_ms = entry.delay_ms or 0
+
+
+
+def load_rules_from_directory():
+    """Загрузка правил (моков) из директории при старте.
+
+    Ожидается, что в MOCKL_RULES_DIR лежат .json файлы
+    со структурой MockEntry или массивом таких объектов.
+    """
+    if not RULES_DIR:
+        return
+    if not os.path.isdir(RULES_DIR):
+        logger.warning(f"Rules directory {RULES_DIR} does not exist")
+        return
+
+    db = SessionLocal()
+    created = 0
+    try:
+        for fname in os.listdir(RULES_DIR):
+            if not fname.lower().endswith(".json"):
+                continue
+            full_path = os.path.join(RULES_DIR, fname)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to read rules file {full_path}: {e}")
+                continue
+
+            entries = data if isinstance(data, list) else [data]
+            for raw in entries:
+                try:
+                    entry = MockEntry(**raw)
+                    _save_mock_entry(entry, db)
+                    created += 1
+                except Exception as e:
+                    logger.error(f"Failed to load mock from {full_path}: {e}")
+        db.commit()
+        logger.info(f"Loaded {created} mocks from rules directory {RULES_DIR}")
+    finally:
+        db.close()
+
+
+def load_openapi_specs_from_env():
+    """Загрузка OpenAPI спецификаций из директории и/или по URL при старте."""
+    # Локальные файлы
+    if OPENAPI_SPECS_DIR and os.path.isdir(OPENAPI_SPECS_DIR):
+        for fname in os.listdir(OPENAPI_SPECS_DIR):
+            if not (fname.lower().endswith(".json") or fname.lower().endswith((".yaml", ".yml"))):
+                continue
+            full_path = os.path.join(OPENAPI_SPECS_DIR, fname)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    if fname.lower().endswith(".json"):
+                        spec = json.load(f)
+                    else:
+                        spec = yaml.safe_load(f)
+                name = spec.get("info", {}).get("title") or os.path.splitext(fname)[0]
+                OPENAPI_SPECS[name] = spec
+            except Exception as e:
+                logger.error(f"Failed to load OpenAPI spec from {full_path}: {e}")
+
+    # Загрузка по URL
+    for url in [u.strip() for u in OPENAPI_SPECS_URLS.split(",") if u.strip()]:
+        try:
+            resp = httpx.get(url, timeout=10.0)
+            resp.raise_for_status()
+            text_body = resp.text
+            try:
+                spec = json.loads(text_body)
+            except json.JSONDecodeError:
+                spec = yaml.safe_load(text_body)
+            name = spec.get("info", {}).get("title") or url
+            OPENAPI_SPECS[name] = spec
+        except Exception as e:
+            logger.error(f"Failed to load OpenAPI spec from URL {url}: {e}")
+
+
+
 @app.get(
     "/api/folders/{name}",
     response_model=FolderSettingsOut,
@@ -649,34 +867,7 @@ async def create_or_update_mock(
             "data_base64": data_b64,
         }
 
-    # Если id не передан — создаём новый мок с внутренним UUID
-    if not entry.id:
-        entry.id = str(uuid4())
-
-    folder = db.query(Folder).filter_by(name=entry.folder).first()
-    if not folder:
-        folder = Folder(name=entry.folder)
-        db.add(folder)
-        db.flush()
-
-    # Ищем существующий мок или создаём новый
-    mock = db.query(Mock).filter_by(id=entry.id).first()
-    if not mock:
-        mock = Mock(id=entry.id)
-        db.add(mock)
-
-    mock.folder_name = entry.folder
-    mock.name = entry.name
-    mock.method = entry.request_condition.method.upper()
-    mock.path = entry.request_condition.path
-    mock.headers = entry.request_condition.headers or {}
-    mock.body_contains = entry.request_condition.body_contains
-    mock.status_code = entry.response_config.status_code
-    mock.response_headers = entry.response_config.headers or {}
-    mock.response_body = entry.response_config.body
-    mock.active = entry.active if entry.active is not None else True
-    mock.delay_ms = entry.delay_ms or 0
-
+    _save_mock_entry(entry, db)
     db.commit()
     return {"message": "mock saved", "mock": entry}
 
@@ -967,6 +1158,121 @@ async def import_postman_collection(
         }, status_code=500)
 
 
+@app.get(
+    "/api/openapi/specs",
+    summary="Список загруженных OpenAPI спецификаций",
+)
+async def list_openapi_specs():
+    return [
+        {
+            "name": name,
+            "title": spec.get("info", {}).get("title"),
+            "version": spec.get("info", {}).get("version"),
+        }
+        for name, spec in OPENAPI_SPECS.items()
+    ]
+
+
+@app.get(
+    "/api/openapi/specs/{name}",
+    summary="Получить OpenAPI спецификацию по имени",
+)
+async def get_openapi_spec(name: str = Path(..., description="Имя спецификации")):
+    spec = OPENAPI_SPECS.get(name)
+    if not spec:
+        raise HTTPException(404, "Spec not found")
+    return spec
+
+
+class OpenApiFromUrlPayload(BaseModel):
+    url: str = Field(..., description="URL до JSON/YAML OpenAPI спецификации")
+    name: Optional[str] = Field(None, description="Явное имя спецификации (если не указано, возьмется info.title)")
+
+
+@app.post(
+    "/api/openapi/specs/from-url",
+    summary="Загрузить OpenAPI спецификацию по URL",
+)
+async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
+    try:
+        resp = httpx.get(payload.url, timeout=10.0)
+        resp.raise_for_status()
+        text_body = resp.text
+        try:
+            spec = json.loads(text_body)
+        except json.JSONDecodeError:
+            spec = yaml.safe_load(text_body)
+        name = payload.name or spec.get("info", {}).get("title") or payload.url
+        OPENAPI_SPECS[name] = spec
+        return {"message": "spec loaded", "name": name}
+    except Exception as e:
+        raise HTTPException(400, f"Failed to load spec: {str(e)}")
+
+
+@app.post(
+    "/api/openapi/specs/upload",
+    summary="Загрузить одну или несколько OpenAPI спецификаций файлами",
+)
+async def upload_openapi_specs(files: List[UploadFile] = File(...)):
+    loaded = []
+    for file in files:
+        try:
+            content = await file.read()
+            text_body = content.decode("utf-8")
+            try:
+                spec = json.loads(text_body)
+            except json.JSONDecodeError:
+                spec = yaml.safe_load(text_body)
+            name = spec.get("info", {}).get("title") or file.filename
+            OPENAPI_SPECS[name] = spec
+            loaded.append(name)
+        except Exception as e:
+            logger.error(f"Failed to load OpenAPI spec from upload {file.filename}: {e}")
+    return {"message": f"Loaded {len(loaded)} specs", "names": loaded}
+
+
+@app.delete(
+    "/api/cache",
+    summary="Очистить кэш ответов",
+    description="Очищает кэш ответов полностью или по фильтрам папки и префикса пути.",
+)
+async def clear_cache(
+    folder: Optional[str] = Query(None, description="Имя папки для очистки кэша"),
+    path_prefix: Optional[str] = Query(None, description="Префикс пути внутри папки"),
+):
+    removed = 0
+    if not RESPONSE_CACHE:
+        return {"message": "cache empty", "removed": 0}
+    keys = list(RESPONSE_CACHE.keys())
+    for key in keys:
+        # Ключ формата mockId:METHOD:/inner/path?query
+        try:
+            _, method, inner = key.split(":", 2)
+        except ValueError:
+            continue
+        if path_prefix and not inner.startswith(path_prefix):
+            continue
+        # Папка в ключ не входит, поэтому фильтрация по папке только приблизительная:
+        # мы просто очищаем все, если указан folder (поведение задокументировано).
+        if folder is not None:
+            RESPONSE_CACHE.pop(key, None)
+            removed += 1
+        elif path_prefix:
+            RESPONSE_CACHE.pop(key, None)
+            removed += 1
+    if folder is None and path_prefix is None:
+        removed = len(RESPONSE_CACHE)
+        RESPONSE_CACHE.clear()
+    return {"message": "cache cleared", "removed": removed}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Экспорт метрик в формате Prometheus."""
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+
 
 def extract_path_from_url(url) -> str:
     """Извлекает путь из URL, обрабатывая различные форматы Postman."""
@@ -1060,21 +1366,141 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
 
 
 
+def _cache_key_for_mock(m: Mock, method: str, full_inner: str) -> str:
+    """Формирует ключ кэша для мока и запроса."""
+    return f"{m.id}:{method.upper()}:{full_inner}"
+
+
+def _get_cache_ttl_from_body(body: Any) -> int:
+    """Извлекает TTL кэша (секунды) из спец‑поля в ответе или из дефолта."""
+    if isinstance(body, dict):
+        ttl = body.get("__cache_ttl__")
+        if isinstance(ttl, (int, float)) and ttl > 0:
+            return int(ttl)
+    return DEFAULT_CACHE_TTL_SECONDS
+
+
+def _get_delay_ms(m: Mock, body: Any) -> int:
+    """Возвращает задержку в мс — фиксированную или случайную из диапазона."""
+    base = m.delay_ms or 0
+    if isinstance(body, dict):
+        rng = body.get("__delay_range_ms__")
+        if isinstance(rng, dict):
+            try:
+                mn = int(rng.get("min", base))
+                mx = int(rng.get("max", base))
+                if mn < 0:
+                    mn = 0
+                if mx < mn:
+                    mx = mn
+                if mn != mx:
+                    return random.randint(mn, mx)
+                return mn
+            except Exception:
+                return base
+    return base
+
+
+def _maybe_simulate_error(folder_name: str, body: Any) -> Optional[Dict[str, Any]]:
+    """Пытается сэмулировать ошибку согласно конфигу в теле."""
+    if not isinstance(body, dict):
+        return None
+    cfg = body.get("__error_simulation__")
+    if not isinstance(cfg, dict):
+        return None
+    prob = float(cfg.get("probability", 0))
+    if prob <= 0:
+        return None
+    if random.random() > prob:
+        return None
+    ERRORS_SIMULATED.labels(folder=folder_name).inc()
+    status_code = int(cfg.get("status_code", 500))
+    delay_ms = int(cfg.get("delay_ms", 0))
+    err_body = cfg.get("body") or {"error": "simulated error"}
+    return {
+        "status_code": status_code,
+        "delay_ms": delay_ms,
+        "body": err_body,
+    }
+
+
+def _apply_templates(value: Any, req: Request, full_inner: str) -> Any:
+    """Подстановка простых плейсхолдеров в строках ({method}, {path}, {query} и т.п.)."""
+    context = {
+        "method": req.method,
+        "path": req.url.path,
+        "full_path": full_inner,
+        "query": req.url.query,
+    }
+    # Заголовки: header_Authorization, header_X_Custom
+    for k, v in req.headers.items():
+        context[f"header_{k.replace('-', '_')}"] = v
+    # Query‑параметры: query_param_name
+    for k, v in req.query_params.items():
+        context[f"query_{k}"] = v
+
+    def _fmt(s: str) -> str:
+        try:
+            return s.format(**context)
+        except Exception:
+            return s
+
+    if isinstance(value, str):
+        return _fmt(value)
+    if isinstance(value, dict):
+        return {k: _apply_templates(v, req, full_inner) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_apply_templates(v, req, full_inner) for v in value]
+    return value
+
+
+def _rate_limit_exceeded(client_ip: str) -> bool:
+    """Простое rate limiting по IP и окну времени."""
+    if RATE_LIMIT_REQUESTS <= 0:
+        return False
+    now = time.time()
+    state = RATE_LIMIT_STATE.get(client_ip) or {"start": now, "count": 0}
+    window_start = state["start"]
+    if now - window_start > RATE_LIMIT_WINDOW_SECONDS:
+        # новое окно
+        state = {"start": now, "count": 0}
+    state["count"] += 1
+    RATE_LIMIT_STATE[client_ip] = state
+    return state["count"] > RATE_LIMIT_REQUESTS
+
+
 # Catch-all маршрут для обработки моков
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
     """Обработчик всех запросов, не совпадающих с API маршрутами."""
-    
+    folder_name = "default"
+    start_time = time.time()
+
+    # Rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    if _rate_limit_exceeded(client_ip):
+        RATE_LIMITED.inc()
+        REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="rate_limited").inc()
+        raise HTTPException(status_code=429, detail="Too Many Requests")
+
     # Исключаем API пути из обработки моков
     if full_path.startswith("api/"):
         raise HTTPException(404, "No matching mock found")
     
+    # Ограничение размера тела
+    if MAX_REQUEST_BODY_BYTES > 0:
+        body_bytes = await request.body()
+        if len(body_bytes) > MAX_REQUEST_BODY_BYTES:
+            REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="too_large").inc()
+            raise HTTPException(status_code=413, detail="Request entity too large")
+    else:
+        body_bytes = None
+
     # Определяем папку по URL префиксу
     path = request.url.path  # например "/auth/api/login"
     segments = [seg for seg in path.split("/") if seg]
 
 
-    folder_name = "default"
     inner_path = path
 
 
@@ -1097,12 +1523,50 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     # Ищем подходящий мок только в выбранной папке
     for m in db.query(Mock).filter_by(active=True, folder_name=folder_name).all():
         if await match_condition(request, m, full_inner):
-            # Задержка ответа при необходимости
-            if m.delay_ms and m.delay_ms > 0:
-                await asyncio.sleep(m.delay_ms / 1000.0)
-
-
             body = m.response_body
+
+            # Попытка отдать из кэша
+            ttl = _get_cache_ttl_from_body(body)
+            cache_key = None
+            if ttl > 0:
+                cache_key = _cache_key_for_mock(m, request.method, full_inner)
+                cached = RESPONSE_CACHE.get(cache_key)
+                if cached:
+                    expires_at, cached_payload = cached
+                    if expires_at > time.time():
+                        CACHE_HITS.labels(folder=folder_name).inc()
+                        REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="cache_hit").inc()
+                        # Восстанавливаем Response из кэша
+                        resp = Response(
+                            content=cached_payload["content"],
+                            status_code=cached_payload["status_code"],
+                            media_type=cached_payload["media_type"],
+                        )
+                        for k, v in cached_payload.get("headers", {}).items():
+                            resp.headers[k] = v
+                        RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+                        return resp
+
+            # Задержка ответа при необходимости
+            # (фиксированная или диапазон)
+            delay_ms = _get_delay_ms(m, body)
+
+            # Имитация ошибок
+            err_cfg = _maybe_simulate_error(folder_name, body)
+            if err_cfg:
+                if err_cfg["delay_ms"] > 0:
+                    await asyncio.sleep(err_cfg["delay_ms"] / 1000.0)
+                resp_body = _apply_templates(err_cfg["body"], request, full_inner)
+                resp = JSONResponse(content=resp_body, status_code=err_cfg["status_code"])
+                RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+                REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="error_simulated").inc()
+                MOCK_HITS.labels(folder=folder_name).inc()
+                return resp
+
+            if delay_ms and delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000.0)
+
+            body = _apply_templates(body, request, full_inner)
 
 
             # Поддержка файловых ответов через спец‑структуру
@@ -1145,14 +1609,44 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     )
 
 
+            # Заголовки ответа с подстановками
             for k, v in (m.response_headers or {}).items():
+                if isinstance(v, str):
+                    v = _apply_templates(v, request, full_inner)
                 resp.headers[k] = v
+
+            # Сохраняем в кэш, если включено
+            if cache_key and ttl > 0:
+                RESPONSE_CACHE[cache_key] = (
+                    time.time() + ttl,
+                    {
+                        "status_code": resp.status_code,
+                        "content": resp.body,
+                        "media_type": resp.media_type,
+                        "headers": dict(resp.headers),
+                    },
+                )
+
+            MOCK_HITS.labels(folder=folder_name).inc()
+            RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+            REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="mock_hit").inc()
             return resp
 
 
     # Если мок не найден, пробуем прокси для папки
     if folder and getattr(folder, "proxy_enabled", False) and getattr(folder, "proxy_base_url", None):
         target_url = f'{folder.proxy_base_url.rstrip("/")}{full_inner}'
+
+        # Ограничение на список разрешённых хостов для прокси (если настроено)
+        if ALLOWED_PROXY_HOSTS:
+            try:
+                parsed = urlparse(folder.proxy_base_url)
+                host = (parsed.hostname or "").lower()
+            except Exception:
+                host = ""
+            if host not in ALLOWED_PROXY_HOSTS:
+                raise HTTPException(403, "Proxy target host is not allowed")
+
         try:
             async with httpx.AsyncClient() as client:
                 proxied = await client.request(
@@ -1166,10 +1660,31 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
         resp = Response(content=proxied.content, status_code=proxied.status_code)
-        # Копируем заголовки, исключая hop-by-hop
+        # Копируем заголовки, исключая hop-by-hop;
+        # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
         for k, v in proxied.headers.items():
-            if k.lower() not in {"content-length", "transfer-encoding", "connection"}:
-                resp.headers[k] = v
+            kl = k.lower()
+            if kl in {"content-length", "transfer-encoding", "connection"}:
+                continue
+            if kl == "location":
+                try:
+                    loc = urlparse(v)
+                    if loc.scheme and loc.netloc:
+                        # Переписываем только хост/схему, путь и query оставляем
+                        current = request.base_url
+                        new_loc = f"{current.scheme}://{current.netloc}{loc.path or ''}"
+                        if loc.query:
+                            new_loc += f"?{loc.query}"
+                        v = new_loc
+                except Exception:
+                    pass
+            resp.headers[k] = v
+
+        PROXY_REQUESTS.labels(folder=folder_name).inc()
+        RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+        REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="proxied").inc()
         return resp
-    
+
+    RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+    REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="not_found").inc()
     raise HTTPException(404, "No matching mock found")
