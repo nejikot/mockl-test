@@ -3,9 +3,7 @@ import json
 import asyncio
 import base64
 from uuid import uuid4
-from urllib.parse import urlparse, quote
-from urllib.parse import quote as url_quote
-
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
@@ -20,7 +18,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
 
-
 # Читаем параметры подключения из окружения
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "5432")
@@ -30,12 +27,10 @@ DB_PASS = os.getenv("DB_PASS")
 if not all([DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS]):
     raise RuntimeError("DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASS обязательны")
 
-
 DATABASE_URL = (
     f"postgresql://{DB_USER}:{DB_PASS}"
     f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
-
 
 # Создаём движок с SSL
 engine = create_engine(
@@ -45,10 +40,8 @@ engine = create_engine(
     connect_args={"sslmode": "require"}
 )
 
-
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
-
 
 
 class Folder(Base):
@@ -60,7 +53,6 @@ class Folder(Base):
     proxy_base_url = Column(String, nullable=True)
 
 
-
 class Mock(Base):
     __tablename__ = "mocks"
     id = Column(String, primary_key=True, index=True)
@@ -68,13 +60,11 @@ class Mock(Base):
     # Человекочитаемое имя мока для навигации
     name = Column(String, nullable=True)
 
-
     # Условия запроса
     method = Column(String, nullable=False)
     path = Column(String, nullable=False)
     headers = Column(SAJSON, default={})
     body_contains = Column(String, nullable=True)
-
 
     # Конфиг ответа
     status_code = Column(Integer, nullable=False)
@@ -84,14 +74,11 @@ class Mock(Base):
     # Задержка ответа в миллисекундах
     delay_ms = Column(Integer, default=0)
 
-
     folder_obj = relationship("Folder", back_populates="mocks")
-
 
 
 # Создаём таблицы
 Base.metadata.create_all(bind=engine)
-
 
 app = FastAPI(
     title="MocK — гибкий mock-сервер",
@@ -106,6 +93,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app = FastAPI(
+    title="MocK — гибкий mock-сервер",
+    description=(
+        "Сервис для создания и управления HTTP моками.\n\n"
+        "Позволяет:\n"
+        "- группировать моки по папкам (\"страницам\");\n"
+        "- настраивать условия срабатывания по методу, пути, заголовкам и фрагменту тела запроса;\n"
+        "- задавать произвольный HTTP‑код, заголовки и JSON‑тело ответа;\n"
+        "- импортировать моки из Postman Collection v2.1."
+    ),
+    version="1.0.0",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -115,19 +114,16 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-
 @app.get("/healthz", include_in_schema=False)
 async def health_check():
     """Health check endpoint - не показывается в документации."""
     return {"status": "ok"}
 
 
-
 @app.get("/info", summary="Информация о сервере и подключении к БД")
 async def server_info(request: Request):
   """
   Возвращает базовую информацию о работающем сервере и параметры подключения к БД.
-
 
   Пароль в URL БД умышленно замаскирован.
   """
@@ -153,10 +149,8 @@ async def server_info(request: Request):
   }
 
 
-
 class MockRequestCondition(BaseModel):
     """Условия, при которых мок должен сработать."""
-
 
     method: str = Field(..., description="HTTP‑метод запроса (GET, POST, PUT, DELETE, PATCH и т.д.)")
     path: str = Field(..., description="Путь запроса, например `/api/users` или `/status?code=200`")
@@ -170,10 +164,8 @@ class MockRequestCondition(BaseModel):
     )
 
 
-
 class MockResponseConfig(BaseModel):
     """Описание того, какой ответ вернёт мок."""
-
 
     status_code: int = Field(..., description="HTTP‑код ответа (например 200, 400, 404)")
     headers: Optional[Dict[str, str]] = Field(
@@ -183,10 +175,8 @@ class MockResponseConfig(BaseModel):
     body: Any = Field(..., description="Тело ответа. Обычно JSON, но может быть спец‑структура файла.")
 
 
-
 class MockEntry(BaseModel):
     """Полное описание мока."""
-
 
     id: Optional[str] = Field(
         default=None,
@@ -218,7 +208,6 @@ class MockEntry(BaseModel):
         description="Искусственная задержка ответа в миллисекундах (например 500 = 0.5 секунды).",
     )
 
-
     class Config:
         schema_extra = {
             "example": {
@@ -240,19 +229,15 @@ class MockEntry(BaseModel):
         }
 
 
-
 class FolderRenamePayload(BaseModel):
     """Модель запроса для переименования папки."""
-
 
     old_name: str = Field(..., description="Текущее имя папки")
     new_name: str = Field(..., description="Новое имя папки")
 
 
-
 class FolderSettings(BaseModel):
     """Настройки папки (прокси и пр.)."""
-
 
     proxy_enabled: bool = Field(default=False, description="Включен ли прокси‑режим для папки")
     proxy_base_url: Optional[str] = Field(
@@ -261,10 +246,8 @@ class FolderSettings(BaseModel):
     )
 
 
-
 class FolderSettingsOut(FolderSettings):
     name: str
-
 
 
 
@@ -277,10 +260,8 @@ def get_db():
         db.close()
 
 
-
 def ensure_migrations():
     """Примитивные миграции: добавляем недостающие столбцы, если их ещё нет.
-
 
     Render уже создал таблицы по старой схеме, create_all не добавляет новые столбцы,
     поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
@@ -315,12 +296,10 @@ def ensure_migrations():
         conn.commit()
 
 
-
 @app.on_event("startup")
 def ensure_default_folder():
     # Сначала убеждаемся, что схема обновлена
     ensure_migrations()
-
 
     db = SessionLocal()
     try:
@@ -329,7 +308,6 @@ def ensure_default_folder():
             db.commit()
     finally:
         db.close()
-
 
 
 @app.post(
@@ -357,7 +335,6 @@ def create_folder(
     return {"message": "Папка добавлена"}
 
 
-
 @app.delete(
     "/api/folders",
     summary="Удалить папку и все её моки",
@@ -378,7 +355,6 @@ def delete_folder(
     db.delete(folder)
     db.commit()
     return {"message": f"Папка '{name}' и все её моки удалены"}
-
 
 
 @app.patch(
@@ -404,18 +380,15 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if db.query(Folder).filter_by(name=new).first():
             raise HTTPException(400, "Папка с таким именем уже существует")
 
-
         # Из‑за ограничений FK безопаснее всего:
         # 1) создать новую папку с новым именем,
         # 2) перевесить все моки на неё,
         # 3) удалить старую папку.
 
-
         # 1. Создаём новую запись папки
         new_folder = Folder(name=new)
         db.add(new_folder)
         db.flush()
-
 
         # 2. Обновляем все связанные моки
         db.query(Mock).filter_by(folder_name=old).update(
@@ -423,10 +396,8 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
             synchronize_session=False
         )
 
-
         # 3. Удаляем старую папку
         db.delete(folder)
-
 
         # 4. Коммитим всё разом
         db.commit()
@@ -438,7 +409,6 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
-
 
 
 @app.get(
@@ -460,7 +430,6 @@ def get_folder_settings(
     )
 
 
-
 @app.patch(
     "/api/folders/{name}/settings",
     summary="Обновить настройки папки (прокси и пр.)",
@@ -474,14 +443,11 @@ def update_folder_settings(
     if not folder:
         raise HTTPException(404, "Папка не найдена")
 
-
     folder.proxy_enabled = payload.proxy_enabled
     folder.proxy_base_url = (payload.proxy_base_url or "").strip() or None
 
-
     db.commit()
     return {"message": "Настройки папки обновлены"}
-
 
 @app.get(
     "/api/mocks/folders",
@@ -495,7 +461,6 @@ def list_folders(db: Session = Depends(get_db)):
         names.remove("default")
         names.insert(0, "default")
     return names
-
 
 
 @app.post(
@@ -518,20 +483,17 @@ def create_or_update_mock(
     if not entry.id:
         entry.id = str(uuid4())
 
-
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
         folder = Folder(name=entry.folder)
         db.add(folder)
         db.flush()
 
-
     # Ищем существующий мок или создаём новый
     mock = db.query(Mock).filter_by(id=entry.id).first()
     if not mock:
         mock = Mock(id=entry.id)
         db.add(mock)
-
 
     mock.folder_name = entry.folder
     mock.name = entry.name
@@ -547,7 +509,6 @@ def create_or_update_mock(
     
     db.commit()
     return {"message": "mock saved", "mock": entry}
-
 
 
 @app.get(
@@ -595,7 +556,6 @@ def list_mocks(
     return results
 
 
-
 @app.delete(
     "/api/mocks",
     summary="Удалить мок по ID",
@@ -611,7 +571,6 @@ def delete_mock(
     db.delete(mock)
     db.commit()
     return {"message": "mock deleted"}
-
 
 
 @app.patch(
@@ -630,7 +589,6 @@ def toggle_mock(
     mock.active = active
     db.commit()
     return {"id": mock_id, "active": active}
-
 
 
 @app.patch(
@@ -659,20 +617,6 @@ def deactivate_all(
     return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
 
 
-def encode_filename_rfc5987(filename: str) -> str:
-    """
-    Кодирует имя файла в соответствии с RFC 5987 для использования в заголовке Content-Disposition.
-    
-    Поддерживает кириллицу и другие не-ASCII символы.
-    Формат: filename*=UTF-8''<URL-encoded-filename>
-    """
-    try:
-        # Кодируем в UTF-8 и затем URL-кодируем
-        encoded = quote(filename, safe='')
-        return f"UTF-8''{encoded}"
-    except Exception:
-        # Fallback: просто возвращаем как есть, если что-то пошло не так
-        return filename
 
 
 @app.post(
@@ -702,7 +646,6 @@ async def import_postman_collection(
         except json.JSONDecodeError:
             return JSONResponse({"detail": "Invalid JSON file"}, status_code=400)
 
-
         folder_name = coll.get("info", {}).get("name", "postman")
         folder_name = folder_name.strip() or "postman"
         
@@ -710,17 +653,14 @@ async def import_postman_collection(
             db.add(Folder(name=folder_name))
             db.flush()
 
-
         items = coll.get("item", [])
         imported = []
-
 
         for it in items:
             req = it.get("request", {})
             res_list = it.get("response", [])
             if not req or not res_list:
                 continue
-
 
             res = res_list[0]
             url = req.get("url", {})
@@ -754,20 +694,17 @@ async def import_postman_collection(
             else:
                 path = "/"
 
-
             # Обработка заголовков запроса
             request_headers = {}
             for h in req.get("header", []):
                 if isinstance(h, dict) and "key" in h:
                     request_headers[h["key"]] = h.get("value", "")
 
-
             # Обработка заголовков ответа
             response_headers = {}
             for h in res.get("header", []):
                 if isinstance(h, dict) and "key" in h:
                     response_headers[h["key"]] = h.get("value", "")
-
 
             # Обработка тела ответа
             response_body = res.get("body", "{}")
@@ -779,7 +716,6 @@ async def import_postman_collection(
             elif response_body is None:
                 response_body = {}
 
-
             # Обработка статус кода
             status_code = res.get("code", 200)
             if isinstance(status_code, str):
@@ -787,7 +723,6 @@ async def import_postman_collection(
                     status_code = int(status_code)
                 except (ValueError, TypeError):
                     status_code = 200
-
 
             entry = MockEntry(
                 folder=folder_name,
@@ -805,7 +740,6 @@ async def import_postman_collection(
                 active=True
             )
 
-
             mock = Mock(id=entry.id or str(uuid4()))
             db.add(mock)
             mock.folder_name = entry.folder
@@ -819,9 +753,7 @@ async def import_postman_collection(
             mock.response_body = entry.response_config.body
             mock.active = entry.active
 
-
             imported.append(mock.id)
-
 
         db.commit()
         return JSONResponse({
@@ -833,7 +765,6 @@ async def import_postman_collection(
         return JSONResponse({
             "detail": f"Error processing file: {str(e)}"
         }, status_code=500)
-
 
 
 def extract_path_from_url(url) -> str:
@@ -870,7 +801,6 @@ def extract_path_from_url(url) -> str:
     return "/"
 
 
-
 def extract_path_from_raw_url(raw: str) -> str:
     """Извлекает путь из raw URL строки."""
     if not raw:
@@ -893,10 +823,8 @@ def extract_path_from_raw_url(raw: str) -> str:
         return path
 
 
-
 async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     """Проверяет, подходит ли запрос к условиям мока.
-
 
     full_path — это путь запроса с query‑строкой, уже нормализованный
     (например, без префикса папки).
@@ -927,7 +855,6 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     return True
 
 
-
 # Catch-all маршрут для обработки моков
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def mock_handler(request: Request, full_path: str, db: Session = Depends(get_db)):
@@ -941,10 +868,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     path = request.url.path  # например "/auth/api/login"
     segments = [seg for seg in path.split("/") if seg]
 
-
     folder_name = "default"
     inner_path = path
-
 
     if segments:
         candidate = segments[0]
@@ -957,10 +882,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     else:
         folder = db.query(Folder).filter_by(name="default").first()
 
-
     query_suffix = f"?{request.url.query}" if request.url.query else ""
     full_inner = f"{inner_path}{query_suffix}"
-
 
     # Ищем подходящий мок только в выбранной папке
     for m in db.query(Mock).filter_by(active=True, folder_name=folder_name).all():
@@ -969,9 +892,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if m.delay_ms and m.delay_ms > 0:
                 await asyncio.sleep(m.delay_ms / 1000.0)
 
-
             body = m.response_body
-
 
             # Поддержка файловых ответов через спец‑структуру
             is_file = isinstance(body, dict) and body.get("__file__") is True and "data_base64" in body
@@ -981,7 +902,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 except Exception:
                     raw = b""
 
-
                 resp = Response(
                     content=raw,
                     status_code=m.status_code,
@@ -989,15 +909,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 )
                 filename = body.get("filename")
                 if filename:
-                    # Используем RFC 5987 для поддержки кириллицы и других не-ASCII символов
-                    try:
-                        # Сначала пробуем стандартное кодирование для ASCII имён
-                        filename.encode('ascii')
-                        resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-                    except UnicodeEncodeError:
-                        # Если есть не-ASCII символы, используем RFC 5987
-                        encoded_filename = encode_filename_rfc5987(filename)
-                        resp.headers["Content-Disposition"] = f"attachment; filename*={encoded_filename}"
+                    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
             else:
                 # Если по ошибке в БД лежит строка, а не JSON, просто вернём текст
                 if isinstance(body, str):
@@ -1012,11 +924,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         status_code=m.status_code
                     )
 
-
             for k, v in (m.response_headers or {}).items():
                 resp.headers[k] = v
             return resp
-
 
     # Если мок не найден, пробуем прокси для папки
     if folder and getattr(folder, "proxy_enabled", False) and getattr(folder, "proxy_base_url", None):
@@ -1031,7 +941,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")
-
 
         resp = Response(content=proxied.content, status_code=proxied.status_code)
         # Копируем заголовки, исключая hop-by-hop
