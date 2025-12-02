@@ -104,6 +104,11 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+@app.get("/healthz", include_in_schema=False)
+async def health_check():
+    """Health check endpoint - не показывается в документации."""
+    return {"status": "ok"}
+
 
 class MockRequestCondition(BaseModel):
     """Условия, при которых мок должен сработать."""
