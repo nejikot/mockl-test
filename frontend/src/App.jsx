@@ -1621,10 +1621,17 @@ export default function App() {
                             <Form.Item key={field.key} style={{ marginTop: 8 }}>
                               <Form.Item
                                 noStyle
-                                dependencies={[['requestHeaders', field.name, 'optional']]}
+                                shouldUpdate={(prevValues, currentValues) => {
+                                  // Сравниваем весь массив requestHeaders для надежности
+                                  const prevHeaders = JSON.stringify(prevValues?.requestHeaders || []);
+                                  const currentHeaders = JSON.stringify(currentValues?.requestHeaders || []);
+                                  return prevHeaders !== currentHeaders;
+                                }}
                               >
                                 {({ getFieldValue }) => {
-                                  const isOptional = getFieldValue(['requestHeaders', field.name, 'optional']) === true;
+                                  const headers = getFieldValue('requestHeaders') || [];
+                                  const headerValue = headers[field.name];
+                                  const isOptional = headerValue?.optional === true;
                                   return (
                                     <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                       <Form.Item {...field} name={[field.name, 'key']} noStyle>
@@ -1640,7 +1647,7 @@ export default function App() {
                                           Заполняется автоматически
                                         </div>
                                       )}
-                                      <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked" initialValue={false}>
+                                      <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
                                         <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
                                           <Checkbox>Авто</Checkbox>
                                         </Tooltip>
