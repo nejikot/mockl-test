@@ -1805,6 +1805,42 @@ export default function App() {
           </Modal>
 
           <Modal
+            title="Импорт OpenAPI"
+            open={isOpenapiModalOpen}
+            onCancel={() => setOpenapiModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={openapiForm} onFinish={handleOpenapiImport} layout="vertical">
+              <Form.Item
+                name="url"
+                label="URL OpenAPI (JSON/YAML)"
+                rules={[{ required: true, message: "Введите URL OpenAPI" }]}
+              >
+                <Input placeholder="https://example.com/openapi.json" />
+              </Form.Item>
+              <Form.Item
+                name="spec_name"
+                label="Имя спецификации (опционально)"
+              >
+                <Input placeholder="Например Payments API" />
+              </Form.Item>
+              <Form.Item
+                name="folder_name"
+                label="Имя новой страницы (опционально)"
+                tooltip="Если не указано, будет использовано название спецификации"
+              >
+                <Input placeholder="Например payments" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Импортировать
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
             title="Дублировать страницу"
             open={isDuplicateModalOpen}
             onCancel={() => setDuplicateModalOpen(false)}
