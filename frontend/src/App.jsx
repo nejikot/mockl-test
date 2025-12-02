@@ -896,7 +896,7 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      Mock — среда для гибкого тестирования
+                      Mock — среда для создания моков 
                     </Typography.Title>
                     <Typography.Paragraph>
                       Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов.
