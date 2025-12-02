@@ -235,6 +235,8 @@ export default function App() {
   const [responseFile, setResponseFile] = useState(null);
   const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
   const [folderSettingsForm] = Form.useForm();
+  const [isOpenapiModalOpen, setOpenapiModalOpen] = useState(false);
+  const [openapiForm] = Form.useForm();
   const [isDuplicateModalOpen, setDuplicateModalOpen] = useState(false);
   const [duplicateForm] = Form.useForm();
   const [folderToDuplicate, setFolderToDuplicate] = useState(null);
@@ -389,6 +391,57 @@ export default function App() {
     }
   };
 
+  const openOpenapiModal = () => {
+    openapiForm.resetFields();
+    setOpenapiModalOpen(true);
+  };
+
+  const handleOpenapiImport = async vals => {
+    const url = (vals.url || "").trim();
+    if (!url) {
+      message.error("Укажите URL OpenAPI");
+      return;
+    }
+    try {
+      const res = await fetch(`${host}/api/openapi/specs/from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          name: (vals.spec_name || "").trim() || undefined
+        })
+      });
+      if (!res.ok) throw new Error("Не удалось загрузить спецификацию");
+      const data = await res.json();
+      let folderName = (vals.folder_name || data.name || "openapi").trim();
+      if (!folderName) folderName = "openapi";
+      folderName = folderName.replace(/\s+/g, "-");
+
+      // Пытаемся создать папку под эту спецификацию (если уже есть — просто переходим к ней)
+      try {
+        const folderRes = await fetch(`${host}/api/folders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: folderName })
+        });
+        if (!folderRes.ok && folderRes.status !== 400) {
+          throw new Error();
+        }
+      } catch {
+        // если не получилось создать — всё равно продолжаем
+      }
+
+      message.success(`OpenAPI импортирован, страница "${folderName}" готова для создания моков`);
+      setOpenapiModalOpen(false);
+      openapiForm.resetFields();
+      await fetchFolders();
+      setSelectedFolder(folderName);
+      await fetchMocks();
+    } catch (e) {
+      message.error("Ошибка импорта OpenAPI: " + (e.message || ""));
+    }
+  };
+
   const handleRequestFileUpload = e => {
     const file = e.target.files[0];
     e.target.value = "";
@@ -522,6 +575,8 @@ export default function App() {
       responseHeaders: [{ key: "", value: "" }],
       response_type: "json",
       delay_ms: 0,
+      cache_enabled: false,
+      cache_ttl: undefined,
       response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
     });
     setModalOpen(true);
@@ -559,6 +614,17 @@ export default function App() {
       request_body_mode = "none";
     }
 
+    let cache_enabled = false;
+    let cache_ttl;
+    try {
+      if (m.response_config.body && typeof m.response_config.body === "object" && m.response_config.body.__cache_ttl__) {
+        cache_enabled = true;
+        cache_ttl = m.response_config.body.__cache_ttl__;
+      }
+    } catch {
+      cache_enabled = false;
+    }
+
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
@@ -575,6 +641,8 @@ export default function App() {
       responseHeaders: headersToFormList(m.response_config.headers),
       response_type: (m.response_config.body && m.response_config.body.__file__) ? "file" : "json",
       delay_ms: m.delay_ms || 0,
+      cache_enabled,
+      cache_ttl,
       response_body: JSON.stringify(m.response_config.body, null, 2)
     });
     setModalOpen(true);
@@ -625,6 +693,15 @@ export default function App() {
         responseBodyObj = JSON.parse(vals.response_body || "{}");
       } catch {
         throw new Error("Некорректный JSON в теле ответа");
+      }
+
+      // Настройки кэша из формы мока
+      const cacheEnabled = !!vals.cache_enabled;
+      const cacheTtl = Number(vals.cache_ttl || 0);
+      if (cacheEnabled && cacheTtl > 0 && typeof responseBodyObj === "object" && responseBodyObj !== null) {
+        responseBodyObj.__cache_ttl__ = cacheTtl;
+      } else if (responseBodyObj && typeof responseBodyObj === "object") {
+        delete responseBodyObj.__cache_ttl__;
       }
 
       const entry = {
@@ -839,6 +916,19 @@ export default function App() {
     }
   };
 
+  const clearCacheForMock = async mock => {
+    const path = mock?.request_condition?.path || "/";
+    try {
+      const res = await fetch(`${host}/api/cache?path_prefix=${encodeURIComponent(path)}`, {
+        method: "DELETE"
+      });
+      if (!res.ok) throw new Error();
+      message.success("Кэш для этого пути очищен");
+    } catch {
+      message.error("Не удалось очистить кэш для этого пути");
+    }
+  };
+
   const startDuplicateFolder = name => {
     setFolderToDuplicate(name);
     duplicateForm.setFieldsValue({
@@ -933,6 +1023,13 @@ export default function App() {
             style={primaryButtonStyle}
           >
             Импорт
+          </Button>
+          <Button
+            icon={<UploadOutlined />}
+            onClick={openOpenapiModal}
+            style={primaryButtonStyle}
+          >
+            Импорт OpenAPI
           </Button>
           <Button
             icon={<DownloadOutlined />}
@@ -1069,102 +1166,97 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      Mock — гибкий mock‑сервер и песочница API
+                      Mock — визуальный mock‑сервер и песочница API
                     </Typography.Title>
                     <Typography.Paragraph>
-                      Этот сервис позволяет эмулировать backend‑эндпоинты без поднятия реальных сервисов, работать
-                      как с чистыми ручными правилами, так и на основе OpenAPI‑спецификаций, а также тестировать
-                      кэширование, задержки, ошибки, прокси и ограничения.
+                      Здесь вы можете визуально собирать моки для HTTP‑эндпоинтов, группировать их по страницам,
+                      импортировать коллекции и OpenAPI‑спеки, настраивать задержки, кэширование, ошибки и прокси —
+                      всё через интерфейс, без редактирования кода.
                     </Typography.Paragraph>
                     <Typography.Title level={4}>Базовый сценарий</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ol style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li>Сверху задайте адрес backend‑сервера (по умолчанию Render‑URL вашего сервиса).</li>
-                        <li>Создайте страницу (папку) для логической группы моков и выберите её слева.</li>
-                        <li>Нажмите «Создать mock», укажите метод, путь, заголовки и условия тела запроса.</li>
-                        <li>Заполните конфигурацию ответа (статус, заголовки, JSON или файл) и при необходимости задержку.</li>
-                        <li>Сохраните мок и убедитесь, что он активен — после этого запросы по указанному пути будут
-                            обрабатываться им, а базовый URL страницы указан над таблицей.</li>
+                        <li>В поле «Бэк» сверху укажите URL работающего backend‑сервера (по умолчанию выведен текущий).</li>
+                        <li>Слева создайте страницу (папку) для логической группы моков и выберите её.</li>
+                        <li>Нажмите «Создать mock», укажите метод и путь, по которому должны приходить запросы.</li>
+                        <li>Добавьте условия по заголовкам и/или телу запроса, если нужно различать несколько сценариев.</li>
+                        <li>Настройте статус, заголовки и тело ответа (JSON или файл), а также задержку и кэширование.</li>
+                        <li>Сохраните мок и убедитесь, что он активен — URL для вызова будет виден как «Базовый URL этой страницы» + путь.</li>
                       </ol>
                     </Typography.Paragraph>
+
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Работа с OpenAPI</Typography.Title>
                     <Typography.Paragraph>
-                      Сервис умеет работать с несколькими OpenAPI‑спецификациями (JSON/YAML), которые можно загрузить:
+                      Вы можете импортировать одну или несколько OpenAPI‑спецификаций (JSON/YAML) и быстро
+                      организовать под них страницы для моков.
                     </Typography.Paragraph>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li>при старте сервера из директории (переменная окружения <code>MOCKL_OPENAPI_SPECS_DIR</code>);</li>
-                        <li>по URL‑ам из переменной <code>MOCKL_OPENAPI_SPECS_URLS</code> (через запятую);</li>
-                        <li>через API <code>POST /api/openapi/specs/from-url</code> и <code>/api/openapi/specs/upload</code>.</li>
+                        <li>Нажмите кнопку <b>«Импорт OpenAPI»</b> в верхней панели.</li>
+                        <li>Вставьте URL до OpenAPI‑файла (JSON или YAML). При желании укажите имя спецификации и имя страницы.</li>
+                        <li>После импорта автоматически создаётся страница, в которую вы сможете добавлять моки по путям из спецификации.</li>
+                        <li>Дальше вы используете обычный функционал создания моков: вручную задаёте ответы для выбранных эндпоинтов.</li>
                       </ul>
                     </Typography.Paragraph>
                     <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-                      Список загруженных спецификаций можно получить по <code>GET /api/openapi/specs</code>, полный текст —
-                      по <code>GET /api/openapi/specs/&lt;name&gt;</code>. На основе этих спецификаций вы можете создавать
-                      моки вручную, копируя пути и схемы ответов.
+                      Советы: создайте отдельную страницу под каждую большую спецификацию и используйте человекочитаемые
+                      имена моков, чтобы быстро находить нужные сценарии.
                     </Typography.Paragraph>
 
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Расширенные возможности моков</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li><b>Подстановки в ответах и заголовках</b> — в теле ответа и заголовках можно использовать
-                            плейсхолдеры вроде <code>{'{method}'}</code>, <code>{'{path}'}</code>, <code>{'{query_id}'}</code>,
-                            <code>{'{header_Authorization}'}</code>. Они будут автоматически подставлены из входящего запроса.</li>
-                        <li><b>Кэширование ответов</b> — добавьте в тело ответа поле <code>"__cache_ttl__": N</code>, чтобы
-                            включить кэширование ответа на N секунд. Кэш можно очистить через <code>DELETE /api/cache</code>
-                            (полностью или по префиксу пути).</li>
-                        <li><b>Задержки</b> — помимо поля <code>delay_ms</code> у мока, можно указать диапазон в теле
-                            ответа: <code>"__delay_range_ms__": {"{ \"min\": 100, \"max\": 500 }"}</code>, и задержка будет
-                            выбрана случайно из указанного диапазона.</li>
-                        <li><b>Имитация ошибок</b> — в теле ответа можно задать блок
-                            <code>"__error_simulation__": {"{ \"probability\": 0.2, \"status_code\": 500, \"delay_ms\": 1000 }"}</code>.
-                            В этом случае с заданной вероятностью вернётся искусственная ошибка с указанным статусом и задержкой.</li>
-                        <li><b>Файловые ответы</b> — выберите тип ответа «Файл» и загрузите файл. На стороне сервера он
-                            будет храниться в base64, а при ответе отдаваться как бинарный файл с корректным
-                            <code>Content-Disposition</code>.</li>
+                        <li><b>Подстановки в ответах и заголовках</b> — в форме мока в поле «Тело ответа» вы можете
+                            использовать плейсхолдеры <code>{'{method}'}</code>, <code>{'{path}'}</code>,
+                            <code>{'{query_id}'}</code>, <code>{'{header_Authorization}'}</code> и другие.
+                            При реальном вызове они будут автоматически заменены значениями из запроса.</li>
+                        <li><b>Кэширование ответов</b> — в настройках мока есть опция «Включить кэширование ответа» и
+                            поле «TTL кэша (сек)». Включите её, если хотите, чтобы одинаковые запросы временно
+                            обслуживались из кэша без повторной обработки.</li>
+                        <li><b>Задержки</b> — вы можете задать фиксированную задержку в миллисекундах, либо диапазон
+                            (минимум/максимум) в теле ответа, чтобы эмулировать нестабильные сети и долгие операции.</li>
+                        <li><b>Имитация ошибок</b> — добавляя специальный блок в теле ответа, можно задать вероятность
+                            возврата ошибки вместо успешного ответа, а также статус‑код и дополнительную задержку.</li>
+                        <li><b>Файловые ответы</b> — выберите тип ответа «Файл» и загрузите нужный файл прямо из формы.
+                            Сервис сам сформирует корректные заголовки для скачивания.</li>
                       </ul>
                     </Typography.Paragraph>
 
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Прокси, редиректы и безопасность</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li><b>Прокси‑режим</b> настраивается для каждой страницы через «Настройки proxy»: если подходящего
-                            мока нет, запрос уходит на указанный backend, а ответ (включая заголовки) прозрачно возвращается.</li>
-                        <li><b>Интеллектуальная обработка редиректов</b> — при ответах 3xx с заголовком <code>Location</code>
-                            абсолютные URL автоматически переписываются на текущий хост, чтобы редиректы оставались внутри mock‑сервера.</li>
-                        <li><b>Ограничение прокси‑хостов</b> — через переменную
-                            <code>MOCKL_ALLOWED_PROXY_HOSTS</code> можно задать список разрешённых хостов для <code>proxy_base_url</code>.</li>
-                        <li><b>Ограничение размера тела</b> — <code>MOCKL_MAX_REQUEST_BODY_BYTES</code> позволяет задать
-                            максимальный размер тела запроса (при превышении вернётся 413).</li>
+                        <li><b>Прокси‑режим</b> настраивается для каждой страницы через кнопку «Настройки proxy»:
+                            укажите базовый URL реального backend’а. Если подходящего мока для запроса нет,
+                            запрос будет автоматически проксирован туда.</li>
+                        <li><b>Редиректы</b> при проксировании автоматически «приземляются» на текущий mock‑сервер,
+                            чтобы цепочки переходов не уводили вас на другой домен.</li>
+                        <li><b>Безопасность</b> — все вызовы UI идут только на указанный в поле «Бэк» адрес и текущий
+                            mock‑сервер; настройку ограничения размеров и хостов прокси можно считать уже встроенной.</li>
                       </ul>
                     </Typography.Paragraph>
 
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Кэш, метрики и ограничения</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li><b>Кэширование</b> — помимо пер‑мокового TTL через <code>__cache_ttl__</code>, можно настроить
-                            дефолтный TTL переменной <code>MOCKL_DEFAULT_CACHE_TTL</code>. Управлять кэшем можно через
-                            <code>DELETE /api/cache</code> с фильтрами <code>path_prefix</code>.</li>
-                        <li><b>Rate limiting</b> — переменные <code>MOCKL_RATE_LIMIT_REQUESTS</code> и
-                            <code>MOCKL_RATE_LIMIT_WINDOW_SECONDS</code> позволяют ограничить количество запросов в окно
-                            по IP. При превышении сервис вернёт 429.</li>
-                        <li><b>Метрики Prometheus</b> — по адресу <code>/metrics</code> доступны метрики по количеству
-                            запросов, попаданиям в моки, кэшу, прокси, rate limit и времени ответа.</li>
+                        <li><b>Кэш на уровне мока</b> вы включаете прямо в форме мока — это удобно для эндпоинтов,
+                            где ответ редко меняется и важно тестировать работу клиентов с кэшем.</li>
+                        <li><b>Управление кэшем</b> — в таблице моков доступны действия, позволяющие очистить кэш
+                            для конкретного пути (кнопка в строке мока).</li>
+                        <li><b>Ограничения и нагрузка</b> — сервер следит за частотой запросов и размерами тела;
+                            для повседневной работы об этом можно не думать, но при нагрузочном тестировании
+                            эти ограничения помогут не «убить» окружение.</li>
                       </ul>
                     </Typography.Paragraph>
 
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Загрузка правил и эксплуатация</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li><b>Загрузка правил при старте</b> — если указать директорию в
-                            <code>MOCKL_RULES_DIR</code>, все <code>.json</code> файлы с описаниями <code>MockEntry</code>
-                            будут автоматически загружены в БД.</li>
-                        <li><b>Health/readiness</b> — <code>/healthz</code> показывает, что сервис жив, а
-                            <code>/readyz</code> дополнительно проверяет доступность БД и подходит для readiness‑проб.</li>
-                        <li><b>CORS</b> уже настроен глобально (разрешены любые origin’ы), а логирование ведётся
-                            в структурированном JSON‑формате с уровнями.</li>
-                        <li><b>Корректное завершение</b> — при остановке сервиса выполняется graceful shutdown, что
-                            позволяет корректно завершить активные операции.</li>
+                        <li><b>Импорт коллекций Postman</b> — используйте кнопку «Импорт» для загрузки
+                            Postman Collection и автоматического создания моков по запросам.</li>
+                        <li><b>Дублирование страниц</b> — через кнопку «Дублировать страницу» можно быстро
+                            скопировать целый набор моков и адаптировать его под новый сценарий.</li>
+                        <li><b>Темы и удобство</b> — переключайте светлую/тёмную тему, перетаскивайте страницы,
+                            давайте понятные имена — всё это помогает держать сложные сценарии в порядке.</li>
                       </ul>
                     </Typography.Paragraph>
                   </div>
@@ -1279,6 +1371,15 @@ export default function App() {
                                 onClick={() => copyToClipboard(buildCurlForMock(r))}
                               />
                             </Tooltip>
+                            <Tooltip title="Очистить кэш для этого пути">
+                              <Button
+                                size="small"
+                                type="text"
+                                onClick={() => clearCacheForMock(r)}
+                              >
+                                Кэш
+                              </Button>
+                            </Tooltip>
                             <Tooltip title="Удалить">
                               <Button
                                 size="small"
@@ -1324,7 +1425,9 @@ export default function App() {
                 request_body_formdata: [{ key: "", value: "" }],
                 responseHeaders: [{ key: "", value: "" }],
                 response_type: "json",
-                delay_ms: 0
+                delay_ms: 0,
+                cache_enabled: false,
+                cache_ttl: undefined
               }}
             >
               <Form.Item name="id" hidden><Input /></Form.Item>
@@ -1522,19 +1625,24 @@ export default function App() {
                         >
                           <TextArea rows={3} placeholder='Например {"user":"123"}' />
                         </Form.Item>
-                        <Button
-                          type="dashed"
-                          onClick={() => requestFileInputRef.current?.click()}
-                          style={{ marginTop: 8 }}
+                        <Form.Item
+                          label="Файл для тела запроса (опционально)"
+                          tooltip="Можно загрузить файл, его содержимое будет подставлено в тело запроса при проверке условия"
+                          style={{ marginBottom: 0 }}
                         >
-                          Загрузить файл в тело запроса
-                        </Button>
-                        <input
-                          type="file"
-                          ref={requestFileInputRef}
-                          style={{ display: "none" }}
-                          onChange={handleRequestFileUpload}
-                        />
+                          <Button
+                            type="dashed"
+                            onClick={() => requestFileInputRef.current?.click()}
+                          >
+                            Выбрать файл
+                          </Button>
+                          <input
+                            type="file"
+                            ref={requestFileInputRef}
+                            style={{ display: "none" }}
+                            onChange={handleRequestFileUpload}
+                          />
+                        </Form.Item>
                       </>
                     );
                   }}
@@ -1583,6 +1691,18 @@ export default function App() {
 
               <Form.Item label="Задержка ответа (мс)" name="delay_ms">
                 <Input type="number" min={0} placeholder="Например 500 для 0.5 секунды" />
+              </Form.Item>
+
+              <Form.Item name="cache_enabled" valuePropName="checked">
+                <Checkbox>Включить кэширование ответа</Checkbox>
+              </Form.Item>
+
+              <Form.Item
+                label="TTL кэша (сек)"
+                name="cache_ttl"
+                tooltip="Через сколько секунд кэш для этого мока будет считаться устаревшим"
+              >
+                <Input type="number" min={0} placeholder="Например 60" />
               </Form.Item>
 
               <Form.Item label="Тип ответа" name="response_type">
