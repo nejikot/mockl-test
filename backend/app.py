@@ -793,17 +793,117 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 or f"{method_upper} {path}"
             )
 
+            # Извлекаем примеры запроса
+            request_body_contains = None
+            request_headers = {}
+            req_body = op.get("requestBody", {})
+            if req_body and isinstance(req_body, dict):
+                content = req_body.get("content", {})
+                # Ищем первый доступный media type (обычно application/json)
+                for media_type, media_spec in content.items():
+                    if isinstance(media_spec, dict):
+                        # Проверяем example
+                        example = media_spec.get("example")
+                        if example is not None:
+                            if isinstance(example, (dict, list)):
+                                request_body_contains = json.dumps(example)
+                            else:
+                                request_body_contains = str(example)
+                            request_headers["Content-Type"] = media_type
+                            break
+                        # Проверяем examples (множественное число)
+                        examples = media_spec.get("examples", {})
+                        if examples and isinstance(examples, dict):
+                            # Берем первый пример
+                            first_example = next(iter(examples.values()))
+                            if isinstance(first_example, dict):
+                                example_value = first_example.get("value")
+                                if example_value is not None:
+                                    if isinstance(example_value, (dict, list)):
+                                        request_body_contains = json.dumps(example_value)
+                                    else:
+                                        request_body_contains = str(example_value)
+                                    request_headers["Content-Type"] = media_type
+                                    break
+
+            # Извлекаем примеры ответа
+            response_status = 200
+            response_body = {"message": "mock from OpenAPI"}
+            response_headers = {}
+            responses = op.get("responses", {})
+            
+            # Ищем успешный ответ (2xx) или первый доступный
+            for status_str, response_spec in responses.items():
+                if isinstance(response_spec, dict):
+                    try:
+                        status_int = int(status_str)
+                        # Предпочитаем 200, 201, но берем любой 2xx
+                        if 200 <= status_int < 300:
+                            response_status = status_int
+                            content = response_spec.get("content", {})
+                            # Ищем пример в content
+                            for media_type, media_spec in content.items():
+                                if isinstance(media_spec, dict):
+                                    # Проверяем example
+                                    example = media_spec.get("example")
+                                    if example is not None:
+                                        response_body = example if isinstance(example, (dict, list)) else {"value": example}
+                                        response_headers["Content-Type"] = media_type
+                                        break
+                                    # Проверяем examples
+                                    examples = media_spec.get("examples", {})
+                                    if examples and isinstance(examples, dict):
+                                        first_example = next(iter(examples.values()))
+                                        if isinstance(first_example, dict):
+                                            example_value = first_example.get("value")
+                                            if example_value is not None:
+                                                response_body = example_value if isinstance(example_value, (dict, list)) else {"value": example_value}
+                                                response_headers["Content-Type"] = media_type
+                                                break
+                                    # Проверяем schema и генерируем пример
+                                    schema = media_spec.get("schema", {})
+                                    if schema and not example and not examples:
+                                        # Простая генерация примера из schema (базовая)
+                                        if schema.get("type") == "object":
+                                            response_body = {}
+                                        elif schema.get("type") == "array":
+                                            response_body = []
+                                        response_headers["Content-Type"] = media_type
+                            break
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Если не нашли пример, используем первый доступный ответ
+            if response_status == 200 and not any(k.startswith("2") for k in responses.keys() if isinstance(k, str)):
+                for status_str, response_spec in responses.items():
+                    if isinstance(response_spec, dict):
+                        try:
+                            response_status = int(status_str)
+                            content = response_spec.get("content", {})
+                            for media_type, media_spec in content.items():
+                                if isinstance(media_spec, dict):
+                                    example = media_spec.get("example")
+                                    if example is not None:
+                                        response_body = example if isinstance(example, (dict, list)) else {"value": example}
+                                        response_headers["Content-Type"] = media_type
+                                        break
+                            break
+                        except (ValueError, TypeError):
+                            continue
+
             entry = MockEntry(
                 folder=folder_name,
                 name=mock_name,
                 request_condition=MockRequestCondition(
                     method=method_upper,
                     path=path,
+                    headers=request_headers if request_headers else None,
+                    body_contains=request_body_contains
                 ),
                 response_config=MockResponseConfig(
-                    status_code=200,
-                    headers=None,
-                    body={"message": "mock from OpenAPI"},
+                    status_code=response_status,
+                    headers=response_headers if response_headers else None,
+                    body=response_body,
                 ),
                 active=True,
                 delay_ms=0,
@@ -1234,12 +1334,26 @@ async def import_postman_collection(
         items = coll.get("item", [])
         imported = []
 
-        for it in items:
-            req = it.get("request", {})
-            res_list = it.get("response", [])
+        def process_item(item, folder_name_prefix=""):
+            """Рекурсивно обрабатывает элементы Postman коллекции (запросы и папки)."""
+            if not isinstance(item, dict):
+                return
+            
+            # Если это папка (folder) с вложенными элементами
+            if "item" in item and isinstance(item.get("item"), list):
+                folder_name = item.get("name", "")
+                if folder_name:
+                    # Обрабатываем вложенные элементы
+                    for sub_item in item.get("item", []):
+                        process_item(sub_item, folder_name_prefix)
+                return
+            
+            # Если это запрос
+            req = item.get("request", {})
+            res_list = item.get("response", [])
 
             if not req or not res_list:
-                continue
+                return
 
             res = res_list[0]
             url = req.get("url", {})
@@ -1252,6 +1366,70 @@ async def import_postman_collection(
             for h in req.get("header", []):
                 if isinstance(h, dict) and "key" in h:
                     request_headers[h["key"]] = h.get("value", "")
+
+            # Обработка тела запроса
+            body_contains = None
+            req_body = req.get("body", {})
+            if req_body:
+                if isinstance(req_body, dict):
+                    mode = req_body.get("mode", "")
+                    
+                    if mode == "raw":
+                        # Для raw берем содержимое из поля "raw"
+                        body_data = req_body.get("raw", "")
+                        if body_data:
+                            if isinstance(body_data, str):
+                                body_contains = body_data
+                            else:
+                                body_contains = json.dumps(body_data) if body_data else None
+                    elif mode == "urlencoded" and isinstance(req_body.get("urlencoded"), list):
+                        # Для urlencoded формируем строку key=value&key2=value2
+                        params = []
+                        for param in req_body.get("urlencoded", []):
+                            if isinstance(param, dict):
+                                key = param.get("key", "")
+                                value = param.get("value", "")
+                                if key:
+                                    # URL-кодируем значения
+                                    from urllib.parse import quote_plus
+                                    encoded_key = quote_plus(str(key))
+                                    encoded_value = quote_plus(str(value)) if value else ""
+                                    params.append(f"{encoded_key}={encoded_value}")
+                        if params:
+                            body_contains = "&".join(params)
+                    elif mode == "formdata" and isinstance(req_body.get("formdata"), list):
+                        # Для formdata тоже формируем строку (упрощенно)
+                        params = []
+                        for param in req_body.get("formdata", []):
+                            if isinstance(param, dict):
+                                key = param.get("key", "")
+                                value = param.get("value", "")
+                                if key:
+                                    from urllib.parse import quote_plus
+                                    encoded_key = quote_plus(str(key))
+                                    encoded_value = quote_plus(str(value)) if value else ""
+                                    params.append(f"{encoded_key}={encoded_value}")
+                        if params:
+                            body_contains = "&".join(params)
+                    elif mode == "file" and req_body.get("file"):
+                        # Для файла берем путь или содержимое
+                        file_info = req_body.get("file", {})
+                        if isinstance(file_info, dict):
+                            file_src = file_info.get("src", "")
+                            if file_src:
+                                body_contains = file_src
+                        elif isinstance(file_info, str):
+                            body_contains = file_info
+                    else:
+                        # Fallback: пробуем найти raw или любое другое поле
+                        body_data = req_body.get("raw") or req_body.get(mode) or ""
+                        if body_data:
+                            if isinstance(body_data, str):
+                                body_contains = body_data
+                            else:
+                                body_contains = json.dumps(body_data) if body_data else None
+                elif isinstance(req_body, str):
+                    body_contains = req_body
 
             # Обработка заголовков ответа
             response_headers = {}
@@ -1280,11 +1458,12 @@ async def import_postman_collection(
 
             entry = MockEntry(
                 folder=folder_name,
-                name=it.get("name"),
+                name=item.get("name"),
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
                     path=path,
-                    headers=request_headers if request_headers else None
+                    headers=request_headers if request_headers else None,
+                    body_contains=body_contains
                 ),
                 response_config=MockResponseConfig(
                     status_code=status_code,
@@ -1308,6 +1487,10 @@ async def import_postman_collection(
             mock.active = entry.active
 
             imported.append(mock.id)
+
+        # Обрабатываем все элементы коллекции
+        for it in items:
+            process_item(it)
 
         db.commit()
         logger.info(f"Imported {len(imported)} mocks from Postman collection into folder '{folder_name}'")
