@@ -122,9 +122,9 @@ function buildFolderHost(baseHost, folder) {
   if (!baseHost || !folder || folder === "default") return baseHost;
   try {
     const url = new URL(baseHost);
-    const basePath = url.pathname.replace(/\\/+$/ "");
+    const basePath = url.pathname.replace(/\/+$/, "");
     url.pathname = `${basePath}/${folder}`;
-    return url.toString().replace(/\\/+$/ "");
+    return url.toString().replace(/\/+$/, "");
   } catch {
     return baseHost;
   }
@@ -605,7 +605,7 @@ export default function App() {
     let request_body_params = [{ key: "", value: "" }];
     let request_body_formdata = [{ key: "", value: "" }];
 
-    if (/application\\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
+    if (/application\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
       request_body_mode = "urlencoded";
       const pairs = bodyContains.split("&").filter(Boolean);
       request_body_params =
@@ -616,7 +616,7 @@ export default function App() {
             value: decodeURIComponent(v)
           };
         }) || [{ key: "", value: "" }];
-    } else if (/multipart\\/form-data/i.test(contentType)) {
+    } else if (/multipart\/form-data/i.test(contentType)) {
       request_body_mode = "form-data";
     } else if (!bodyContains) {
       request_body_mode = "none";
@@ -854,7 +854,7 @@ export default function App() {
     const headers = mock.request_condition.headers || {};
     const bodyContains = mock.request_condition.body_contains || "";
 
-    const normalizedHost = (baseFolderUrl || "").replace(/\\/+$/ "");
+    const normalizedHost = (baseFolderUrl || "").replace(/\/+$/, "");
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     const url = `${normalizedHost}${normalizedPath}`;
 
@@ -869,7 +869,7 @@ export default function App() {
     });
 
     if (bodyContains) {
-      if (/application\\/x-www-form-urlencoded/i.test(contentType)) {
+      if (/application\/x-www-form-urlencoded/i.test(contentType)) {
         const pairs = bodyContains.split("&").filter(Boolean);
         if (pairs.length) {
           pairs.forEach(p => {
