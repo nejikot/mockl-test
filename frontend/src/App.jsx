@@ -1,15 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import {
-  Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox
-} from "antd";
+import { Table, Button, Form, Input, Select, Modal, Layout, message, ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox } from "antd";
 import { theme as antdTheme } from "antd";
-import {
-  PlusOutlined, MinusCircleOutlined, DeleteOutlined,
-  ExclamationCircleOutlined, CopyOutlined,
-  MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
-  SnippetsOutlined, BgColorsOutlined
-} from "@ant-design/icons";
+import { PlusOutlined, MinusCircleOutlined, DeleteOutlined, ExclamationCircleOutlined, CopyOutlined, MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined, SnippetsOutlined, BgColorsOutlined } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 
@@ -26,7 +18,6 @@ const HTTP_STATUSES = [
   { value: 101, label: "101 - Switching Protocols", example: { message: "switching protocols" } },
   { value: 102, label: "102 - Processing", example: { message: "processing" } },
   { value: 103, label: "103 - Early Hints", example: { message: "early hints" } },
-
   // 2xx: Success
   { value: 200, label: "200 - OK", example: { message: "success", data: {} } },
   { value: 201, label: "201 - Created", example: { message: "created", id: "123" } },
@@ -38,7 +29,6 @@ const HTTP_STATUSES = [
   { value: 207, label: "207 - Multi-Status", example: { status: "multi-status" } },
   { value: 208, label: "208 - Already Reported", example: { message: "already reported" } },
   { value: 226, label: "226 - IM Used", example: { message: "IM used" } },
-
   // 3xx: Redirection
   { value: 300, label: "300 - Multiple Choices", example: { choices: [] } },
   { value: 301, label: "301 - Moved Permanently", example: { redirect: "url" } },
@@ -48,7 +38,6 @@ const HTTP_STATUSES = [
   { value: 305, label: "305 - Use Proxy", example: { proxy: "url" } },
   { value: 307, label: "307 - Temporary Redirect", example: { redirect: "url" } },
   { value: 308, label: "308 - Permanent Redirect", example: { redirect: "url" } },
-
   // 4xx: Client Error
   { value: 400, label: "400 - Bad Request", example: { error: "bad request", message: "Invalid input" } },
   { value: 401, label: "401 - Unauthorized", example: { error: "unauthorized", message: "Authentication required" } },
@@ -82,7 +71,6 @@ const HTTP_STATUSES = [
   { value: 449, label: "449 - Retry With", example: { error: "retry with" } },
   { value: 451, label: "451 - Unavailable For Legal Reasons", example: { error: "unavailable for legal reasons" } },
   { value: 499, label: "499 - Client Closed Request", example: { error: "client closed request" } },
-
   // 5xx: Server Error
   { value: 500, label: "500 - Internal Server Error", example: { error: "internal server error", message: "Something went wrong" } },
   { value: 501, label: "501 - Not Implemented", example: { error: "not implemented" } },
@@ -126,8 +114,11 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
-    collect: monitor => ({ isDragging: monitor.isDragging() })
+    collect: monitor => ({
+      isDragging: monitor.isDragging()
+    })
   });
+
   const [, drop] = useDrop({
     accept: 'folder',
     hover: item => {
@@ -137,1127 +128,385 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
       }
     }
   });
-  
+
   const isActive = folder === selectedFolder;
-  const bgColor = isActive 
-    ? (theme === "dark" ? "#1890ff" : "#e6f7ff")
-    : (theme === "dark" ? "#262626" : "#fafafa");
-  const textColor = isActive
-    ? (theme === "dark" ? "#fff" : "#000")
-    : (theme === "dark" ? "#e8e8e8" : "#000");
+  const bgColor = isActive ? (theme === "dark" ? "#1890ff" : "#e6f7ff") : (theme === "dark" ? "#262626" : "#fafafa");
+  const textColor = isActive ? (theme === "dark" ? "#fff" : "#000") : (theme === "dark" ? "#e8e8e8" : "#000");
   const hoverBgColor = theme === "dark" ? "#1890ff" : "#e6f7ff";
-  
+
   return (
     <div
       ref={node => drag(drop(node))}
       style={{
-        opacity: isDragging ? 0.5 : 1,
-        padding: 12,
-        marginBottom: 8,
-        borderRadius: 8,
-        cursor: "pointer",
-        background: bgColor,
+        padding: "8px 12px",
+        margin: "4px 0",
+        backgroundColor: bgColor,
         color: textColor,
-        fontWeight: isActive ? 600 : 400,
+        borderRadius: "4px",
+        cursor: isDragging ? "grabbing" : "grab",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
-        transition: "all 0.3s",
+        transition: "background-color 0.2s"
       }}
-      onMouseEnter={e => {
-        if (!isActive) e.currentTarget.style.background = hoverBgColor;
-      }}
-      onMouseLeave={e => {
-        if (!isActive) e.currentTarget.style.background = bgColor;
-      }}
+      onMouseEnter={e => e.currentTarget.style.backgroundColor = hoverBgColor}
+      onMouseLeave={e => e.currentTarget.style.backgroundColor = bgColor}
       onClick={() => setSelectedFolder(folder)}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
-        <Typography.Text style={{ color: textColor }}>
-          {folder === "default" ? "Главная" : folder}
-        </Typography.Text>
+      <MenuOutlined style={{ marginRight: "8px", cursor: "grab" }} />
+      <span style={{ flex: 1, cursor: "pointer" }}>{folder}</span>
+      <div>
+        <EditOutlined style={{ marginRight: "8px", cursor: "pointer" }} onClick={e => { e.stopPropagation(); startRename(folder); }} />
+        <DeleteOutlined style={{ cursor: "pointer", color: "#ff4d4f" }} onClick={e => { e.stopPropagation(); deleteFolder(folder); }} />
       </div>
-      {folder !== "default" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <EditOutlined
-            onClick={e => { e.stopPropagation(); startRename(folder); }}
-            style={{ color: textColor, fontSize: 16, cursor: "pointer" }}
-          />
-          <DeleteOutlined
-            onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
-            style={{ color: '#ff4d4f', fontSize: 16, cursor: "pointer" }}
-          />
-        </div>
-      )}
     </div>
   );
 };
 
-export default function App() {
-  const [form] = Form.useForm();
-  const [folderForm] = Form.useForm();
-  const [renameForm] = Form.useForm();
-  const [folders, setFolders] = useState(["default"]);
-  const [selectedFolder, setSelectedFolder] = useState("default");
+function App() {
   const [mocks, setMocks] = useState([]);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [isFolderModalOpen, setFolderModalOpen] = useState(false);
-  const [isRenameModalOpen, setRenameModalOpen] = useState(false);
-  const [folderToRename, setFolderToRename] = useState(null);
-  const [editing, setEditing] = useState(null);
-  const [host, setHost] = useState(getBackendUrl());
+  const [folders, setFolders] = useState(["[MOCK] CATALOG"]);
+  const [selectedFolder, setSelectedFolder] = useState("[MOCK] CATALOG");
+  const [currentPage, setCurrentPage] = useState("home");
+  const [form] = Form.useForm();
   const [theme, setTheme] = useState("light");
-  const screens = useBreakpoint();
-  const fileInputRef = useRef();
+  const [backendUrl, setBackendUrl] = useState(getBackendUrl());
+  const [renamingFolder, setRenamingFolder] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem("mockl-theme") || "light";
+    const savedTheme = localStorage.getItem("theme") || "light";
     setTheme(savedTheme);
   }, []);
 
   useEffect(() => {
-    document.body.style.background = theme === "light" ? "#f0f2f5" : "#141414";
+    localStorage.setItem("theme", theme);
   }, [theme]);
 
   const toggleTheme = () => {
-    const newTheme = theme === "light" ? "dark" : "light";
-    setTheme(newTheme);
-    localStorage.setItem("mockl-theme", newTheme);
+    setTheme(theme === "light" ? "dark" : "light");
   };
 
-  const copyToClipboard = text => {
-    navigator.clipboard.writeText(text)
-      .then(() => message.success('Скопировано'))
-      .catch(() => message.error('Не удалось скопировать'));
-  };
-
-  const uploadJson = async file => {
-    const formData = new FormData();
-    formData.append("file", file);
-    try {
-      const res = await fetch(`${host}/api/mocks/import`, {
-        method: "POST",
-        body: formData
-      });
-      if (!res.ok) throw new Error("Импорт не удался");
-      const data = await res.json();
-      message.success(`Импортировано ${data.imported_ids.length} мока(ов)`);
-      fetchFolders();
-      fetchMocks();
-    } catch (e) {
-      message.error("Ошибка импорта: " + e.message);
-    }
-  };
-
-  const onImportClick = () => fileInputRef.current.click();
-
-  const handleFileChange = e => {
-    const file = e.target.files[0];
-    if (file) uploadJson(file);
-    e.target.value = "";
-  };
-
-  const toggleMockActive = async (id, active) => {
-    try {
-      const res = await fetch(`${host}/api/mocks/${id}/toggle`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active })
-      });
-      if (!res.ok) throw new Error();
-      setMocks(prev => prev.map(m => m.id === id ? { ...m, active } : m));
-      message.success(active ? "Активировано" : "Деактивировано");
-    } catch {
-      message.error("Ошибка смены статуса");
-    }
-  };
-
-  const deactivateAllMocks = () => {
-    Modal.confirm({
-      title: 'Отключить все моки во всех папках?',
-      icon: <ExclamationCircleOutlined />,
-      okText: 'Отключить все',
-      cancelText: 'Отмена',
-      onOk: async () => {
-        try {
-          const res = await fetch(`${host}/api/mocks/deactivate-all`, { method: "PATCH" });
-          if (!res.ok) throw new Error();
-          setMocks(prev => prev.map(m => ({ ...m, active: false })));
-          message.success("Все моки отключены");
-        } catch {
-          message.error("Ошибка отключения");
-        }
-      }
-    });
-  };
-
-  const moveFolder = (from, to) => {
-    const arr = [...folders];
-    const [m] = arr.splice(from, 1);
-    arr.splice(to, 0, m);
-    const defIdx = arr.indexOf("default");
-    if (defIdx > 0) arr.unshift(arr.splice(defIdx, 1)[0]);
-    setFolders(arr);
-  };
-
-  const fetchFolders = async () => {
-    try {
-      const res = await fetch(`${host}/api/mocks/folders`);
-      if (!res.ok) throw new Error();
-      let data = await res.json();
-      if (!data.length) data = ["default"];
-      const sorted = ["default", ...data.filter(f => f !== "default")];
-      setFolders(sorted);
-      if (!sorted.includes(selectedFolder)) setSelectedFolder(sorted[0]);
-    } catch {
-      setFolders(["default"]);
-      setSelectedFolder("default");
-      message.error("Ошибка получения папок");
-    }
-  };
-
-  const fetchMocks = async () => {
-    if (selectedFolder === "default") {
-      setMocks([]);
-      return;
-    }
-    try {
-      const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(selectedFolder)}`);
-      if (!res.ok) throw new Error();
-      setMocks(await res.json());
-    } catch {
-      setMocks([]);
-      message.error("Ошибка получения моков");
-    }
-  };
-
-  useEffect(() => { fetchFolders(); }, [host]);
-  useEffect(() => { fetchMocks(); }, [selectedFolder, host]);
-
-  const handleStatusChange = code => {
-    const st = HTTP_STATUSES.find(s => s.value === code);
-    if (st) form.setFieldsValue({ response_body: JSON.stringify(st.example, null, 2) });
-  };
-
-  const openAddMock = () => {
-    setEditing(null);
-    form.resetFields();
-    form.setFieldsValue({
+  const createMock = (values) => {
+    const newMock = {
+      id: Date.now(),
+      ...values,
       folder: selectedFolder,
-      method: "GET",
-      status_code: 200,
-      active: true,
-      requestHeaders: [{ key: "", value: "" }],
-      request_body_mode: "none",
-      request_body_contains: "",
-      request_body_params: [{ key: "", value: "" }],
-      request_body_formdata: [{ key: "", value: "" }],
-      responseHeaders: [{ key: "", value: "" }],
-      response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
-    });
-    setModalOpen(true);
+      isActive: true
+    };
+    setMocks([...mocks, newMock]);
+    form.resetFields();
+    message.success("Mock успешно создан!");
   };
 
-  const openEditMock = m => {
-    setEditing(m);
-    const headers = m.request_condition.headers || {};
-    const contentTypeKey = Object.keys(headers).find(
-      k => k.toLowerCase() === "content-type"
-    );
-    const contentType = contentTypeKey ? headers[contentTypeKey] : "";
-    const bodyContains = m.request_condition.body_contains || "";
-
-    let request_body_mode = "raw";
-    let request_body_raw = bodyContains;
-    let request_body_params = [{ key: "", value: "" }];
-    let request_body_formdata = [{ key: "", value: "" }];
-
-    if (/application\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
-      request_body_mode = "urlencoded";
-      const pairs = bodyContains.split("&").filter(Boolean);
-      request_body_params =
-        pairs.map(p => {
-          const [k, v = ""] = p.split("=");
-          return {
-            key: decodeURIComponent(k),
-            value: decodeURIComponent(v)
-          };
-        }) || [{ key: "", value: "" }];
-    } else if (/multipart\/form-data/i.test(contentType)) {
-      request_body_mode = "form-data";
-    } else if (!bodyContains) {
-      request_body_mode = "none";
-    }
-
-    form.setFieldsValue({
-      id: m.id,
-      folder: m.folder,
-      method: m.request_condition.method,
-      path: m.request_condition.path,
-      requestHeaders: headersToFormList(m.request_condition.headers),
-      request_body_mode,
-      request_body_raw,
-      request_body_params,
-      request_body_formdata,
-      status_code: m.response_config.status_code,
-      active: m.active !== false,
-      responseHeaders: headersToFormList(m.response_config.headers),
-      response_body: JSON.stringify(m.response_config.body, null, 2)
-    });
-    setModalOpen(true);
+  const deleteMock = (id) => {
+    setMocks(mocks.filter(m => m.id !== id));
+    message.success("Mock успешно удален!");
   };
 
-  const saveMock = async vals => {
-    try {
-      const toHeaderObject = list => {
-        const obj = {};
-        (list || []).forEach(it => {
-          if (it.key) obj[it.key] = it.value || "";
-        });
-        return obj;
-      };
-
-      const responseHeadersObj = toHeaderObject(vals.responseHeaders || []);
-      const requestHeadersObj = toHeaderObject(vals.requestHeaders || []);
-
-      const bodyMode = vals.request_body_mode || "none";
-      let bodyContains = "";
-      let contentType = "";
-
-      if (bodyMode === "urlencoded") {
-        const params = vals.request_body_params || [];
-        bodyContains = params
-          .filter(p => p.key)
-          .map(
-            p =>
-              `${encodeURIComponent(p.key)}=${encodeURIComponent(
-                p.value || ""
-              )}`
-          )
-          .join("&");
-        contentType = "application/x-www-form-urlencoded";
-      } else if (bodyMode === "form-data") {
-        contentType = "multipart/form-data";
-        bodyContains = "";
-      } else if (bodyMode === "raw") {
-        bodyContains = (vals.request_body_raw || "").trim();
-      }
-
-      if (contentType) {
-        requestHeadersObj["Content-Type"] = contentType;
-      }
-
-      const entry = {
-        id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
-        folder: vals.folder,
-        active: vals.active !== false,
-        request_condition: {
-          method: vals.method,
-          path: vals.path,
-          headers: Object.keys(requestHeadersObj).length ? requestHeadersObj : {},
-          body_contains: bodyContains || null
-        },
-        response_config: {
-          status_code: Number(vals.status_code),
-          headers: responseHeadersObj,
-          body: JSON.parse(vals.response_body || "{}")
-        }
-      };
-      const res = await fetch(`${host}/api/mocks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry)
-      });
-      if (!res.ok) throw new Error();
-      setModalOpen(false);
-      fetchMocks();
-      fetchFolders();
-      message.success("Сохранено");
-    } catch (e) {
-      message.error("Ошибка: " + e.message);
-    }
+  const toggleMockStatus = (id) => {
+    setMocks(mocks.map(m => m.id === id ? { ...m, isActive: !m.isActive } : m));
   };
 
-  const deleteMock = async id => {
-    try {
-      const res = await fetch(`${host}/api/mocks?id_=${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error();
-      fetchMocks();
-      fetchFolders();
-      message.success("Удалено");
-    } catch {
-      message.error("Ошибка удаления");
-    }
+  const addFolder = () => {
+    const newFolderName = `New Folder ${folders.length}`;
+    setFolders([...folders, newFolderName]);
   };
 
-  const duplicateMock = async mock => {
-    try {
-      const copy = {
-        folder: mock.folder,
-        active: mock.active !== false,
-        request_condition: {
-          method: mock.request_condition.method,
-          path: mock.request_condition.path,
-          headers: mock.request_condition.headers || {},
-          body_contains: mock.request_condition.body_contains || null
-        },
-        response_config: {
-          status_code: mock.response_config.status_code,
-          headers: mock.response_config.headers || {},
-          body: mock.response_config.body
-        }
-      };
-      const res = await fetch(`${host}/api/mocks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(copy)
-      });
-      if (!res.ok) throw new Error();
-      message.success("Мок продублирован");
-      fetchMocks();
-    } catch {
-      message.error("Не удалось продублировать мок");
-    }
-  };
-
-  const buildCurlForMock = mock => {
-    if (!mock || !mock.request_condition) return "";
-    if (!host) return "";
-    const method = (mock.request_condition.method || "GET").toUpperCase();
-    const path = mock.request_condition.path || "/";
-    const headers = mock.request_condition.headers || {};
-    const bodyContains = mock.request_condition.body_contains || "";
-
-    const normalizedHost = (host || "").replace(/\/+$/, "");
-    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    const url = `${normalizedHost}${normalizedPath}`;
-
-    const parts = [`curl -X ${method}`];
-
-    let contentType = "";
-    Object.entries(headers).forEach(([key, value]) => {
-      if (key.toLowerCase() === "content-type") {
-        contentType = value || "";
-      }
-      parts.push(`-H '${key}: ${value}'`);
-    });
-
-    if (bodyContains) {
-      if (/application\/x-www-form-urlencoded/i.test(contentType)) {
-        const pairs = bodyContains.split("&").filter(Boolean);
-        if (pairs.length) {
-          pairs.forEach(p => {
-            parts.push(`--data-urlencode '${p}'`);
-          });
-        } else {
-          parts.push(`--data-urlencode '${bodyContains}'`);
-        }
-      } else {
-        parts.push(`--data '${bodyContains}'`);
-      }
-    }
-
-    parts.push(`'${url}'`);
-    return parts.join(" ");
-  };
-
-  const openAddFolder = () => {
-    folderForm.resetFields();
-    setFolderModalOpen(true);
-  };
-
-  const startRenameFolder = name => {
-    setFolderToRename(name);
-    renameForm.setFieldsValue({ new_name: name });
-    setRenameModalOpen(true);
-  };
-
-  const addFolder = async vals => {
-    const name = vals.name.trim();
-    if (folders.includes(name)) return message.error("Уже существует");
-    try {
-      const res = await fetch(`${host}/api/folders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name })
-      });
-      if (!res.ok) throw new Error();
-      message.success("Создано");
-      setFolderModalOpen(false);
-      fetchFolders();
-    } catch (e) {
-      message.error("Ошибка: " + e.message);
-    }
-  };
-
-  const deleteFolder = name => {
-    if (name === "default") return message.warning("Нельзя удалить Главная");
-    Modal.confirm({
-      title: `Удалить страницу ${name === "default" ? "Главная" : name}?`,
-      icon: <ExclamationCircleOutlined />,
-      okText: "Удалить",
-      okType: "danger",
-      cancelText: "Отмена",
-      onOk: async () => {
-        try {
-          const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(name)}`, { method: "DELETE" });
-          if (!res.ok) throw new Error();
-          message.success("Удалено");
-          if (selectedFolder === name) setSelectedFolder("default");
-          fetchFolders();
-          fetchMocks();
-        } catch {
-          message.error("Ошибка удаления");
-        }
-      }
-    });
-  };
-
-  const renameFolder = async vals => {
-    const newName = (vals.new_name || "").trim();
-    if (!folderToRename || !newName || newName === folderToRename) {
-      setRenameModalOpen(false);
+  const deleteFolder = (folderName) => {
+    if (folders.length <= 1) {
+      message.warning("Нужна хотя бы одна папка!");
       return;
     }
-    if (folders.includes(newName)) {
-      return message.error("Папка с таким именем уже существует");
+    setFolders(folders.filter(f => f !== folderName));
+    if (selectedFolder === folderName) {
+      setSelectedFolder(folders[0]);
     }
-    try {
-      const res = await fetch(`${host}/api/folders/rename`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_name: folderToRename, new_name: newName })
-      });
-      if (!res.ok) throw new Error();
-      message.success("Переименовано");
-      setRenameModalOpen(false);
-      if (selectedFolder === folderToRename) {
-        setSelectedFolder(newName);
+    setMocks(mocks.filter(m => m.folder !== folderName));
+  };
+
+  const startRename = (folderName) => {
+    setRenamingFolder(folderName);
+    setRenameValue(folderName);
+  };
+
+  const finishRename = () => {
+    if (renameValue && renameValue !== renamingFolder) {
+      setFolders(folders.map(f => f === renamingFolder ? renameValue : f));
+      setMocks(mocks.map(m => m.folder === renamingFolder ? { ...m, folder: renameValue } : m));
+      if (selectedFolder === renamingFolder) {
+        setSelectedFolder(renameValue);
       }
-      fetchFolders();
-    } catch {
-      message.error("Ошибка переименования");
+    }
+    setRenamingFolder(null);
+  };
+
+  const moveFolder = (fromIndex, toIndex) => {
+    const newFolders = [...folders];
+    const [moved] = newFolders.splice(fromIndex, 1);
+    newFolders.splice(toIndex, 0, moved);
+    setFolders(newFolders);
+  };
+
+  const exportMocks = () => {
+    const dataStr = JSON.stringify({ mocks, folders }, null, 2);
+    const element = document.createElement("a");
+    element.setAttribute("href", "data:text/plain;charset=utf-8," + encodeURIComponent(dataStr));
+    element.setAttribute("download", "mocks.json");
+    element.style.display = "none";
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+  };
+
+  const importMocks = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = JSON.parse(event.target.result);
+          setMocks(data.mocks || []);
+          setFolders(data.folders || []);
+          message.success("Mocks успешно импортированы!");
+        } catch (err) {
+          message.error("Ошибка при импорте файла!");
+        }
+      };
+      reader.readAsText(file);
     }
   };
 
-  const isDesktop = screens.md ?? false;
-  const stickyTopOffset = isDesktop ? 88 : 64;
-  const isDefaultFolder = selectedFolder === "default";
-  const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
-  const primaryButtonStyle = {
-    minWidth: isDesktop ? 160 : "calc(50% - 8px)",
-    flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
-  };
+  const mocksByFolder = mocks.filter(m => m.folder === selectedFolder);
 
-  const themeConfig = {
-    algorithm: theme === "dark" ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-    token: {
-      colorBgBase: theme === "light" ? "#f0f2f5" : "#141414",
-      colorPrimary: theme === "dark" ? "#177ddc" : "#1890ff",
-      borderRadius: 8,
-    }
-  };
-
-  const actionToolbar = (
-    <div style={{ position: "sticky", top: stickyTopOffset, zIndex: 10, marginBottom: 24 }}>
-      <div style={{
-        background: theme === "light" ? "#fff" : "#1f1f1f",
-        borderRadius: 12,
-        padding: isDesktop ? 20 : 16,
-        boxShadow: "0 15px 35px rgba(15,23,42,0.08)",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 12,
-        justifyContent: isDesktop ? "space-between" : "center",
-        alignItems: "center"
-      }}>
-        <div style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 12,
-          flex: 1,
-          justifyContent: isDesktop ? "flex-start" : "center"
-        }}>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openAddMock}
-            style={primaryButtonStyle}
-          >
-            Создать mock
-          </Button>
-          <Button
-            icon={<PlusOutlined />}
-            onClick={openAddFolder}
-            style={primaryButtonStyle}
-          >
-            Добавить страницу
-          </Button>
-          <Button
-            icon={<UploadOutlined />}
-            onClick={onImportClick}
-            style={primaryButtonStyle}
-          >
-            Импорт
-          </Button>
-          <input
-            type="file"
-            accept="application/json"
-            ref={fileInputRef}
-            style={{ display: "none" }}
-            onChange={handleFileChange}
-          />
-        </div>
-        <Button
-          danger
-          icon={<PoweroffOutlined />}
-          onClick={deactivateAllMocks}
-          disabled={!mocks.length}
-          style={{ ...primaryButtonStyle, justifySelf: "flex-end" }}
-        >
-          Отключить все
+  const columns = [
+    { title: "№", dataIndex: "id", key: "id", width: 60, render: (_, __, index) => index + 1 },
+    { title: "Активно", dataIndex: "isActive", key: "isActive", width: 100, render: (isActive, record) => (<Checkbox checked={isActive} onChange={() => toggleMockStatus(record.id)} />) },
+    { title: "Метод", dataIndex: "method", key: "method", width: 100 },
+    { title: "Путь", dataIndex: "path", key: "path", width: 200 },
+    { title: "Код", dataIndex: "status", key: "status", width: 80 },
+    {
+      title: "Действия",
+      key: "actions",
+      width: 150,
+      render: (_, record) => (
+        <Button danger size="small" onClick={() => deleteMock(record.id)}>
+          <DeleteOutlined /> Удалить
         </Button>
-      </div>
-    </div>
-  );
+      )
+    }
+  ];
 
   return (
-    <DndProvider backend={HTML5Backend}>
-      <ConfigProvider theme={themeConfig}>
-        <Layout style={{ minHeight: "100vh", background: theme === "light" ? "#f0f2f5" : "#141414" }}>
-          <Header style={{
-            background: theme === "light" ? "#fff" : "#1f1f1f",
-            padding: isDesktop ? "0 80px" : "12px 16px",
+    <ConfigProvider theme={{ algorithm: theme === "dark" ? antdTheme.dark : antdTheme.default }}>
+      <Layout style={{ minHeight: "100vh" }}>
+        <Header
+          style={{
+            background: theme === "dark" ? "#1f2937" : "#fff",
+            padding: "0 20px",
             display: "flex",
-            flexWrap: "wrap",
-            gap: 16,
             alignItems: "center",
             justifyContent: "space-between",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
-          }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-              <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
-              <Typography.Text type="secondary">mock-сервер</Typography.Text>
-            </div>
-            <Button
-              icon={<BgColorsOutlined />}
-              onClick={toggleTheme}
+            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+            color: theme === "dark" ? "#fff" : "#000"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
+            <h1 style={{ margin: 0, fontSize: "18px", fontWeight: "bold" }}>🎭 Mock — среда для гибкого тестирования</h1>
+          </div>
+          
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <Input
               type="text"
-            >
-              {theme === "light" ? "🌙 Dark" : "☀️ Light"}
-            </Button>
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              flex: isDesktop ? "0 0 420px" : "1 1 100%"
-            }}>
-              <Typography.Text strong>Бэк:</Typography.Text>
-              <Tooltip title="Копировать адрес">
-                <Button
-                  icon={<CopyOutlined />}
-                  onClick={() => copyToClipboard(host)}
-                  size="small"
-                />
-              </Tooltip>
-              <Input
-                value={host}
-                onChange={e => setHost(e.target.value)}
-                placeholder="Адрес бэкенда"
-                size="small"
-                style={{ flex: 1 }}
+              placeholder="Backend URL"
+              value={backendUrl}
+              onChange={e => setBackendUrl(e.target.value)}
+              style={{ width: "280px" }}
+              addonBefore="Бэк"
+            />
+            
+            {/* CHANGE 2: Move theme toggle here - after Backend URL field */}
+            <Tooltip title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}>
+              <Button
+                type="text"
+                icon={<BgColorsOutlined />}
+                onClick={toggleTheme}
+                style={{ color: theme === "dark" ? "#fff" : "#000" }}
               />
-            </div>
-          </Header>
+            </Tooltip>
+          </div>
+        </Header>
 
-          <Content style={{ padding: isDesktop ? "24px 80px" : "16px" }}>
-            {actionToolbar}
-            <Layout style={{
-              background: "transparent",
-              display: "flex",
-              flexDirection: isDesktop ? "row" : "column",
-              gap: 24
-            }}>
-              <Sider
-                width={isDesktop ? 320 : "100%"}
-                style={{
-                  background: "transparent",
-                  marginRight: isDesktop ? 0 : 0
-                }}
-              >
-                <div style={{
-                  background: theme === "light" ? "#fff" : "#1f1f1f",
-                  borderRadius: 12,
-                  padding: 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
-                  position: isDesktop ? "sticky" : "static",
-                  top: isDesktop ? stickyTopOffset + 40 : "auto",
-                  maxHeight: isDesktop ? "calc(100vh - 180px)" : "none",
-                  overflowY: "auto"
-                }}>
-                  <Typography.Title level={5} style={{ margin: 0, marginBottom: 12 }}>
-                    Страницы
-                  </Typography.Title>
-                  <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-                    Перетаскивайте, чтобы упорядочить, или удаляйте ненужные.
-                  </Typography.Paragraph>
-                  {folders.map((f, i) => (
-                    <DraggableFolder
-                      key={f}
-                      folder={f}
-                      index={i}
-                      moveFolder={moveFolder}
-                      selectedFolder={selectedFolder}
-                      setSelectedFolder={setSelectedFolder}
-                      deleteFolder={deleteFolder}
-                      startRename={startRenameFolder}
-                      theme={theme}
-                    />
+        <Layout style={{ flex: 1 }}>
+          <Sider width={300} style={{ background: theme === "dark" ? "#262626" : "#f5f5f5", borderRight: "1px solid #d9d9d9", overflowY: "auto" }}>
+            <div style={{ padding: "16px" }}>
+              <Button type="primary" block style={{ marginBottom: "12px" }} onClick={addFolder}>
+                <PlusOutlined /> Добавить страницу
+              </Button>
+
+              <DndProvider backend={HTML5Backend}>
+                <div>
+                  {folders.map((folder, index) => (
+                    renamingFolder === folder ? (
+                      <Input
+                        key={folder}
+                        value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onPressEnter={finishRename}
+                        onBlur={finishRename}
+                        autoFocus
+                        style={{ marginBottom: "4px" }}
+                      />
+                    ) : (
+                      <DraggableFolder
+                        key={folder}
+                        folder={folder}
+                        index={index}
+                        moveFolder={moveFolder}
+                        selectedFolder={selectedFolder}
+                        setSelectedFolder={setSelectedFolder}
+                        deleteFolder={deleteFolder}
+                        startRename={startRename}
+                        theme={theme}
+                      />
+                    )
                   ))}
                 </div>
-              </Sider>
+              </DndProvider>
 
-              <Content style={{ width: "100%" }}>
-                {isDefaultFolder && (
-                  <div style={{
-                    background: theme === "light" ? "#fff" : "#1f1f1f",
-                    borderRadius: 12,
-                    padding: isDesktop ? 24 : 16,
-                    boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
-                    marginBottom: 16
-                  }}>
-                    <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      Mock — среда для гибкого тестирования
-                    </Typography.Title>
-                    <Typography.Paragraph>
-                      Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов.
-                      Поддерживаются фильтры по HTTP-методу, пути, заголовкам и даже частям тела запроса,
-                      а ответ можно настроить с нужным статусом, заголовками и JSON.
-                    </Typography.Paragraph>
-                    <Typography.Title level={4}>Как пользоваться</Typography.Title>
-                    <ol style={{ paddingLeft: 18, lineHeight: 1.6 }}>
-                      <li>Настройте адрес работающего backend-а сверху, чтобы панель могла обращаться к API.</li>
-                      <li>Создайте страницу (папку) для логической группы моков и выберите её слева.</li>
-                      <li>Нажмите «Создать mock», укажите метод, путь, необходимые заголовки/фрагмент тела и соберите желаемый ответ.</li>
-                      <li>Сохраните и убедитесь, что мок активен — он сразу начнёт перехватывать запросы.</li>
-                    </ol>
-                    <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
-                      Советы: используйте заголовки и поиск по телу запроса, чтобы разделять похожие вызовы,
-                      а с помощью кнопок сверху быстро переключайте сценарии и импортируйте коллекции Postman.
-                    </Typography.Paragraph>
-                  </div>
-                )}
-
-                <div style={{
-                  background: theme === "light" ? "#fff" : "#1f1f1f",
-                  borderRadius: 12,
-                  padding: isDesktop ? 24 : 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
-                }}>
-                  <div style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: 16
-                  }}>
-                    <Typography.Title level={4} style={{ margin: 0 }}>
-                      {folderTitle}
-                    </Typography.Title>
-                    <Typography.Text type="secondary">
-                      {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
-                    </Typography.Text>
-                  </div>
-
-                  <Table
-                    dataSource={mocks}
-                    rowKey="id"
-                    size="middle"
-                    pagination={false}
-                    columns={[
-                      {
-                        title: "№",
-                        width: 60,
-                        render: (_, __, index) => index + 1
-                      },
-                      {
-                        title: "Активно",
-                        dataIndex: "active",
-                        width: 90,
-                        render: (a, r) => (
-                          <Switch
-                            checked={a !== false}
-                            onChange={ch => toggleMockActive(r.id, ch)}
-                          />
-                        )
-                      },
-                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
-                      { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
-                      { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
-                      {
-                        title: "Действия",
-                        width: 200,
-                        render: (_, r) => (
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                            <Tooltip title="Редактировать">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<EditOutlined />}
-                                onClick={() => openEditMock(r)}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Дублировать">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<CopyOutlined />}
-                                onClick={() => duplicateMock(r)}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Скопировать curl">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<SnippetsOutlined />}
-                                onClick={() => copyToClipboard(buildCurlForMock(r))}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Удалить">
-                              <Button
-                                size="small"
-                                type="text"
-                                danger
-                                icon={<DeleteOutlined />}
-                                onClick={() => deleteMock(r.id)}
-                              />
-                            </Tooltip>
-                          </div>
-                        )
-                      }
-                    ]}
-                    scroll={{ x: 700 }}
-                  />
-                </div>
-              </Content>
-            </Layout>
-          </Content>
-
-          <Modal
-            title={editing ? "Редактировать мок" : "Создать мок"}
-            open={modalOpen}
-            onCancel={() => setModalOpen(false)}
-            onOk={() => form.submit()}
-            width={700}
-            bodyStyle={{ maxHeight: "70vh", overflowY: "auto" }}
-            destroyOnClose
-          >
-            <Form
-              form={form}
-              layout="vertical"
-              onFinish={saveMock}
-              initialValues={{
-                folder: selectedFolder,
-                method: "GET",
-                status_code: 200,
-                active: true,
-                requestHeaders: [{ key: "", value: "" }],
-                request_body_mode: "none",
-                request_body_raw: "",
-                request_body_params: [{ key: "", value: "" }],
-                request_body_formdata: [{ key: "", value: "" }],
-                responseHeaders: [{ key: "", value: "" }]
-              }}
-            >
-              <Form.Item name="id" hidden><Input /></Form.Item>
-
-              <Form.Item name="folder" label="Папка" rules={[{ required: true }]}>
-                <Select options={folders.map(f => ({
-                  label: f === "default" ? "Главная" : f,
-                  value: f
-                }))} />
-              </Form.Item>
-
-              <Form.Item name="active" valuePropName="checked">
-                <Checkbox>Активный мок</Checkbox>
-              </Form.Item>
-
-              <Form.Item label="Метод и путь" required>
-                <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                  <Form.Item name="method" noStyle rules={[{ required: true }]}>
-                    <Select options={METHODS.map(m => ({ label: m, value: m }))} style={{ width: 120 }} />
-                  </Form.Item>
-                  <Form.Item name="path" noStyle rules={[{ required: true }]}>
-                    <Input style={{ flex: 1 }} placeholder="/path" />
-                  </Form.Item>
-                </Input.Group>
-              </Form.Item>
-
-              <Form.List name="requestHeaders">
-                {(fields, { add, remove }) => (
-                  <>
-                    <Typography.Text strong>Заголовки запроса</Typography.Text>
-                    {fields.map(field => (
-                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                        <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                          <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                            <Input placeholder="Ключ" style={{ width: '35%' }} />
-                          </Form.Item>
-                          <Form.Item {...field} name={[field.name, 'value']} noStyle>
-                            <Input placeholder="Значение" style={{ flex: 1 }} />
-                          </Form.Item>
-                          {fields.length > 1 && (
-                            <MinusCircleOutlined
-                              onClick={() => remove(field.name)}
-                              style={{ color: 'red', fontSize: 20 }}
-                            />
-                          )}
-                        </Input.Group>
-                      </Form.Item>
-                    ))}
-                    <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
-                      Добавить заголовок
-                    </Button>
-                  </>
-                )}
-              </Form.List>
-
-              <Form.Item label="Тело запроса">
-                <Form.Item name="request_body_mode" noStyle>
-                  <Select
-                    style={{ width: "100%", marginBottom: 8 }}
-                    options={REQUEST_BODY_MODES}
-                  />
-                </Form.Item>
-                <Form.Item
-                  noStyle
-                  shouldUpdate={(prev, cur) =>
-                    prev.request_body_mode !== cur.request_body_mode
-                  }
-                >
-                  {({ getFieldValue }) => {
-                    const mode = getFieldValue("request_body_mode") || "none";
-                    
-                    if (mode === "none") {
-                      return <Typography.Text type="secondary">Без тела запроса</Typography.Text>;
-                    }
-                    
-                    if (mode === "urlencoded") {
-                      return (
-                        <Form.List name="request_body_params">
-                          {(fields, { add, remove }) => (
-                            <>
-                              {fields.map(field => (
-                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                                  <Input.Group
-                                    compact
-                                    style={{ display: "flex", gap: 8 }}
-                                  >
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "key"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Ключ"
-                                        style={{ width: "40%" }}
-                                      />
-                                    </Form.Item>
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "value"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Значение"
-                                        style={{ flex: 1 }}
-                                      />
-                                    </Form.Item>
-                                    {fields.length > 1 && (
-                                      <MinusCircleOutlined
-                                        onClick={() => remove(field.name)}
-                                        style={{ color: "red", fontSize: 20 }}
-                                      />
-                                    )}
-                                  </Input.Group>
-                                </Form.Item>
-                              ))}
-                              <Button
-                                type="dashed"
-                                block
-                                icon={<PlusOutlined />}
-                                onClick={() => add()}
-                                style={{ marginTop: 8 }}
-                              >
-                                Добавить параметр
-                              </Button>
-                            </>
-                          )}
-                        </Form.List>
-                      );
-                    }
-                    
-                    if (mode === "form-data") {
-                      return (
-                        <Form.List name="request_body_formdata">
-                          {(fields, { add, remove }) => (
-                            <>
-                              {fields.map(field => (
-                                <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                                  <Input.Group
-                                    compact
-                                    style={{ display: "flex", gap: 8 }}
-                                  >
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "key"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Ключ"
-                                        style={{ width: "40%" }}
-                                      />
-                                    </Form.Item>
-                                    <Form.Item
-                                      {...field}
-                                      name={[field.name, "value"]}
-                                      noStyle
-                                    >
-                                      <Input
-                                        placeholder="Значение"
-                                        style={{ flex: 1 }}
-                                      />
-                                    </Form.Item>
-                                    {fields.length > 1 && (
-                                      <MinusCircleOutlined
-                                        onClick={() => remove(field.name)}
-                                        style={{ color: "red", fontSize: 20 }}
-                                      />
-                                    )}
-                                  </Input.Group>
-                                </Form.Item>
-                              ))}
-                              <Button
-                                type="dashed"
-                                block
-                                icon={<PlusOutlined />}
-                                onClick={() => add()}
-                                style={{ marginTop: 8 }}
-                              >
-                                Добавить поле
-                              </Button>
-                            </>
-                          )}
-                        </Form.List>
-                      );
-                    }
-                    
-                    return (
-                      <Form.Item
-                        name="request_body_raw"
-                        tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                      >
-                        <TextArea rows={3} placeholder='Например {"user":"123"}' />
-                      </Form.Item>
-                    );
-                  }}
-                </Form.Item>
-              </Form.Item>
-
-              <Form.Item name="status_code" label="HTTP статус" rules={[{ required: true }]}>
-                <Select 
-                  options={HTTP_STATUSES} 
-                  onChange={handleStatusChange}
-                  showSearch
-                  filterOption={(input, option) =>
-                    (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-                  }
+              <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px solid #d9d9d9" }}>
+                <Button block size="small" onClick={exportMocks}>
+                  <UploadOutlined /> Экспорт
+                </Button>
+                <Button block size="small" style={{ marginTop: "8px" }} onClick={() => fileInputRef.current?.click()}>
+                  <UploadOutlined /> Импорт
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json"
+                  onChange={importMocks}
+                  style={{ display: "none" }}
                 />
-              </Form.Item>
+              </div>
+            </div>
+          </Sider>
 
-              <Form.List name="responseHeaders">
-                {(fields, { add, remove }) => (
-                  <>
-                    <Typography.Text strong>Заголовки ответа</Typography.Text>
-                    {fields.map(field => (
-                      <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                        <Input.Group compact style={{ display: "flex", gap: 8 }}>
-                          <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                            <Input placeholder="Ключ" style={{ width: '35%' }} />
-                          </Form.Item>
-                          <Form.Item {...field} name={[field.name, 'value']} noStyle>
-                            <Input placeholder="Значение" style={{ flex: 1 }} />
-                          </Form.Item>
-                          {fields.length > 1 && (
-                            <MinusCircleOutlined
-                              onClick={() => remove(field.name)}
-                              style={{ color: 'red', fontSize: 20 }}
-                            />
-                          )}
-                        </Input.Group>
-                      </Form.Item>
-                    ))}
-                    <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()} style={{ marginTop: 8 }}>
-                      Добавить заголовок
-                    </Button>
-                  </>
-                )}
-              </Form.List>
+          <Content style={{ padding: "24px", background: theme === "dark" ? "#1f2937" : "#fff", overflowY: "auto" }}>
+            {currentPage === "home" ? (
+              <div>
+                <div style={{ marginBottom: "24px" }}>
+                  <h2 style={{ fontSize: "24px", fontWeight: "bold", marginBottom: "12px", color: theme === "dark" ? "#fff" : "#000" }}>
+                    Mock — среда для гибкого тестирования
+                  </h2>
+                  <p style={{
+                    color: theme === "dark" ? "#d1d5db" : "#666",
+                    lineHeight: "1.6",
+                    fontSize: "14px",
+                    margin: 0
+                  }}>
+                    Проект помогает эмулировать backend-эндпоинты без поднятия реальных сервисов. Поддерживаются фильтры по HTTP-методу, пути, заголовкам и даже частям тела запроса, а ответ можно настроить с нужным статусом, заголовками и JSON.
+                  </p>
+                </div>
 
-              <Form.Item name="response_body" label="Тело (JSON)" rules={[{ required: true }]}>
-                <TextArea rows={6} placeholder='{"message":"ok"}' />
-              </Form.Item>
-            </Form>
-          </Modal>
+                {/* CHANGE 1: Add properly styled instructions with correct dark theme colors */}
+                <div style={{
+                  background: theme === "dark" ? "#374151" : "#f9f9f9",
+                  padding: "16px",
+                  borderRadius: "8px",
+                  border: `1px solid ${theme === "dark" ? "#4b5563" : "#e0e0e0"}`,
+                  marginBottom: "24px"
+                }}>
+                  <h3 style={{ color: theme === "dark" ? "#fff" : "#000", marginTop: 0, marginBottom: "12px", fontSize: "16px", fontWeight: "600" }}>
+                    Как пользоваться
+                  </h3>
+                  <ol style={{
+                    color: theme === "dark" ? "#d1d5db" : "#333",
+                    lineHeight: "1.8",
+                    fontSize: "14px",
+                    margin: 0,
+                    paddingLeft: "20px"
+                  }}>
+                    <li style={{ marginBottom: "8px" }}>
+                      Настройте адрес работающего backend-а сверху, чтобы панель могла обращаться к API.
+                    </li>
+                    <li style={{ marginBottom: "8px" }}>
+                      Создайте страницу (папку) для логической группы моков и выберите её слева.
+                    </li>
+                    <li style={{ marginBottom: "8px" }}>
+                      Нажмите «Создать mock», укажите метод, путь, необходимые заголовки/фрагмент тела и соберите желаемый ответ.
+                    </li>
+                    <li>
+                      Сохраните и убедитесь, что мок активен — он сразу начнёт перехватывать запросы.
+                    </li>
+                  </ol>
+                </div>
 
-          <Modal
-            title="Создать страницу"
-            open={isFolderModalOpen}
-            onCancel={() => setFolderModalOpen(false)}
-            footer={null}
-            destroyOnClose
-          >
-            <Form form={folderForm} onFinish={addFolder} layout="vertical">
-              <Form.Item
-                name="name"
-                label="Имя страницы"
-                rules={[
-                  { required: true, message: "Введите имя страницы" },
-                  { validator: (_, val) => folders.includes(val) ? Promise.reject("Уже существует") : Promise.resolve() }
-                ]}
-              >
-                <Input placeholder="Например lost" />
-              </Form.Item>
-              <Form.Item>
-                <Button type="primary" htmlType="submit" block>Создать</Button>
-              </Form.Item>
-            </Form>
-          </Modal>
+                {/* CHANGE 3: Remove/hide the Home table from main page */}
+                {/* Table section removed as requested */}
 
-          <Modal
-            title="Переименовать страницу"
-            open={isRenameModalOpen}
-            onCancel={() => setRenameModalOpen(false)}
-            footer={null}
-            destroyOnClose
-          >
-            <Form form={renameForm} onFinish={renameFolder} layout="vertical">
-              <Form.Item
-                name="new_name"
-                label="Новое имя страницы"
-                rules={[{ required: true, message: "Введите новое имя" }]}
-              >
-                <Input placeholder="Новое имя" />
-              </Form.Item>
-              <Form.Item>
-                <Button type="primary" htmlType="submit" block>Переименовать</Button>
-              </Form.Item>
-            </Form>
-          </Modal>
+                <div style={{ marginTop: "24px", padding: "16px", background: theme === "dark" ? "#374151" : "#f9f9f9", borderRadius: "8px" }}>
+                  <p style={{ color: theme === "dark" ? "#9ca3af" : "#666", fontSize: "12px", margin: 0 }}>
+                    💡 Совет: используйте заголовки и поиск по телу запроса, чтобы разделить похожие выводы, а с помощью кнопки сервера быстро переключайте сценарии и импортируйте коллекции Postman.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <h2>Mock для: {selectedFolder}</h2>
+
+                <Form form={form} onFinish={createMock} layout="vertical" style={{ background: theme === "dark" ? "#262626" : "#fff", padding: "16px", borderRadius: "8px", marginBottom: "24px" }}>
+                  <Form.Item label="Метод HTTP" name="method" rules={[{ required: true }]}>
+                    <Select placeholder="Выберите метод">
+                      {METHODS.map(m => (<Select.Option key={m} value={m}>{m}</Select.Option>))}
+                    </Select>
+                  </Form.Item>
+
+                  <Form.Item label="Путь" name="path" rules={[{ required: true }]}>
+                    <Input placeholder="/api/users" />
+                  </Form.Item>
+
+                  <Form.Item label="HTTP Статус" name="status" rules={[{ required: true }]}>
+                    <Select placeholder="Выберите статус">
+                      {HTTP_STATUSES.map(s => (<Select.Option key={s.value} value={s.value}>{s.label}</Select.Option>))}
+                    </Select>
+                  </Form.Item>
+
+                  <Form.Item label="Заголовки" name="headers">
+                    <TextArea placeholder='{"Content-Type": "application/json"}' rows={4} />
+                  </Form.Item>
+
+                  <Form.Item label="Режим тела запроса" name="bodyMode">
+                    <Select placeholder="Выберите режим">
+                      {REQUEST_BODY_MODES.map(m => (<Select.Option key={m.value} value={m.value}>{m.label}</Select.Option>))}
+                    </Select>
+                  </Form.Item>
+
+                  <Form.Item label="Тело ответа" name="responseBody">
+                    <TextArea placeholder='{"message": "success"}' rows={8} />
+                  </Form.Item>
+
+                  <Button type="primary" htmlType="submit" block size="large">
+                    <PlusOutlined /> Создать mock
+                  </Button>
+                </Form>
+
+                <h3>Список Mocks ({mocksByFolder.length})</h3>
+                <Table
+                  columns={columns}
+                  dataSource={mocksByFolder}
+                  rowKey="id"
+                  pagination={{ pageSize: 10 }}
+                  style={{ marginTop: "16px" }}
+                />
+              </div>
+            )}
+          </Content>
         </Layout>
-      </ConfigProvider>
-    </DndProvider>
+      </Layout>
+    </ConfigProvider>
   );
 }
+
+export default App;
