@@ -744,7 +744,6 @@ def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str
 def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Session) -> int:
     """
     Генерирует простые моки по OpenAPI‑спецификации в указанную папку.
-
     Для каждого пути/метода создаётся мок с кодом 200 и простым JSON‑ответом.
     Повторно существующие сочетания (folder, method, path) не создаются.
     """
@@ -758,9 +757,11 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     for path, path_item in paths.items():
         if not isinstance(path_item, dict):
             continue
+
         for method_name, operation in path_item.items():
             if method_name.lower() not in allowed_methods:
                 continue
+
             method_upper = method_name.upper()
 
             # Проверяем, нет ли уже такого мока
@@ -769,6 +770,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 method=method_upper,
                 path=path,
             ).first()
+
             if existing:
                 continue
 
@@ -794,14 +796,19 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 active=True,
                 delay_ms=0,
             )
+
             _save_mock_entry(entry, db)
             created += 1
+
+    db.commit()
+    logger.info(f"Generated {created} mocks for OpenAPI in folder '{folder_name}'")
 
     return created
 
 
 def load_openapi_specs_from_env():
     """Загрузка OpenAPI спецификаций из директории и/или по URL при старте."""
+    
     # Локальные файлы
     if OPENAPI_SPECS_DIR and os.path.isdir(OPENAPI_SPECS_DIR):
         db = SessionLocal()
@@ -809,18 +816,29 @@ def load_openapi_specs_from_env():
             for fname in os.listdir(OPENAPI_SPECS_DIR):
                 if not (fname.lower().endswith(".json") or fname.lower().endswith((".yaml", ".yml"))):
                     continue
+
                 full_path = os.path.join(OPENAPI_SPECS_DIR, fname)
+
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         if fname.lower().endswith(".json"):
                             spec = json.load(f)
                         else:
                             spec = yaml.safe_load(f)
+
                     name = spec.get("info", {}).get("title") or os.path.splitext(fname)[0]
                     OPENAPI_SPECS[name] = spec
-                    _ensure_folder_for_spec(name, db=db)
+
+                    folder_name = _ensure_folder_for_spec(name, db=db)
+                    mocks_created = generate_mocks_for_openapi(spec, folder_name, db)
+                    
+                    db.commit()
+                    logger.info(f"Loaded OpenAPI spec from {fname}: created {mocks_created} mocks in folder '{folder_name}'")
+
                 except Exception as e:
+                    db.rollback()
                     logger.error(f"Failed to load OpenAPI spec from {full_path}: {e}")
+
         finally:
             db.close()
 
@@ -830,13 +848,29 @@ def load_openapi_specs_from_env():
             resp = httpx.get(url, timeout=10.0)
             resp.raise_for_status()
             text_body = resp.text
+
             try:
                 spec = json.loads(text_body)
             except json.JSONDecodeError:
                 spec = yaml.safe_load(text_body)
+
             name = spec.get("info", {}).get("title") or url
             OPENAPI_SPECS[name] = spec
-            _ensure_folder_for_spec(name)
+
+            db = SessionLocal()
+            try:
+                folder_name = _ensure_folder_for_spec(name, db=db)
+                mocks_created = generate_mocks_for_openapi(spec, folder_name, db)
+                
+                db.commit()
+                logger.info(f"Loaded OpenAPI spec from URL {url}: created {mocks_created} mocks")
+
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Failed to process OpenAPI spec from URL {url}: {e}")
+            finally:
+                db.close()
+
         except Exception as e:
             logger.error(f"Failed to load OpenAPI spec from URL {url}: {e}")
 
@@ -1172,38 +1206,37 @@ async def import_postman_collection(
     """
     try:
         content = await file.read()
+
         try:
             coll = json.loads(content)
         except json.JSONDecodeError:
             return JSONResponse({"detail": "Invalid JSON file"}, status_code=400)
 
-
         folder_name = coll.get("info", {}).get("name", "postman")
         folder_name = folder_name.strip() or "postman"
-        
+
         if not db.query(Folder).filter_by(name=folder_name).first():
             db.add(Folder(name=folder_name))
             db.flush()
 
-
         items = coll.get("item", [])
         imported = []
-
 
         for it in items:
             req = it.get("request", {})
             res_list = it.get("response", [])
+
             if not req or not res_list:
                 continue
 
-
             res = res_list[0]
             url = req.get("url", {})
-            
+
             # Улучшенная обработка URL
             if isinstance(url, dict):
                 raw = url.get("raw", "")
                 path_segments = url.get("path", [])
+
                 if path_segments:
                     path = "/" + "/".join(str(segment) for segment in path_segments)
                 else:
@@ -1218,6 +1251,7 @@ async def import_postman_collection(
                             path = "/"
                     else:
                         path = "/"
+
             elif isinstance(url, str):
                 raw = url
                 if "://" in raw:
@@ -1229,13 +1263,11 @@ async def import_postman_collection(
             else:
                 path = "/"
 
-
             # Обработка заголовков запроса
             request_headers = {}
             for h in req.get("header", []):
                 if isinstance(h, dict) and "key" in h:
                     request_headers[h["key"]] = h.get("value", "")
-
 
             # Обработка заголовков ответа
             response_headers = {}
@@ -1243,9 +1275,9 @@ async def import_postman_collection(
                 if isinstance(h, dict) and "key" in h:
                     response_headers[h["key"]] = h.get("value", "")
 
-
             # Обработка тела ответа
             response_body = res.get("body", "{}")
+
             if isinstance(response_body, str):
                 try:
                     response_body = json.loads(response_body) if response_body else {}
@@ -1254,7 +1286,6 @@ async def import_postman_collection(
             elif response_body is None:
                 response_body = {}
 
-
             # Обработка статус кода
             status_code = res.get("code", 200)
             if isinstance(status_code, str):
@@ -1262,7 +1293,6 @@ async def import_postman_collection(
                     status_code = int(status_code)
                 except (ValueError, TypeError):
                     status_code = 200
-
 
             entry = MockEntry(
                 folder=folder_name,
@@ -1280,7 +1310,6 @@ async def import_postman_collection(
                 active=True
             )
 
-
             mock = Mock(id=entry.id or str(uuid4()))
             db.add(mock)
             mock.folder_name = entry.folder
@@ -1294,17 +1323,20 @@ async def import_postman_collection(
             mock.response_body = entry.response_config.body
             mock.active = entry.active
 
-
             imported.append(mock.id)
 
-
         db.commit()
+        logger.info(f"Imported {len(imported)} mocks from Postman collection into folder '{folder_name}'")
+
         return JSONResponse({
             "message": f"Imported {len(imported)} mocks into folder '{folder_name}'",
-            "imported_ids": imported
+            "imported_ids": imported,
+            "folder_name": folder_name,
+            "mocks_count": len(imported)
         }, status_code=200)
-        
+
     except Exception as e:
+        logger.error(f"Error importing Postman collection: {str(e)}")
         return JSONResponse({
             "detail": f"Error processing file: {str(e)}"
         }, status_code=500)
@@ -1362,7 +1394,6 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
         name = payload.name or spec.get("info", {}).get("title") or payload.url
         OPENAPI_SPECS[name] = spec
 
-        # Имя папки можно задать явно, иначе берём название спеки
         raw_folder = payload.folder_name or name
         folder_slug = _slugify_folder_name(raw_folder)
 
