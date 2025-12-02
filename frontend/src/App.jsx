@@ -233,6 +233,7 @@ export default function App() {
   const responseFileInputRef = useRef();
   const requestFileInputRef = useRef();
   const [responseFile, setResponseFile] = useState(null);
+  const [originalFileBody, setOriginalFileBody] = useState(null);
   const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
   const [folderSettingsForm] = Form.useForm();
   const [isOpenapiModalOpen, setOpenapiModalOpen] = useState(false);
@@ -545,6 +546,7 @@ export default function App() {
   const openAddMock = () => {
     setEditing(null);
     setResponseFile(null);
+    setOriginalFileBody(null);
     form.resetFields();
     form.setFieldsValue({
       folder: selectedFolder,
@@ -570,6 +572,12 @@ export default function App() {
   const openEditMock = m => {
     setEditing(m);
     setResponseFile(null);
+    // Сохраняем исходную структуру файла, если она есть
+    if (m.response_config.body && typeof m.response_config.body === "object" && m.response_config.body.__file__) {
+      setOriginalFileBody(m.response_config.body);
+    } else {
+      setOriginalFileBody(null);
+    }
     const headers = m.request_condition.headers || {};
     const contentTypeKey = Object.keys(headers).find(
       k => k.toLowerCase() === "content-type"
@@ -729,14 +737,32 @@ export default function App() {
           method: "POST",
           body: formData
         });
-      } else if ((vals.response_type === "file") && responseBodyObj && responseBodyObj.__file__ && responseBodyObj.data_base64) {
-        // Если тип "file", но нового файла нет, но есть существующий файл с base64,
-        // отправляем JSON с полной структурой файла (редактирование без замены файла)
-        res = await fetch(`${host}/api/mocks`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(entry)
-        });
+      } else if ((vals.response_type === "file") && responseBodyObj && responseBodyObj.__file__) {
+        // Если тип "file", но нового файла нет, проверяем наличие data_base64
+        if (responseBodyObj.data_base64) {
+          // Есть data_base64 в текущем body - используем его
+          res = await fetch(`${host}/api/mocks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry)
+          });
+        } else if (originalFileBody && originalFileBody.data_base64) {
+          // Нет data_base64 в текущем body, но есть в исходном - восстанавливаем
+          entry.response_config.body = {
+            ...responseBodyObj,
+            data_base64: originalFileBody.data_base64,
+            filename: responseBodyObj.filename || originalFileBody.filename,
+            mime_type: responseBodyObj.mime_type || originalFileBody.mime_type
+          };
+          res = await fetch(`${host}/api/mocks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry)
+          });
+        } else {
+          // Нет data_base64 ни в текущем, ни в исходном - ошибка
+          throw new Error("Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64");
+        }
       } else {
         // Обычный JSON‑вариант без отдельного файла
         res = await fetch(`${host}/api/mocks`, {
@@ -748,6 +774,7 @@ export default function App() {
       if (!res.ok) throw new Error();
       setModalOpen(false);
       setResponseFile(null);
+      setOriginalFileBody(null);
       fetchMocks();
       fetchFolders();
       message.success("Сохранено");
