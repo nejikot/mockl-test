@@ -1513,13 +1513,13 @@ export default function App() {
                       )}
                     </Form.List>
 
+                    <Form.Item label="Тип запроса" name="request_body_mode" style={{ marginTop: 16 }}>
+                      <Select
+                        options={REQUEST_BODY_MODES}
+                      />
+                    </Form.Item>
+
                     <Form.Item label="Тело запроса" style={{ marginTop: 16 }}>
-                      <Form.Item name="request_body_mode" noStyle>
-                        <Select
-                          style={{ width: "100%", marginBottom: 8 }}
-                          options={REQUEST_BODY_MODES}
-                        />
-                      </Form.Item>
                       <Form.Item
                         noStyle
                         shouldUpdate={(prev, cur) =>
