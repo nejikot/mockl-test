@@ -507,6 +507,7 @@ export default function App() {
       method: "GET",
       status_code: 200,
       active: true,
+      name: "",
       requestHeaders: [{ key: "", value: "" }],
       request_body_mode: "none",
       request_body_contains: "",
@@ -554,6 +555,7 @@ export default function App() {
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
+      name: m.name || "",
       method: m.request_condition.method,
       path: m.request_condition.path,
       requestHeaders: headersToFormList(m.request_condition.headers),
@@ -621,6 +623,7 @@ export default function App() {
       const entry = {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
+        name: (vals.name || "").trim() || null,
         active: vals.active !== false,
         request_condition: {
           method: vals.method,
@@ -816,9 +819,7 @@ export default function App() {
   const stickyTopOffset = isDesktop ? 88 : 64;
   const isDefaultFolder = selectedFolder === "default";
   const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
-  const baseFolderUrl = isDefaultFolder
-    ? host
-    : `${(host || "").replace(/\/+$/, "")}/${selectedFolder}`;
+  const baseFolderUrl = buildFolderHost(host, selectedFolder);
   const primaryButtonStyle = {
     minWidth: isDesktop ? 160 : "calc(50% - 8px)",
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
@@ -1099,6 +1100,7 @@ export default function App() {
                           />
                         )
                       },
+                      { title: "Наименование", dataIndex: "name", ellipsis: true },
                       { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
                       { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
                       { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
@@ -1186,6 +1188,10 @@ export default function App() {
                   label: f === "default" ? "Главная" : f,
                   value: f
                 }))} />
+              </Form.Item>
+
+              <Form.Item name="name" label="Наименование">
+                <Input placeholder="Например: Успешный ответ /users" />
               </Form.Item>
 
               <Form.Item name="active" valuePropName="checked">

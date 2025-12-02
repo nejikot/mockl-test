@@ -57,6 +57,8 @@ class Mock(Base):
     __tablename__ = "mocks"
     id = Column(String, primary_key=True, index=True)
     folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    # Человекочитаемое имя мока для навигации
+    name = Column(String, nullable=True)
 
     # Условия запроса
     method = Column(String, nullable=False)
@@ -118,6 +120,35 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/info", summary="Информация о сервере и подключении к БД")
+async def server_info(request: Request):
+  """
+  Возвращает базовую информацию о работающем сервере и параметры подключения к БД.
+
+  Пароль в URL БД умышленно замаскирован.
+  """
+  base_url = str(request.base_url).rstrip("/")
+  masked_db_url = (
+      f"postgresql://{DB_USER}:***@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+      if all([DB_HOST, DB_PORT, DB_NAME, DB_USER])
+      else None
+  )
+  return {
+      "server": {
+          "base_url": base_url,
+          "title": app.title,
+          "version": app.version,
+      },
+      "database": {
+          "host": DB_HOST,
+          "port": DB_PORT,
+          "name": DB_NAME,
+          "user": DB_USER,
+          "url": masked_db_url,
+      },
+  }
+
+
 class MockRequestCondition(BaseModel):
     """Условия, при которых мок должен сработать."""
 
@@ -157,6 +188,10 @@ class MockEntry(BaseModel):
     folder: Optional[str] = Field(
         default="default",
         description='Имя папки (\"страницы\"), в которой хранится мок. По умолчанию — `default`.',
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="Произвольное человекочитаемое имя мока для удобной навигации.",
     )
     request_condition: MockRequestCondition = Field(
         ..., description="Условия запроса, при которых будет отработан данный мок."
@@ -250,6 +285,12 @@ def ensure_migrations():
             text(
                 "ALTER TABLE mocks "
                 "ADD COLUMN IF NOT EXISTS delay_ms INTEGER DEFAULT 0"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE mocks "
+                "ADD COLUMN IF NOT EXISTS name VARCHAR NULL"
             )
         )
         conn.commit()
@@ -455,6 +496,7 @@ def create_or_update_mock(
         db.add(mock)
 
     mock.folder_name = entry.folder
+    mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
     mock.path = entry.request_condition.path
     mock.headers = entry.request_condition.headers or {}
@@ -495,6 +537,7 @@ def list_mocks(
             MockEntry(
                 id=m.id,
                 folder=m.folder_name,
+                name=m.name,
                 request_condition=MockRequestCondition(
                     method=m.method,
                     path=m.path,
@@ -683,6 +726,7 @@ async def import_postman_collection(
 
             entry = MockEntry(
                 folder=folder_name,
+                name=it.get("name"),
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
                     path=path,
@@ -699,6 +743,7 @@ async def import_postman_collection(
             mock = Mock(id=entry.id or str(uuid4()))
             db.add(mock)
             mock.folder_name = entry.folder
+            mock.name = entry.name
             mock.method = entry.request_condition.method.upper()
             mock.path = entry.request_condition.path
             mock.headers = entry.request_condition.headers or {}
