@@ -911,7 +911,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 if filename:
                     resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
             else:
-                # Если по ошибке в БД лежит строка, а не JSON, просто вернём текст
+                # Если по ошибке в БД лежит строк, а не JSON, просто вернём текст
                 if isinstance(body, str):
                     resp = Response(
                         content=body,
