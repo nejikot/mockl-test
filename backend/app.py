@@ -339,18 +339,26 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if db.query(Folder).filter_by(name=new).first():
             raise HTTPException(400, "Папка с таким именем уже существует")
 
-        # Важно: из‑за внешнего ключа сначала обновляем моки, затем папку.
-        # Иначе при смене имени папки БД ругается на ссылки из mocks.folder_name.
+        # Из‑за ограничений FK безопаснее всего:
+        # 1) создать новую папку с новым именем,
+        # 2) перевесить все моки на неё,
+        # 3) удалить старую папку.
+
+        # 1. Создаём новую запись папки
+        new_folder = Folder(name=new)
+        db.add(new_folder)
+        db.flush()
+
+        # 2. Обновляем все связанные моки
         db.query(Mock).filter_by(folder_name=old).update(
             {"folder_name": new},
             synchronize_session=False
         )
 
-        # Теперь можно переименовать саму папку
-        folder.name = new
-        db.flush()
-        
-        # Коммитим всё разом
+        # 3. Удаляем старую папку
+        db.delete(folder)
+
+        # 4. Коммитим всё разом
         db.commit()
         return {"message": "Папка переименована", "old": old, "new": new}
     
