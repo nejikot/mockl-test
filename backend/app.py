@@ -1769,9 +1769,25 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     # Проверка содержимого тела
     if m.body_contains:
         try:
-            body = (await req.body()).decode("utf-8")
-            if m.body_contains not in body:
-                return False
+            # Для GET/HEAD/OPTIONS запросов тело обычно пустое
+            # Если в моке указано body_contains для GET запроса, это условие игнорируется
+            # (так как GET запросы по стандарту не должны иметь тела)
+            if req.method.upper() in ("GET", "HEAD", "OPTIONS"):
+                # Для GET/HEAD/OPTIONS проверяем тело только если оно действительно есть в запросе
+                # Если тело пустое, условие body_contains игнорируется (мок может сработать)
+                body_bytes = await req.body()
+                if body_bytes:
+                    # Если тело есть (нестандартно для GET, но возможно), проверяем его
+                    body = body_bytes.decode("utf-8")
+                    if m.body_contains not in body:
+                        return False
+                # Если тело пустое, игнорируем условие body_contains для GET запросов
+                # (мок может сработать без проверки тела)
+            else:
+                # Для POST, PUT, PATCH, DELETE проверяем тело
+                body = (await req.body()).decode("utf-8")
+                if m.body_contains not in body:
+                    return False
         except Exception:
             return False
     

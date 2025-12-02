@@ -868,7 +868,12 @@ export default function App() {
       parts.push(`-H '${key}: ${value}'`);
     });
 
-    if (bodyContains) {
+    // Для GET, HEAD, OPTIONS запросов не добавляем тело (даже если оно указано в моке)
+    // Это стандартное поведение HTTP - эти методы обычно не имеют тела
+    const methodsWithoutBody = ["GET", "HEAD", "OPTIONS"];
+    const shouldIncludeBody = bodyContains && !methodsWithoutBody.includes(method);
+    
+    if (shouldIncludeBody) {
       // Определяем тип тела запроса по содержимому и заголовкам
       const trimmedBody = bodyContains.trim();
       
