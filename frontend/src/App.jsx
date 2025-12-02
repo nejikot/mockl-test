@@ -117,6 +117,21 @@ function getBackendUrl() {
   return import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 }
 
+function buildFolderHost(baseHost, folder) {
+  if (!baseHost || !folder || folder === "default") return baseHost;
+  try {
+    const url = new URL(baseHost);
+    const host = url.hostname; // например mockl-test.onrender.com
+    const parts = host.split(".");
+    if (parts.length < 2) return baseHost;
+    parts[0] = `${parts[0]}-${folder}`;
+    url.hostname = parts.join(".");
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return baseHost;
+  }
+}
+
 const headersToFormList = headersObj => {
   const list = Object.entries(headersObj || {}).map(([k, v]) => ({ key: k, value: v }));
   return list.length ? list : [{ key: "", value: "" }];
@@ -679,13 +694,13 @@ export default function App() {
 
   const buildCurlForMock = mock => {
     if (!mock || !mock.request_condition) return "";
-    if (!host) return "";
+    if (!baseFolderUrl) return "";
     const method = (mock.request_condition.method || "GET").toUpperCase();
     const path = mock.request_condition.path || "/";
     const headers = mock.request_condition.headers || {};
     const bodyContains = mock.request_condition.body_contains || "";
 
-    const normalizedHost = (host || "").replace(/\/+$/, "");
+    const normalizedHost = (baseFolderUrl || "").replace(/\/+$/, "");
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     const url = `${normalizedHost}${normalizedPath}`;
 
@@ -1039,9 +1054,21 @@ export default function App() {
                       <Typography.Text type="secondary">
                         {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
                       </Typography.Text>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        Базовый URL этой страницы: {baseFolderUrl || "—"}
-                      </Typography.Text>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Базовый URL этой страницы: {baseFolderUrl || "—"}
+                        </Typography.Text>
+                        {baseFolderUrl && (
+                          <Tooltip title="Копировать базовый URL">
+                            <Button
+                              size="small"
+                              icon={<CopyOutlined />}
+                              type="text"
+                              onClick={() => copyToClipboard(baseFolderUrl)}
+                            />
+                          </Tooltip>
+                        )}
+                      </div>
                       {!isDefaultFolder && (
                         <Button size="small" onClick={openFolderSettings}>
                           Настройки папки
