@@ -122,16 +122,10 @@ function buildFolderHost(baseHost, folder) {
   if (!baseHost || !folder || folder === "default") return baseHost;
   try {
     const url = new URL(baseHost);
-    const host = url.hostname; // например mockl-test.onrender.com
-    const parts = host.split(".");
-    if (parts.length < 2) return baseHost;
-
-    // Новая схема: добавляем имя папки к левому поддомену.
-    // Было: mockl-test.onrender.com
-    // Стало: mockl-test-cnsgate.onrender.com
-    parts[0] = `${parts[0]}-${folder}`;
-
-    url.hostname = parts.join(".");
+    // Добавляем имя папки в путь, а не в поддомен
+    // Формат: https://mockl-test.onrender.com/folder/path
+    const basePath = url.pathname.replace(/\/+$/, "");
+    url.pathname = `${basePath}/${folder}`;
     return url.toString().replace(/\/+$/, "");
   } catch {
     return baseHost;
@@ -884,7 +878,9 @@ export default function App() {
     const bodyContains = mock.request_condition.body_contains || "";
 
     const normalizedHost = (baseFolderUrl || "").replace(/\/+$/, "");
+    // Путь уже должен начинаться с /, но если нет - добавляем
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    // baseFolderUrl уже содержит имя папки в пути, просто добавляем путь мока
     const url = `${normalizedHost}${normalizedPath}`;
 
     const parts = [`curl -X ${method}`];
