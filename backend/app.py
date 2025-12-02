@@ -636,6 +636,18 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
 
 
 
+def _normalize_path_for_storage(path: str) -> str:
+    """Нормализует путь для хранения в БД: убирает лишние слэши, но сохраняет query параметры."""
+    if not path:
+        return "/"
+    # Разделяем путь и query параметры
+    if "?" in path:
+        base_path, query = path.split("?", 1)
+        base_path = base_path.rstrip("/") or "/"
+        return f"{base_path}?{query}"
+    return path.rstrip("/") or "/"
+
+
 def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     """Внутренний помощник: создаёт или обновляет мок в БД по MockEntry."""
     if not entry.id:
@@ -655,7 +667,7 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     mock.folder_name = entry.folder
     mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
-    mock.path = entry.request_condition.path
+    mock.path = _normalize_path_for_storage(entry.request_condition.path)
     mock.headers = entry.request_condition.headers or {}
     mock.body_contains = entry.request_condition.body_contains
     mock.status_code = entry.response_config.status_code
@@ -1232,36 +1244,8 @@ async def import_postman_collection(
             res = res_list[0]
             url = req.get("url", {})
 
-            # Улучшенная обработка URL
-            if isinstance(url, dict):
-                raw = url.get("raw", "")
-                path_segments = url.get("path", [])
-
-                if path_segments:
-                    path = "/" + "/".join(str(segment) for segment in path_segments)
-                else:
-                    # Если path пустой, извлекаем из raw
-                    if raw:
-                        # Убираем протокол и хост, оставляем только путь
-                        if "://" in raw:
-                            raw = raw.split("://", 1)[1]
-                        if "/" in raw:
-                            path = "/" + raw.split("/", 1)[1]
-                        else:
-                            path = "/"
-                    else:
-                        path = "/"
-
-            elif isinstance(url, str):
-                raw = url
-                if "://" in raw:
-                    raw = raw.split("://", 1)[1]
-                if "/" in raw:
-                    path = "/" + raw.split("/", 1)[1]
-                else:
-                    path = "/"
-            else:
-                path = "/"
+            # Используем функцию extract_path_from_url для правильной обработки путей с query параметрами
+            path = extract_path_from_url(url)
 
             # Обработка заголовков запроса
             request_headers = {}
@@ -1315,7 +1299,7 @@ async def import_postman_collection(
             mock.folder_name = entry.folder
             mock.name = entry.name
             mock.method = entry.request_condition.method.upper()
-            mock.path = entry.request_condition.path
+            mock.path = _normalize_path_for_storage(entry.request_condition.path)
             mock.headers = entry.request_condition.headers or {}
             mock.body_contains = entry.request_condition.body_contains
             mock.status_code = entry.response_config.status_code
@@ -1484,12 +1468,7 @@ async def metrics():
 def extract_path_from_url(url) -> str:
     """Извлекает путь из URL, обрабатывая различные форматы Postman."""
     if isinstance(url, dict):
-        # Предпочитаем field path[] если он есть
-        path_segments = url.get("path", [])
-        if path_segments:
-            return "/" + "/".join(str(segment) for segment in path_segments)
-        
-        # Если есть query параметры, добавляем их
+        # Обрабатываем query параметры (если есть)
         query = url.get("query", [])
         query_str = ""
         if query:
@@ -1502,10 +1481,21 @@ def extract_path_from_url(url) -> str:
             if query_params:
                 query_str = "?" + "&".join(query_params)
         
+        # Предпочитаем field path[] если он есть
+        path_segments = url.get("path", [])
+        if path_segments:
+            path = "/" + "/".join(str(segment) for segment in path_segments)
+            return path + query_str
+        
         # Пробуем raw URL
         raw = url.get("raw", "")
         if raw:
-            return extract_path_from_raw_url(raw) + query_str
+            # extract_path_from_raw_url уже включает query из raw, но если есть отдельные query параметры, используем их
+            extracted = extract_path_from_raw_url(raw)
+            # Если в extracted уже есть query, не добавляем дубликат
+            if "?" in extracted:
+                return extracted
+            return extracted + query_str
         
         return "/" + query_str if query_str else "/"
     
@@ -1517,20 +1507,31 @@ def extract_path_from_url(url) -> str:
 
 
 def extract_path_from_raw_url(raw: str) -> str:
-    """Извлекает путь из raw URL строки."""
+    """Извлекает путь из raw URL строки, включая query параметры."""
     if not raw:
         return "/"
     
     try:
         parsed = urlparse(raw)
         path = parsed.path or "/"
+        # Добавляем query параметры, если они есть
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
         return path
     except Exception:
         # Fallback: простой парсинг
         if "://" in raw:
             raw = raw.split("://", 1)[1]
         
-        if "/" in raw:
+        # Сохраняем query параметры, если они есть
+        if "?" in raw:
+            path_part, query_part = raw.split("?", 1)
+            if "/" in path_part:
+                path = "/" + path_part.split("/", 1)[1]
+            else:
+                path = "/"
+            path = f"{path}?{query_part}"
+        elif "/" in raw:
             path = "/" + raw.split("/", 1)[1]
         else:
             path = "/"
@@ -1550,9 +1551,33 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
     if req.method.upper() != m.method.upper():
         return False
     
-    # Проверка пути (с query параметрами)
-    if full_path != m.path:
+    # Нормализуем пути для сравнения
+    def normalize_path(p: str) -> Tuple[str, str]:
+        """Разделяет путь на базовый путь и query строку."""
+        if "?" in p:
+            base_path, query = p.split("?", 1)
+            return base_path.rstrip("/") or "/", query
+        return p.rstrip("/") or "/", ""
+    
+    mock_path_base, mock_query = normalize_path(m.path)
+    request_path_base, request_query = normalize_path(full_path)
+    
+    # Сравниваем базовые пути
+    if mock_path_base != request_path_base:
         return False
+    
+    # Если в моке есть query параметры, они должны полностью совпадать
+    # Если в моке нет query параметров, то запрос может быть с любыми query параметрами или без них
+    if mock_query:
+        # Нормализуем query параметры для сравнения (сортируем по ключам)
+        def normalize_query(q: str) -> str:
+            if not q:
+                return ""
+            params = sorted([p.split("=", 1) for p in q.split("&") if p])
+            return "&".join(f"{k}={v}" for k, v in params)
+        
+        if normalize_query(mock_query) != normalize_query(request_query):
+            return False
     
     # Проверка заголовков
     if m.headers:
@@ -1725,6 +1750,12 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
     query_suffix = f"?{request.url.query}" if request.url.query else ""
     full_inner = f"{inner_path}{query_suffix}"
+    # Нормализуем путь для сравнения (убираем лишние слэши в конце, но сохраняем query)
+    if "?" in full_inner:
+        base, query = full_inner.split("?", 1)
+        full_inner = f"{base.rstrip('/') or '/'}?{query}"
+    else:
+        full_inner = full_inner.rstrip("/") or "/"
 
 
     # Ищем подходящий мок только в выбранной папке

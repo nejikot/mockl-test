@@ -869,7 +869,24 @@ export default function App() {
     });
 
     if (bodyContains) {
-      if (/application\/x-www-form-urlencoded/i.test(contentType)) {
+      // Определяем тип тела запроса по содержимому и заголовкам
+      const isJson = /^[\s]*[{\[]/.test(bodyContains); // Начинается с { или [
+      const isUrlEncoded = /^[^=]+=[^&]*(&[^=]+=[^&]*)*$/.test(bodyContains.trim()); // Формат key=value&key2=value2
+      const isBase64 = /^[A-Za-z0-9+/=]+$/.test(bodyContains.trim()) && bodyContains.length > 50; // Похоже на base64
+      
+      const contentTypeLower = contentType.toLowerCase();
+      const isFormUrlencodedHeader = /application\/x-www-form-urlencoded/i.test(contentType);
+      const isMultipartHeader = /multipart\/form-data/i.test(contentType);
+      const isJsonHeader = /application\/json/i.test(contentType);
+
+      // Если это JSON (по содержимому или заголовку), используем --data
+      if (isJson || isJsonHeader) {
+        // Экранируем кавычки для JSON
+        const escapedBody = bodyContains.replace(/'/g, "'\\''");
+        parts.push(`--data '${escapedBody}'`);
+      }
+      // Если это form-urlencoded (по заголовку И формату), используем --data-urlencode
+      else if (isFormUrlencodedHeader && isUrlEncoded) {
         const pairs = bodyContains.split("&").filter(Boolean);
         if (pairs.length) {
           pairs.forEach(p => {
@@ -878,8 +895,21 @@ export default function App() {
         } else {
           parts.push(`--data-urlencode '${bodyContains}'`);
         }
-      } else {
-        parts.push(`--data '${bodyContains}'`);
+      }
+      // Если это multipart/form-data, используем --form (но это сложнее, обычно не используется в моках)
+      else if (isMultipartHeader) {
+        // Для multipart лучше использовать --form, но это требует парсинга
+        // Пока используем --data
+        parts.push(`--data '${bodyContains.replace(/'/g, "'\\''")}'`);
+      }
+      // Если это base64 (файл), используем --data-binary
+      else if (isBase64) {
+        parts.push(`--data-binary '${bodyContains}'`);
+      }
+      // Для остальных случаев используем --data
+      else {
+        const escapedBody = bodyContains.replace(/'/g, "'\\''");
+        parts.push(`--data '${escapedBody}'`);
       }
     }
 
