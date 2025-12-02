@@ -210,6 +210,10 @@ export default function App() {
   const [theme, setTheme] = useState("light");
   const screens = useBreakpoint();
   const fileInputRef = useRef();
+  const responseFileInputRef = useRef();
+  const requestFileInputRef = useRef();
+  const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
+  const [folderSettingsForm] = Form.useForm();
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("mockl-theme") || "light";
@@ -328,6 +332,86 @@ export default function App() {
     }
   };
 
+  const openFolderSettings = async () => {
+    try {
+      const res = await fetch(`${host}/api/folders/${encodeURIComponent(selectedFolder)}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      folderSettingsForm.setFieldsValue({
+        proxy_enabled: data.proxy_enabled,
+        proxy_base_url: data.proxy_base_url || ""
+      });
+      setFolderSettingsModalOpen(true);
+    } catch (e) {
+      message.error("Не удалось загрузить настройки папки");
+    }
+  };
+
+  const saveFolderSettings = async vals => {
+    try {
+      const res = await fetch(`${host}/api/folders/${encodeURIComponent(selectedFolder)}/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proxy_enabled: !!vals.proxy_enabled,
+          proxy_base_url: vals.proxy_base_url || null
+        })
+      });
+      if (!res.ok) throw new Error();
+      message.success("Настройки папки сохранены");
+      setFolderSettingsModalOpen(false);
+    } catch (e) {
+      message.error("Ошибка сохранения настроек папки");
+    }
+  };
+
+  const handleRequestFileUpload = e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const reader = new FileReader();
+    const isText = /^text\/|\/json$|\/xml$|csv$/.test(file.type) || /\.(csv|xml|json|txt)$/i.test(file.name);
+
+    reader.onload = () => {
+      const content = reader.result;
+      form.setFieldsValue({
+        request_body_raw: isText ? content : btoa(content)
+      });
+      message.success("Файл загружен в тело запроса");
+    };
+
+    if (isText) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsBinaryString(file);
+    }
+  };
+
+  const handleResponseFileUpload = e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const binary = reader.result;
+      const base64 = btoa(binary);
+      const body = {
+        __file__: true,
+        filename: file.name,
+        mime_type: file.type || "application/octet-stream",
+        data_base64: base64
+      };
+      form.setFieldsValue({
+        response_type: "file",
+        response_body: JSON.stringify(body, null, 2)
+      });
+      message.success("Файл для ответа загружен");
+    };
+    reader.readAsBinaryString(file);
+  };
+
   const buildPostmanCollection = (folderName, mocksToExport) => {
     const items = (mocksToExport || []).map(m => {
       const reqHeaders = Object.entries(m.request_condition.headers || {}).map(
@@ -414,6 +498,8 @@ export default function App() {
       request_body_params: [{ key: "", value: "" }],
       request_body_formdata: [{ key: "", value: "" }],
       responseHeaders: [{ key: "", value: "" }],
+      response_type: "json",
+      delay_ms: 0,
       response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
     });
     setModalOpen(true);
@@ -463,6 +549,8 @@ export default function App() {
       status_code: m.response_config.status_code,
       active: m.active !== false,
       responseHeaders: headersToFormList(m.response_config.headers),
+      response_type: (m.response_config.body && m.response_config.body.__file__) ? "file" : "json",
+      delay_ms: m.delay_ms || 0,
       response_body: JSON.stringify(m.response_config.body, null, 2)
     });
     setModalOpen(true);
@@ -508,6 +596,13 @@ export default function App() {
         requestHeadersObj["Content-Type"] = contentType;
       }
 
+      let responseBodyObj;
+      try {
+        responseBodyObj = JSON.parse(vals.response_body || "{}");
+      } catch {
+        throw new Error("Некорректный JSON в теле ответа");
+      }
+
       const entry = {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
@@ -521,8 +616,9 @@ export default function App() {
         response_config: {
           status_code: Number(vals.status_code),
           headers: responseHeadersObj,
-          body: JSON.parse(vals.response_body || "{}")
-        }
+          body: responseBodyObj
+        },
+        delay_ms: Number(vals.delay_ms || 0) || 0
       };
       const res = await fetch(`${host}/api/mocks`, {
         method: "POST",
@@ -705,6 +801,9 @@ export default function App() {
   const stickyTopOffset = isDesktop ? 88 : 64;
   const isDefaultFolder = selectedFolder === "default";
   const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
+  const baseFolderUrl = isDefaultFolder
+    ? host
+    : `${(host || "").replace(/\/+$/, "")}/${selectedFolder}`;
   const primaryButtonStyle = {
     minWidth: isDesktop ? 160 : "calc(50% - 8px)",
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
@@ -936,9 +1035,19 @@ export default function App() {
                     <Typography.Title level={4} style={{ margin: 0 }}>
                       {folderTitle}
                     </Typography.Title>
-                    <Typography.Text type="secondary">
-                      {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
-                    </Typography.Text>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                      <Typography.Text type="secondary">
+                        {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
+                      </Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Базовый URL этой страницы: {baseFolderUrl || "—"}
+                      </Typography.Text>
+                      {!isDefaultFolder && (
+                        <Button size="small" onClick={openFolderSettings}>
+                          Настройки папки
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   <Table
@@ -1038,7 +1147,9 @@ export default function App() {
                 request_body_raw: "",
                 request_body_params: [{ key: "", value: "" }],
                 request_body_formdata: [{ key: "", value: "" }],
-                responseHeaders: [{ key: "", value: "" }]
+                responseHeaders: [{ key: "", value: "" }],
+                response_type: "json",
+                delay_ms: 0
               }}
             >
               <Form.Item name="id" hidden><Input /></Form.Item>
@@ -1225,12 +1336,27 @@ export default function App() {
                     }
                     
                     return (
-                      <Form.Item
-                        name="request_body_raw"
-                        tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                      >
-                        <TextArea rows={3} placeholder='Например {"user":"123"}' />
-                      </Form.Item>
+                      <>
+                        <Form.Item
+                          name="request_body_raw"
+                          tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                        >
+                          <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                        </Form.Item>
+                        <Button
+                          type="dashed"
+                          onClick={() => requestFileInputRef.current?.click()}
+                          style={{ marginTop: 8 }}
+                        >
+                          Загрузить файл в тело запроса
+                        </Button>
+                        <input
+                          type="file"
+                          ref={requestFileInputRef}
+                          style={{ display: "none" }}
+                          onChange={handleRequestFileUpload}
+                        />
+                      </>
                     );
                   }}
                 </Form.Item>
@@ -1276,8 +1402,60 @@ export default function App() {
                 )}
               </Form.List>
 
-              <Form.Item name="response_body" label="Тело (JSON)" rules={[{ required: true }]}>
-                <TextArea rows={6} placeholder='{"message":"ok"}' />
+              <Form.Item label="Задержка ответа (мс)" name="delay_ms">
+                <Input type="number" min={0} placeholder="Например 500 для 0.5 секунды" />
+              </Form.Item>
+
+              <Form.Item label="Тип ответа" name="response_type">
+                <Select
+                  options={[
+                    { label: "JSON", value: "json" },
+                    { label: "Файл (изображение, CSV, XML, JSON и т.п.)", value: "file" }
+                  ]}
+                />
+              </Form.Item>
+
+              <Form.Item label="Тело ответа" required>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.response_type !== cur.response_type}>
+                  {({ getFieldValue }) => {
+                    const type = getFieldValue("response_type") || "json";
+
+                    return (
+                      <>
+                        <Form.Item
+                          name="response_body"
+                          style={{ marginBottom: 8 }}
+                          rules={[{ required: true, message: "Укажите тело ответа" }]}
+                        >
+                          <TextArea
+                            rows={6}
+                            placeholder={
+                              type === "json"
+                                ? '{"message":"ok"}'
+                                : '{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}'
+                            }
+                          />
+                        </Form.Item>
+                        {type === "file" && (
+                          <>
+                            <Button
+                              type="dashed"
+                              onClick={() => responseFileInputRef.current?.click()}
+                            >
+                              Загрузить файл для ответа
+                            </Button>
+                            <input
+                              type="file"
+                              ref={responseFileInputRef}
+                              style={{ display: "none" }}
+                              onChange={handleResponseFileUpload}
+                            />
+                          </>
+                        )}
+                      </>
+                    );
+                  }}
+                </Form.Item>
               </Form.Item>
             </Form>
           </Modal>
@@ -1323,6 +1501,32 @@ export default function App() {
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>Переименовать</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title={`Настройки папки "${folderTitle}"`}
+            open={isFolderSettingsModalOpen}
+            onCancel={() => setFolderSettingsModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={folderSettingsForm} layout="vertical" onFinish={saveFolderSettings}>
+              <Form.Item name="proxy_enabled" valuePropName="checked">
+                <Checkbox>Включить прокси для этой страницы</Checkbox>
+              </Form.Item>
+              <Form.Item
+                name="proxy_base_url"
+                label="Базовый URL реального backend"
+                tooltip="Например https://real-backend.internal. Запросы без мока будут проксироваться туда."
+              >
+                <Input placeholder="https://backend.example.com" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Сохранить
+                </Button>
               </Form.Item>
             </Form>
           </Modal>

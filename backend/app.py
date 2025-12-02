@@ -1,13 +1,16 @@
 import os
 import json
+import asyncio
+import base64
 from uuid import uuid4
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey
 )
@@ -45,6 +48,9 @@ class Folder(Base):
     __tablename__ = "folders"
     name = Column(String, primary_key=True)
     mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete")
+    # Настройки прокси для папки
+    proxy_enabled = Column(Boolean, default=False)
+    proxy_base_url = Column(String, nullable=True)
 
 
 class Mock(Base):
@@ -63,6 +69,8 @@ class Mock(Base):
     response_headers = Column(SAJSON, default={})
     response_body = Column(SAJSON, nullable=False)
     active = Column(Boolean, default=True)
+    # Задержка ответа в миллисекундах
+    delay_ms = Column(Integer, default=0)
 
     folder_obj = relationship("Folder", back_populates="mocks")
 
@@ -133,7 +141,7 @@ class MockResponseConfig(BaseModel):
         default=None,
         description="Дополнительные заголовки ответа, которые вернёт мок",
     )
-    body: Dict = Field(..., description="JSON‑тело ответа, произвольная структура")
+    body: Any = Field(..., description="Тело ответа. Обычно JSON, но может быть спец‑структура файла.")
 
 
 class MockEntry(BaseModel):
@@ -159,6 +167,10 @@ class MockEntry(BaseModel):
     active: Optional[bool] = Field(
         default=True,
         description="Признак активности мока. Неактивные моки игнорируются при обработке запросов.",
+    )
+    delay_ms: Optional[int] = Field(
+        default=0,
+        description="Искусственная задержка ответа в миллисекундах (например 500 = 0.5 секунды).",
     )
 
     class Config:
@@ -187,6 +199,20 @@ class FolderRenamePayload(BaseModel):
 
     old_name: str = Field(..., description="Текущее имя папки")
     new_name: str = Field(..., description="Новое имя папки")
+
+
+class FolderSettings(BaseModel):
+    """Настройки папки (прокси и пр.)."""
+
+    proxy_enabled: bool = Field(default=False, description="Включен ли прокси‑режим для папки")
+    proxy_base_url: Optional[str] = Field(
+        default=None,
+        description="Базовый URL реального backend, куда проксировать запросы без мока",
+    )
+
+
+class FolderSettingsOut(FolderSettings):
+    name: str
 
 
 
@@ -300,7 +326,46 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
-    
+
+
+@app.get(
+    "/api/folders/{name}",
+    response_model=FolderSettingsOut,
+    summary="Получить настройки папки",
+)
+def get_folder_settings(
+    name: str = Path(..., description="Имя папки"),
+    db: Session = Depends(get_db),
+):
+    folder = db.query(Folder).filter_by(name=name).first()
+    if not folder:
+        raise HTTPException(404, "Папка не найдена")
+    return FolderSettingsOut(
+        name=folder.name,
+        proxy_enabled=folder.proxy_enabled or False,
+        proxy_base_url=folder.proxy_base_url,
+    )
+
+
+@app.patch(
+    "/api/folders/{name}/settings",
+    summary="Обновить настройки папки (прокси и пр.)",
+)
+def update_folder_settings(
+    name: str = Path(..., description="Имя папки"),
+    payload: FolderSettings = Body(...),
+    db: Session = Depends(get_db),
+):
+    folder = db.query(Folder).filter_by(name=name).first()
+    if not folder:
+        raise HTTPException(404, "Папка не найдена")
+
+    folder.proxy_enabled = payload.proxy_enabled
+    folder.proxy_base_url = (payload.proxy_base_url or "").strip() or None
+
+    db.commit()
+    return {"message": "Настройки папки обновлены"}
+
 @app.get(
     "/api/mocks/folders",
     response_model=List[str],
@@ -356,6 +421,7 @@ def create_or_update_mock(
     mock.response_headers = entry.response_config.headers or {}
     mock.response_body = entry.response_config.body
     mock.active = entry.active if entry.active is not None else True
+    mock.delay_ms = entry.delay_ms or 0
     
     db.commit()
     return {"message": "mock saved", "mock": entry}
@@ -399,6 +465,7 @@ def list_mocks(
                     body=m.response_body,
                 ),
                 active=m.active,
+                delay_ms=m.delay_ms or 0,
             )
         )
     return results
@@ -669,16 +736,18 @@ def extract_path_from_raw_url(raw: str) -> str:
         return path
 
 
-async def match_condition(req: Request, m: Mock) -> bool:
-    """Проверяет, подходит ли запрос к условиям мока."""
+async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
+    """Проверяет, подходит ли запрос к условиям мока.
+
+    full_path — это путь запроса с query‑строкой, уже нормализованный
+    (например, без префикса папки).
+    """
     # Проверка метода
     if req.method.upper() != m.method.upper():
         return False
     
     # Проверка пути (с query параметрами)
-    path = req.url.path
-    full = f"{path}{f'?{req.url.query}' if req.url.query else ''}"
-    if full != m.path:
+    if full_path != m.path:
         return False
     
     # Проверка заголовков
@@ -708,15 +777,81 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     if full_path.startswith("api/"):
         raise HTTPException(404, "No matching mock found")
     
-    # Ищем подходящий мок
-    for m in db.query(Mock).filter_by(active=True).all():
-        if await match_condition(request, m):
-            resp = JSONResponse(
-                content=m.response_body,
-                status_code=m.status_code
-            )
+    # Определяем папку по URL префиксу
+    path = request.url.path  # например "/auth/api/login"
+    segments = [seg for seg in path.split("/") if seg]
+
+    folder_name = "default"
+    inner_path = path
+
+    if segments:
+        candidate = segments[0]
+        folder = db.query(Folder).filter_by(name=candidate).first()
+        if folder:
+            folder_name = candidate
+            inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
+        else:
+            folder = db.query(Folder).filter_by(name="default").first()
+    else:
+        folder = db.query(Folder).filter_by(name="default").first()
+
+    query_suffix = f"?{request.url.query}" if request.url.query else ""
+    full_inner = f"{inner_path}{query_suffix}"
+
+    # Ищем подходящий мок только в выбранной папке
+    for m in db.query(Mock).filter_by(active=True, folder_name=folder_name).all():
+        if await match_condition(request, m, full_inner):
+            # Задержка ответа при необходимости
+            if m.delay_ms and m.delay_ms > 0:
+                await asyncio.sleep(m.delay_ms / 1000.0)
+
+            body = m.response_body
+
+            # Поддержка файловых ответов через спец‑структуру
+            is_file = isinstance(body, dict) and body.get("__file__") is True and "data_base64" in body
+            if is_file:
+                try:
+                    raw = base64.b64decode(body.get("data_base64") or "")
+                except Exception:
+                    raw = b""
+
+                resp = Response(
+                    content=raw,
+                    status_code=m.status_code,
+                    media_type=body.get("mime_type") or "application/octet-stream",
+                )
+                filename = body.get("filename")
+                if filename:
+                    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            else:
+                resp = JSONResponse(
+                    content=body,
+                    status_code=m.status_code
+                )
+
             for k, v in (m.response_headers or {}).items():
                 resp.headers[k] = v
             return resp
+
+    # Если мок не найден, пробуем прокси для папки
+    if folder and getattr(folder, "proxy_enabled", False) and getattr(folder, "proxy_base_url", None):
+        target_url = f'{folder.proxy_base_url.rstrip("/")}{full_inner}'
+        try:
+            async with httpx.AsyncClient() as client:
+                proxied = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                    content=await request.body()
+                )
+        except Exception as e:
+            raise HTTPException(502, f"Proxy error: {str(e)}")
+
+        resp = Response(content=proxied.content, status_code=proxied.status_code)
+        # Копируем заголовки, исключая hop-by-hop
+        for k, v in proxied.headers.items():
+            if k.lower() not in {"content-length", "transfer-encoding", "connection"}:
+                resp.headers[k] = v
+        return resp
     
     raise HTTPException(404, "No matching mock found")
