@@ -636,6 +636,25 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
 
 
 
+def _normalize_json_string(json_str: str) -> str:
+    """Нормализует JSON строку: убирает лишние пробелы, переносы строк и форматирование.
+    
+    Пытается распарсить строку как JSON и вернуть компактную версию.
+    Если парсинг не удается, возвращает исходную строку.
+    """
+    if not json_str or not isinstance(json_str, str):
+        return json_str
+    
+    try:
+        # Пытаемся распарсить как JSON
+        parsed = json.loads(json_str)
+        # Возвращаем компактную версию без пробелов
+        return json.dumps(parsed, ensure_ascii=False, separators=(',', ':'))
+    except (json.JSONDecodeError, TypeError):
+        # Если не JSON, возвращаем как есть
+        return json_str
+
+
 def _normalize_path_for_storage(path: str) -> str:
     """Нормализует путь для хранения в БД: убирает лишние слэши, но сохраняет query параметры."""
     if not path:
@@ -681,7 +700,8 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     else:
         mock.headers = headers_to_save
         logger.debug(f"_save_mock_entry: saving headers: {headers_to_save}")
-    mock.body_contains = entry.request_condition.body_contains
+    # Нормализуем body_contains при сохранении (убираем лишние пробелы из JSON)
+    mock.body_contains = _normalize_json_string(entry.request_condition.body_contains) if entry.request_condition.body_contains else None
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
     mock.response_body = entry.response_config.body
@@ -818,7 +838,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                         example = media_spec.get("example")
                         if example is not None:
                             if isinstance(example, (dict, list)):
-                                request_body_contains = json.dumps(example, ensure_ascii=False)
+                                request_body_contains = _normalize_json_string(json.dumps(example, ensure_ascii=False))
                             else:
                                 request_body_contains = str(example)
                             request_headers["Content-Type"] = media_type
@@ -833,7 +853,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                     example_value = example_obj.get("value")
                                     if example_value is not None:
                                         if isinstance(example_value, (dict, list)):
-                                            request_body_contains = json.dumps(example_value, ensure_ascii=False)
+                                            request_body_contains = _normalize_json_string(json.dumps(example_value, ensure_ascii=False))
                                         else:
                                             request_body_contains = str(example_value)
                                         request_headers["Content-Type"] = media_type
@@ -847,7 +867,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                             schema_example = schema.get("example")
                             if schema_example is not None and not request_body_contains:
                                 if isinstance(schema_example, (dict, list)):
-                                    request_body_contains = json.dumps(schema_example, ensure_ascii=False)
+                                    request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
                                 else:
                                     request_body_contains = str(schema_example)
                                 request_headers["Content-Type"] = media_type
@@ -1480,9 +1500,9 @@ async def import_postman_collection(
                         body_data = req_body.get("raw", "")
                         if body_data:
                             if isinstance(body_data, str):
-                                body_contains = body_data
+                                body_contains = _normalize_json_string(body_data)
                             else:
-                                body_contains = json.dumps(body_data) if body_data else None
+                                body_contains = _normalize_json_string(json.dumps(body_data)) if body_data else None
                     elif mode == "urlencoded" and isinstance(req_body.get("urlencoded"), list):
                         # Для urlencoded формируем строку key=value&key2=value2
                         params = []
@@ -1526,11 +1546,11 @@ async def import_postman_collection(
                         body_data = req_body.get("raw") or req_body.get(mode) or ""
                         if body_data:
                             if isinstance(body_data, str):
-                                body_contains = body_data
+                                body_contains = _normalize_json_string(body_data)
                             else:
-                                body_contains = json.dumps(body_data) if body_data else None
+                                body_contains = _normalize_json_string(json.dumps(body_data)) if body_data else None
                 elif isinstance(req_body, str):
-                    body_contains = req_body
+                    body_contains = _normalize_json_string(req_body)
 
             # Обработка заголовков ответа
             response_headers = {}
@@ -1966,8 +1986,11 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                 if body_bytes:
                     # Если тело есть (нестандартно для GET, но возможно), проверяем его
                     body = body_bytes.decode("utf-8")
-                    if m.body_contains not in body:
-                        logger.debug(f"Body mismatch for mock {m.id} (GET with body): body_contains='{m.body_contains[:50]}...' not in request body")
+                    # Нормализуем оба значения для сравнения
+                    normalized_body = _normalize_json_string(body)
+                    normalized_contains = _normalize_json_string(m.body_contains)
+                    if normalized_contains not in normalized_body:
+                        logger.debug(f"Body mismatch for mock {m.id} (GET with body): body_contains='{normalized_contains[:50]}...' not in request body")
                         return False
                 else:
                     # Если тело пустое, игнорируем условие body_contains для GET запросов
@@ -1975,8 +1998,11 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
             else:
                 # Для POST, PUT, PATCH, DELETE проверяем тело
                 body = (await req.body()).decode("utf-8")
-                if m.body_contains not in body:
-                    logger.debug(f"Body mismatch for mock {m.id}: body_contains='{m.body_contains[:50]}...' not in request body")
+                # Нормализуем оба значения для сравнения
+                normalized_body = _normalize_json_string(body)
+                normalized_contains = _normalize_json_string(m.body_contains)
+                if normalized_contains not in normalized_body:
+                    logger.debug(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:50]}...' not in request body")
                     return False
         except Exception as e:
             logger.debug(f"Error checking body for mock {m.id}: {e}")
