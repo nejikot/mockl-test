@@ -318,10 +318,6 @@ export default function App() {
   };
 
   const fetchMocks = async () => {
-    if (selectedFolder === "default") {
-      setMocks([]);
-      return;
-    }
     try {
       const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(selectedFolder)}`);
       if (!res.ok) throw new Error();
@@ -740,13 +736,6 @@ export default function App() {
               <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
               <Typography.Text type="secondary">mock-сервер</Typography.Text>
             </div>
-            <Button
-              icon={<BgColorsOutlined />}
-              onClick={toggleTheme}
-              type="text"
-            >
-              {theme === "light" ? "🌙 Dark" : "☀️ Light"}
-            </Button>
             <div style={{
               display: "flex",
               alignItems: "center",
@@ -768,6 +757,13 @@ export default function App() {
                 size="small"
                 style={{ flex: 1 }}
               />
+              <Button
+                icon={<BgColorsOutlined />}
+                onClick={toggleTheme}
+                type="text"
+              >
+                {theme === "light" ? "🌙 Dark" : "☀️ Light"}
+              </Button>
             </div>
           </Header>
 
@@ -836,7 +832,14 @@ export default function App() {
                       а ответ можно настроить с нужным статусом, заголовками и JSON.
                     </Typography.Paragraph>
                     <Typography.Title level={4}>Как пользоваться</Typography.Title>
-                    <ol style={{ paddingLeft: 18, lineHeight: 1.6 }}>
+                    <ol
+                      style={{
+                        paddingLeft: 18,
+                        lineHeight: 1.6,
+                        margin: 0,
+                        color: theme === "light" ? "#000000d9" : "#e8e8e8"
+                      }}
+                    >
                       <li>Настройте адрес работающего backend-а сверху, чтобы панель могла обращаться к API.</li>
                       <li>Создайте страницу (папку) для логической группы моков и выберите её слева.</li>
                       <li>Нажмите «Создать mock», укажите метод, путь, необходимые заголовки/фрагмент тела и соберите желаемый ответ.</li>
