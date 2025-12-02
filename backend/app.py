@@ -11,7 +11,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from typing import Dict, Optional, List, Any
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
@@ -504,20 +504,71 @@ def list_folders(db: Session = Depends(get_db)):
     description=(
         "Создаёт новый мок или обновляет существующий по полю `id`.\n\n"
         "- Если `id` не передан — будет создан новый мок с автоматически сгенерированным UUID.\n"
-        "- Если `id` существует — запись будет перезаписана новыми значениями."
+        "- Если `id` существует — запись будет перезаписана новыми значениями.\n\n"
+        "Поддерживаются два формата тела запроса:\n"
+        "- application/json — как раньше, полностью JSON‑описание `MockEntry`;\n"
+        "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
+        "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
 )
-def create_or_update_mock(
-    entry: MockEntry = Body(
-        ...,
-        description="Полное описание мока и условий его срабатывания",
-    ),
+async def create_or_update_mock(
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    """
+    Обновлённый обработчик создания/обновления мока.
+
+    Поддерживает как чистый JSON, так и multipart/form-data с отдельным файлом.
+    """
+    content_type = request.headers.get("content-type", "")
+
+    raw_data: dict
+    upload_file: Optional[UploadFile] = None
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        entry_str = form.get("entry")
+        if not entry_str:
+            raise HTTPException(400, "Поле 'entry' с JSON описанием мока обязательно для multipart/form-data")
+        try:
+            raw_data = json.loads(entry_str)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Некорректный JSON в поле 'entry'")
+
+        possible_file = form.get("file")
+        if isinstance(possible_file, UploadFile):
+            upload_file = possible_file
+    else:
+        try:
+            raw_data = await request.json()
+        except Exception:
+            raise HTTPException(400, "Некорректное JSON‑тело запроса")
+
+    try:
+        entry = MockEntry(**raw_data)
+    except ValidationError as e:
+        # Преобразуем ошибку в HTTP 422, чтобы фронтенд увидел причину
+        raise HTTPException(422, str(e))
+
+    # Если вместе с описанием пришёл файл — преобразуем его в файловое тело ответа,
+    # не требуя, чтобы base64 хранился в JSON, который приходит от фронтенда.
+    if upload_file is not None and upload_file.filename:
+        try:
+            content = await upload_file.read()
+            data_b64 = base64.b64encode(content).decode("ascii")
+        except Exception as e:
+            raise HTTPException(400, f"Не удалось прочитать файл: {str(e)}")
+
+        entry.response_config.body = {
+            "__file__": True,
+            "filename": upload_file.filename,
+            "mime_type": upload_file.content_type or "application/octet-stream",
+            "data_base64": data_b64,
+        }
+
     # Если id не передан — создаём новый мок с внутренним UUID
     if not entry.id:
         entry.id = str(uuid4())
-
 
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
@@ -525,13 +576,11 @@ def create_or_update_mock(
         db.add(folder)
         db.flush()
 
-
     # Ищем существующий мок или создаём новый
     mock = db.query(Mock).filter_by(id=entry.id).first()
     if not mock:
         mock = Mock(id=entry.id)
         db.add(mock)
-
 
     mock.folder_name = entry.folder
     mock.name = entry.name
@@ -544,7 +593,7 @@ def create_or_update_mock(
     mock.response_body = entry.response_config.body
     mock.active = entry.active if entry.active is not None else True
     mock.delay_ms = entry.delay_ms or 0
-    
+
     db.commit()
     return {"message": "mock saved", "mock": entry}
 

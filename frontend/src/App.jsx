@@ -124,7 +124,13 @@ function buildFolderHost(baseHost, folder) {
     const host = url.hostname; // например mockl-test.onrender.com
     const parts = host.split(".");
     if (parts.length < 2) return baseHost;
-    parts[0] = `${parts[0]}-${folder}`;
+
+    // Новая схема: добавляем имя папки к "основному" домену перед зоной.
+    // Было: mockl-test-cnsgate.onrender.com
+    // Стало: mockl-test.onrender-cnsgate.com
+    const idx = parts.length - 2;
+    parts[idx] = `${parts[idx]}-${folder}`;
+
     url.hostname = parts.join(".");
     return url.toString().replace(/\/+$/, "");
   } catch {
@@ -227,6 +233,7 @@ export default function App() {
   const fileInputRef = useRef();
   const responseFileInputRef = useRef();
   const requestFileInputRef = useRef();
+  const [responseFile, setResponseFile] = useState(null);
   const [isFolderSettingsModalOpen, setFolderSettingsModalOpen] = useState(false);
   const [folderSettingsForm] = Form.useForm();
 
@@ -408,23 +415,19 @@ export default function App() {
     e.target.value = "";
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const binary = reader.result;
-      const base64 = btoa(binary);
-      const body = {
-        __file__: true,
-        filename: file.name,
-        mime_type: file.type || "application/octet-stream",
-        data_base64: base64
-      };
-      form.setFieldsValue({
-        response_type: "file",
-        response_body: JSON.stringify(body, null, 2)
-      });
-      message.success("Файл для ответа загружен");
+    // Сохраняем сам файл отдельно, а в JSON‑теле оставляем только метаданные,
+    // без base64 — файл будет отправлен отдельным параметром.
+    setResponseFile(file);
+    const body = {
+      __file__: true,
+      filename: file.name,
+      mime_type: file.type || "application/octet-stream"
     };
-    reader.readAsBinaryString(file);
+    form.setFieldsValue({
+      response_type: "file",
+      response_body: JSON.stringify(body, null, 2)
+    });
+    message.success("Файл для ответа загружен");
   };
 
   const buildPostmanCollection = (folderName, mocksToExport) => {
@@ -501,6 +504,7 @@ export default function App() {
 
   const openAddMock = () => {
     setEditing(null);
+    setResponseFile(null);
     form.resetFields();
     form.setFieldsValue({
       folder: selectedFolder,
@@ -523,6 +527,7 @@ export default function App() {
 
   const openEditMock = m => {
     setEditing(m);
+    setResponseFile(null);
     const headers = m.request_condition.headers || {};
     const contentTypeKey = Object.keys(headers).find(
       k => k.toLowerCase() === "content-type"
@@ -638,13 +643,30 @@ export default function App() {
         },
         delay_ms: Number(vals.delay_ms || 0) || 0
       };
-      const res = await fetch(`${host}/api/mocks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry)
-      });
+
+      let res;
+      // Если ответ — файл и он выбран, отправляем multipart/form-data:
+      // - поле "entry" с JSON‑описанием
+      // - поле "file" с бинарным файлом
+      if ((vals.response_type === "file") && responseFile) {
+        const formData = new FormData();
+        formData.append("entry", JSON.stringify(entry));
+        formData.append("file", responseFile);
+        res = await fetch(`${host}/api/mocks`, {
+          method: "POST",
+          body: formData
+        });
+      } else {
+        // Обычный JSON‑вариант без отдельного файла
+        res = await fetch(`${host}/api/mocks`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry)
+        });
+      }
       if (!res.ok) throw new Error();
       setModalOpen(false);
+      setResponseFile(null);
       fetchMocks();
       fetchFolders();
       message.success("Сохранено");
