@@ -717,9 +717,9 @@ def _slugify_folder_name(raw: str) -> str:
     return name or "openapi"
 
 
-def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str:
-    """Создаёт (если нужно) папку для OpenAPI‑спеки и возвращает её имя."""
-    folder_name = _slugify_folder_name(spec_name)
+def _ensure_folder(folder_name: str, db: Optional[Session] = None) -> str:
+    """Создаёт (если нужно) папку с заданным именем и возвращает её имя."""
+    folder_name = (folder_name or "openapi").strip() or "openapi"
     own = False
     if db is None:
         db = SessionLocal()
@@ -733,6 +733,71 @@ def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str
     finally:
         if own:
             db.close()
+
+
+def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str:
+    """Создаёт (если нужно) папку для OpenAPI‑спеки и возвращает её имя."""
+    folder_name = _slugify_folder_name(spec_name)
+    return _ensure_folder(folder_name, db=db)
+
+
+def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Session) -> int:
+    """
+    Генерирует простые моки по OpenAPI‑спецификации в указанную папку.
+
+    Для каждого пути/метода создаётся мок с кодом 200 и простым JSON‑ответом.
+    Повторно существующие сочетания (folder, method, path) не создаются.
+    """
+    paths = spec.get("paths") or {}
+    if not isinstance(paths, dict):
+        return 0
+
+    allowed_methods = {"get", "post", "put", "delete", "patch", "options", "head"}
+    created = 0
+
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        for method_name, operation in path_item.items():
+            if method_name.lower() not in allowed_methods:
+                continue
+            method_upper = method_name.upper()
+
+            # Проверяем, нет ли уже такого мока
+            existing = db.query(Mock).filter_by(
+                folder_name=folder_name,
+                method=method_upper,
+                path=path,
+            ).first()
+            if existing:
+                continue
+
+            op = operation or {}
+            mock_name = (
+                op.get("operationId")
+                or op.get("summary")
+                or f"{method_upper} {path}"
+            )
+
+            entry = MockEntry(
+                folder=folder_name,
+                name=mock_name,
+                request_condition=MockRequestCondition(
+                    method=method_upper,
+                    path=path,
+                ),
+                response_config=MockResponseConfig(
+                    status_code=200,
+                    headers=None,
+                    body={"message": "mock from OpenAPI"},
+                ),
+                active=True,
+                delay_ms=0,
+            )
+            _save_mock_entry(entry, db)
+            created += 1
+
+    return created
 
 
 def load_openapi_specs_from_env():
@@ -1222,6 +1287,10 @@ async def get_openapi_spec(name: str = Path(..., description="Имя специ�
 class OpenApiFromUrlPayload(BaseModel):
     url: str = Field(..., description="URL до JSON/YAML OpenAPI спецификации")
     name: Optional[str] = Field(None, description="Явное имя спецификации (если не указано, возьмется info.title)")
+    folder_name: Optional[str] = Field(
+        None,
+        description="Имя папки (страницы), в которую будут импортированы эндпоинты OpenAPI",
+    )
 
 
 @app.post(
@@ -1237,10 +1306,28 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             spec = json.loads(text_body)
         except json.JSONDecodeError:
             spec = yaml.safe_load(text_body)
+
         name = payload.name or spec.get("info", {}).get("title") or payload.url
         OPENAPI_SPECS[name] = spec
-        folder_name = _ensure_folder_for_spec(name)
-        return {"message": "spec loaded", "name": name, "folder_name": folder_name}
+
+        # Имя папки можно задать явно, иначе берём название спеки
+        raw_folder = payload.folder_name or name
+        folder_slug = _slugify_folder_name(raw_folder)
+
+        db = SessionLocal()
+        try:
+            folder_name = _ensure_folder(folder_slug, db=db)
+            mocks_created = generate_mocks_for_openapi(spec, folder_name, db)
+            db.commit()
+        finally:
+            db.close()
+
+        return {
+            "message": "spec loaded",
+            "name": name,
+            "folder_name": folder_name,
+            "mocks_created": mocks_created,
+        }
     except Exception as e:
         raise HTTPException(400, f"Failed to load spec: {str(e)}")
 

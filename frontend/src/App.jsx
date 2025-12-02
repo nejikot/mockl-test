@@ -408,29 +408,14 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url,
-          name: (vals.spec_name || "").trim() || undefined
+          name: (vals.spec_name || "").trim() || undefined,
+          folder_name: (vals.folder_name || "").trim() || undefined
         })
       });
       if (!res.ok) throw new Error("Не удалось загрузить спецификацию");
       const data = await res.json();
-      let folderName = (vals.folder_name || data.name || "openapi").trim();
+      let folderName = (data.folder_name || vals.folder_name || data.name || "openapi").trim();
       if (!folderName) folderName = "openapi";
-      folderName = folderName.replace(/\s+/g, "-");
-
-      // Пытаемся создать папку под эту спецификацию (если уже есть — просто переходим к ней)
-      try {
-        const folderRes = await fetch(`${host}/api/folders`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: folderName })
-        });
-        if (!folderRes.ok && folderRes.status !== 400) {
-          throw new Error();
-        }
-      } catch {
-        // если не получилось создать — всё равно продолжаем
-      }
-
       message.success(`OpenAPI импортирован, страница "${folderName}" готова для создания моков`);
       setOpenapiModalOpen(false);
       openapiForm.resetFields();
