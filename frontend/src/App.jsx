@@ -122,11 +122,9 @@ function buildFolderHost(baseHost, folder) {
   if (!baseHost || !folder || folder === "default") return baseHost;
   try {
     const url = new URL(baseHost);
-    // Добавляем имя папки в путь, а не в поддомен
-    // Формат: https://mockl-test.onrender.com/folder/path
-    const basePath = url.pathname.replace(/\/+$/, "");
+    const basePath = url.pathname.replace(/\\/+$/ "");
     url.pathname = `${basePath}/${folder}`;
-    return url.toString().replace(/\/+$/, "");
+    return url.toString().replace(/\\/+$/ "");
   } catch {
     return baseHost;
   }
@@ -270,6 +268,7 @@ export default function App() {
       if (!res.ok) throw new Error("Импорт не удался");
       const data = await res.json();
       message.success(`Импортировано ${data.imported_ids.length} мока(ов)`);
+      // ✅ ИСПРАВЛЕНИЕ: вызываем fetchFolders и fetchMocks для обновления UI
       fetchFolders();
       fetchMocks();
     } catch (e) {
@@ -416,6 +415,7 @@ export default function App() {
       message.success(`OpenAPI импортирован, страница "${folderName}" готова для создания моков`);
       setOpenapiModalOpen(false);
       openapiForm.resetFields();
+      // ✅ ИСПРАВЛЕНИЕ: вызываем fetchFolders и fetchMocks без await (они не async по умолчанию)
       await fetchFolders();
       setSelectedFolder(folderName);
       await fetchMocks();
@@ -429,7 +429,6 @@ export default function App() {
     e.target.value = "";
     if (!file) return;
 
-    // Сохраняем файл отдельно для режима "file"
     const currentMode = form.getFieldValue("request_body_mode");
     if (currentMode === "file") {
       setRequestFile(file);
@@ -438,7 +437,6 @@ export default function App() {
       });
       message.success("Файл для запроса загружен");
     } else {
-      // Для режима "raw" - читаем содержимое файла
       const reader = new FileReader();
       const isText = /^text\/|\/json$|\/xml$|csv$/.test(file.type) || /\.(csv|xml|json|txt)$/i.test(file.name);
 
@@ -463,14 +461,11 @@ export default function App() {
     e.target.value = "";
     if (!file) return;
 
-    // Сохраняем сам файл отдельно
     setResponseFile(file);
     
-    // Читаем файл и конвертируем в base64 для отображения в форме
     const reader = new FileReader();
     reader.onload = () => {
       const content = reader.result;
-      // Для бинарных файлов конвертируем в base64
       const base64Content = typeof content === 'string' 
         ? btoa(content) 
         : btoa(String.fromCharCode(...new Uint8Array(content)));
@@ -488,7 +483,6 @@ export default function App() {
       message.success("Файл для ответа загружен");
     };
     
-    // Читаем файл как бинарную строку для корректной конвертации в base64
     reader.readAsBinaryString(file);
   };
 
@@ -594,7 +588,6 @@ export default function App() {
   const openEditMock = m => {
     setEditing(m);
     setResponseFile(null);
-    // Сохраняем исходную структуру файла, если она есть
     if (m.response_config.body && typeof m.response_config.body === "object" && m.response_config.body.__file__) {
       setOriginalFileBody(m.response_config.body);
     } else {
@@ -612,7 +605,7 @@ export default function App() {
     let request_body_params = [{ key: "", value: "" }];
     let request_body_formdata = [{ key: "", value: "" }];
 
-    if (/application\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
+    if (/application\\/x-www-form-urlencoded/i.test(contentType) && bodyContains) {
       request_body_mode = "urlencoded";
       const pairs = bodyContains.split("&").filter(Boolean);
       request_body_params =
@@ -623,7 +616,7 @@ export default function App() {
             value: decodeURIComponent(v)
           };
         }) || [{ key: "", value: "" }];
-    } else if (/multipart\/form-data/i.test(contentType)) {
+    } else if (/multipart\\/form-data/i.test(contentType)) {
       request_body_mode = "form-data";
     } else if (!bodyContains) {
       request_body_mode = "none";
@@ -698,9 +691,7 @@ export default function App() {
       } else if (bodyMode === "raw") {
         bodyContains = (vals.request_body_raw || "").trim();
       } else if (bodyMode === "file") {
-        // Для режима "file" используем содержимое загруженного файла
         if (requestFile) {
-          // Читаем файл асинхронно и конвертируем в base64 для bodyContains
           const fileContent = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result);
@@ -710,7 +701,6 @@ export default function App() {
           bodyContains = btoa(fileContent);
           contentType = requestFile.type || "application/octet-stream";
         } else {
-          // Если файл не загружен, используем raw содержимое если есть
           bodyContains = (vals.request_body_raw || "").trim();
         }
       }
@@ -726,16 +716,13 @@ export default function App() {
         throw new Error("Некорректный JSON в теле ответа");
       }
 
-      // Если тип ответа изменился с "file" на "json", очищаем структуру файла
       if (vals.response_type === "json" && responseBodyObj && typeof responseBodyObj === "object" && responseBodyObj.__file__) {
-        // Удаляем все поля, связанные с файлом
         delete responseBodyObj.__file__;
         delete responseBodyObj.filename;
         delete responseBodyObj.mime_type;
         delete responseBodyObj.data_base64;
       }
 
-      // Настройки кэша из формы мока
       const cacheEnabled = !!vals.cache_enabled;
       const cacheTtl = Number(vals.cache_ttl || 0);
       if (cacheEnabled && cacheTtl > 0 && typeof responseBodyObj === "object" && responseBodyObj !== null) {
@@ -764,12 +751,7 @@ export default function App() {
       };
 
       let res;
-      // Если ответ — файл и он выбран, отправляем multipart/form-data:
-      // - поле "entry" с JSON‑описанием (без base64, так как файл отправляется отдельно)
-      // - поле "file" с бинарным файлом
       if ((vals.response_type === "file") && responseFile) {
-        // Удаляем data_base64 из entry, так как файл будет отправлен отдельно
-        // Backend сам добавит data_base64 при получении файла
         if (entry.response_config.body && entry.response_config.body.__file__) {
           const { data_base64, ...bodyWithoutBase64 } = entry.response_config.body;
           entry.response_config.body = bodyWithoutBase64;
@@ -782,16 +764,13 @@ export default function App() {
           body: formData
         });
       } else if ((vals.response_type === "file") && responseBodyObj && responseBodyObj.__file__) {
-        // Если тип "file", но нового файла нет, проверяем наличие data_base64
         if (responseBodyObj.data_base64) {
-          // Есть data_base64 в текущем body - используем его
           res = await fetch(`${host}/api/mocks`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(entry)
           });
         } else if (originalFileBody && originalFileBody.data_base64) {
-          // Нет data_base64 в текущем body, но есть в исходном - восстанавливаем
           entry.response_config.body = {
             ...responseBodyObj,
             data_base64: originalFileBody.data_base64,
@@ -804,11 +783,9 @@ export default function App() {
             body: JSON.stringify(entry)
           });
         } else {
-          // Нет data_base64 ни в текущем, ни в исходном - ошибка
           throw new Error("Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64");
         }
       } else {
-        // Обычный JSON‑вариант без отдельного файла
         res = await fetch(`${host}/api/mocks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -877,10 +854,8 @@ export default function App() {
     const headers = mock.request_condition.headers || {};
     const bodyContains = mock.request_condition.body_contains || "";
 
-    const normalizedHost = (baseFolderUrl || "").replace(/\/+$/, "");
-    // Путь уже должен начинаться с /, но если нет - добавляем
+    const normalizedHost = (baseFolderUrl || "").replace(/\\/+$/ "");
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    // baseFolderUrl уже содержит имя папки в пути, просто добавляем путь мока
     const url = `${normalizedHost}${normalizedPath}`;
 
     const parts = [`curl -X ${method}`];
@@ -894,7 +869,7 @@ export default function App() {
     });
 
     if (bodyContains) {
-      if (/application\/x-www-form-urlencoded/i.test(contentType)) {
+      if (/application\\/x-www-form-urlencoded/i.test(contentType)) {
         const pairs = bodyContains.split("&").filter(Boolean);
         if (pairs.length) {
           pairs.forEach(p => {
@@ -1242,17 +1217,17 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
-                      Mock — визуальный mock‑сервер и песочница API
+                      Mock — визуальный mock-сервер и песочница API
                     </Typography.Title>
                     <Typography.Paragraph>
-                      Здесь вы можете визуально собирать моки для HTTP‑эндпоинтов, группировать их по страницам,
-                      импортировать коллекции и OpenAPI‑спеки, настраивать задержки, кэширование, ошибки и прокси —
+                      Здесь вы можете визуально собирать моки для HTTP-эндпоинтов, группировать их по страницам,
+                      импортировать коллекции и OpenAPI-спеки, настраивать задержки, кэширование, ошибки и прокси —
                       всё через интерфейс, без редактирования кода.
                     </Typography.Paragraph>
                     <Typography.Title level={4}>Базовый сценарий</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ol style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li>В поле «Бэк» сверху укажите URL работающего backend‑сервера (по умолчанию выведен текущий).</li>
+                        <li>В поле «Бэк» сверху укажите URL работающего backend-сервера (по умолчанию выведен текущий).</li>
                         <li>Слева создайте страницу (папку) для логической группы моков и выберите её.</li>
                         <li>Нажмите «Создать mock», укажите метод и путь, по которому должны приходить запросы.</li>
                         <li>Добавьте условия по заголовкам и/или телу запроса, если нужно различать несколько сценариев.</li>
@@ -1263,13 +1238,13 @@ export default function App() {
 
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Работа с OpenAPI</Typography.Title>
                     <Typography.Paragraph>
-                      Вы можете импортировать одну или несколько OpenAPI‑спецификаций (JSON/YAML) и быстро
+                      Вы можете импортировать одну или несколько OpenAPI-спецификаций (JSON/YAML) и быстро
                       организовать под них страницы для моков.
                     </Typography.Paragraph>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
                         <li>Нажмите кнопку <b>«Импорт OpenAPI»</b> в верхней панели.</li>
-                        <li>Вставьте URL до OpenAPI‑файла (JSON или YAML). При желании укажите имя спецификации и имя страницы.</li>
+                        <li>Вставьте URL до OpenAPI-файла (JSON или YAML). При желании укажите имя спецификации и имя страницы.</li>
                         <li>После импорта автоматически создаётся страница, в которую вы сможете добавлять моки по путям из спецификации.</li>
                         <li>Дальше вы используете обычный функционал создания моков: вручную задаёте ответы для выбранных эндпоинтов.</li>
                       </ul>
@@ -1283,8 +1258,8 @@ export default function App() {
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
                         <li><b>Подстановки в ответах и заголовках</b> — в форме мока в поле «Тело ответа» вы можете
-                            использовать плейсхолдеры <code>{'{method}'}</code>, <code>{'{path}'}</code>,
-                            <code>{'{query_id}'}</code>, <code>{'{header_Authorization}'}</code> и другие.
+                            использовать плейсхолдеры <code>{'{'}'method'{'}'}</code>, <code>{'{'}'path'{'}'}</code>,
+                            <code>{'{'}'query_id'{'}'}</code>, <code>{'{'}'header_Authorization'{'}'}</code> и другие.
                             При реальном вызове они будут автоматически заменены значениями из запроса.</li>
                         <li><b>Кэширование ответов</b> — в настройках мока есть опция «Включить кэширование ответа» и
                             поле «TTL кэша (сек)». Включите её, если хотите, чтобы одинаковые запросы временно
@@ -1292,7 +1267,7 @@ export default function App() {
                         <li><b>Задержки</b> — вы можете задать фиксированную задержку в миллисекундах, либо диапазон
                             (минимум/максимум) в теле ответа, чтобы эмулировать нестабильные сети и долгие операции.</li>
                         <li><b>Имитация ошибок</b> — добавляя специальный блок в теле ответа, можно задать вероятность
-                            возврата ошибки вместо успешного ответа, а также статус‑код и дополнительную задержку.</li>
+                            возврата ошибки вместо успешного ответа, а также статус-код и дополнительную задержку.</li>
                         <li><b>Файловые ответы</b> — выберите тип ответа «Файл» и загрузите нужный файл прямо из формы.
                             Сервис сам сформирует корректные заголовки для скачивания.</li>
                       </ul>
@@ -1301,13 +1276,13 @@ export default function App() {
                     <Typography.Title level={4} style={{ marginTop: 16 }}>Прокси, редиректы и безопасность</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
-                        <li><b>Прокси‑режим</b> настраивается для каждой страницы через кнопку «Настройки proxy»:
-                            укажите базовый URL реального backend’а. Если подходящего мока для запроса нет,
+                        <li><b>Прокси-режим</b> настраивается для каждой страницы через кнопку «Настройки proxy»:
+                            укажите базовый URL реального backend'а. Если подходящего мока для запроса нет,
                             запрос будет автоматически проксирован туда.</li>
-                        <li><b>Редиректы</b> при проксировании автоматически «приземляются» на текущий mock‑сервер,
+                        <li><b>Редиректы</b> при проксировании автоматически «приземляются» на текущий mock-сервер,
                             чтобы цепочки переходов не уводили вас на другой домен.</li>
                         <li><b>Безопасность</b> — все вызовы UI идут только на указанный в поле «Бэк» адрес и текущий
-                            mock‑сервер; настройку ограничения размеров и хостов прокси можно считать уже встроенной.</li>
+                            mock-сервер; настройку ограничения размеров и хостов прокси можно считать уже встроенной.</li>
                       </ul>
                     </Typography.Paragraph>
 
@@ -1332,7 +1307,7 @@ export default function App() {
                         <li><b>Дублирование страниц</b> — через кнопку «Дублировать страницу» можно быстро
                             скопировать целый набор моков и адаптировать его под новый сценарий.</li>
                         <li><b>Темы и удобство</b> — переключайте светлую/тёмную тему, перетаскивайте страницы,
-                            давайте понятные имена — всё это помогает держать сложные сценарии в порядкея.</li>
+                            давайте понятные имена — всё это помогает держать сложные сценарии в порядке.</li>
                       </ul>
                     </Typography.Paragraph>
                   </div>
@@ -1508,7 +1483,6 @@ export default function App() {
             >
               <Form.Item name="id" hidden><Input /></Form.Item>
 
-              {/* Общие настройки */}
               <Row gutter={16} style={{ marginBottom: 16 }}>
                 <Col span={12}>
                   <Form.Item name="folder" label="Папка" rules={[{ required: true }]}>
@@ -1531,9 +1505,7 @@ export default function App() {
 
               <Divider style={{ margin: "16px 0" }} />
 
-              {/* Две колонки: Запрос и Ответ */}
               <Row gutter={24}>
-                {/* Левая колонка: Настройки запроса */}
                 <Col span={12}>
                   <div style={{ 
                     padding: "16px", 
@@ -1751,7 +1723,7 @@ export default function App() {
                               name="request_body_raw"
                               tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
                             >
-                              <TextArea rows={3} placeholder='Например {"user":"123"}' />
+                              <TextArea rows={3} placeholder='Например {{"user":"123"}}' />
                             </Form.Item>
                           );
                         }}
@@ -1760,7 +1732,6 @@ export default function App() {
                   </div>
                 </Col>
 
-                {/* Правая колонка: Настройки ответа */}
                 <Col span={12}>
                   <div style={{ 
                     padding: "16px", 
@@ -1854,8 +1825,8 @@ export default function App() {
                                   rows={6}
                                   placeholder={
                                     type === "json"
-                                      ? '{"message":"ok"}'
-                                      : '{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}'
+                                      ? '{{"message":"ok"}}'
+                                      : '{{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}}'
                                   }
                                 />
                               </Form.Item>
