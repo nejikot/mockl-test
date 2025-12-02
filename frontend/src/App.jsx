@@ -1100,24 +1100,25 @@ export default function App() {
               background: "transparent",
               display: "flex",
               flexDirection: isDesktop ? "row" : "column",
-              gap: 24
+              gap: 24,
+              height: isDesktop ? "calc(100vh - 200px)" : "auto",
+              overflowY: isDesktop ? "auto" : "visible",
+              overflowX: "hidden"
             }}>
               <Sider
                 width={isDesktop ? 320 : "100%"}
                 style={{
                   background: "transparent",
-                  marginRight: isDesktop ? 0 : 0
+                  marginRight: isDesktop ? 0 : 0,
+                  overflowY: isDesktop ? "auto" : "visible",
+                  flex: "0 0 auto"
                 }}
               >
                 <div style={{
                   background: theme === "light" ? "#fff" : "#1f1f1f",
                   borderRadius: 12,
                   padding: 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
-                  position: isDesktop ? "sticky" : "static",
-                  top: isDesktop ? stickyTopOffset + 40 : "auto",
-                  maxHeight: isDesktop ? "calc(100vh - 180px)" : "none",
-                  overflowY: "auto"
+                  boxShadow: "0 12px 30px rgba(15, 23, 42, 0.05)"
                 }}>
                   <Typography.Title level={5} style={{ margin: 0, marginBottom: 12 }}>
                     Страницы
@@ -1141,7 +1142,7 @@ export default function App() {
                 </div>
               </Sider>
 
-              <Content style={{ width: "100%" }}>
+              <Content style={{ width: "100%", flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {isDefaultFolder && (
                   <div style={{
                     background: theme === "light" ? "#fff" : "#1f1f1f",
