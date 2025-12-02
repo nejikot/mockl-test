@@ -925,6 +925,8 @@ async def create_or_update_mock(
 
     raw_data: dict
     upload_file: Optional[UploadFile] = None
+    file_was_in_form = False  # Флаг для отслеживания наличия файла в форме
+    possible_file = None  # Сохраняем для последующей проверки
 
     if content_type.startswith("multipart/form-data"):
         form = await request.form()
@@ -936,9 +938,30 @@ async def create_or_update_mock(
         except json.JSONDecodeError:
             raise HTTPException(400, "Некорректный JSON в поле 'entry'")
 
+        # Получаем файл из формы
+        # В FastAPI файлы в multipart/form-data возвращаются как UploadFile
+        # Но также может быть список или другой тип, поэтому проверяем все варианты
         possible_file = form.get("file")
-        if isinstance(possible_file, UploadFile):
-            upload_file = possible_file
+        file_was_in_form = possible_file is not None  # Сохраняем флаг для последующей проверки
+        if possible_file:
+            logger.debug(f"File field found, type: {type(possible_file)}, isinstance UploadFile: {isinstance(possible_file, UploadFile)}")
+            # Проверяем, что это UploadFile объект
+            if isinstance(possible_file, UploadFile):
+                upload_file = possible_file
+                logger.debug(f"File accepted as UploadFile, filename: {getattr(possible_file, 'filename', 'N/A')}")
+            # Если это список (может быть несколько файлов с одним именем), берем первый
+            elif isinstance(possible_file, list) and len(possible_file) > 0:
+                if isinstance(possible_file[0], UploadFile):
+                    upload_file = possible_file[0]
+                    logger.debug(f"File accepted from list, filename: {getattr(upload_file, 'filename', 'N/A')}")
+            # Если это не UploadFile, но есть метод read, пробуем использовать
+            elif hasattr(possible_file, 'read') and callable(getattr(possible_file, 'read', None)):
+                upload_file = possible_file
+                logger.debug(f"File accepted as file-like object")
+            else:
+                logger.warning(f"File field is not a valid file object, type: {type(possible_file)}, value: {possible_file}")
+                # Если файл не распознан, но в body есть структура __file__, это ошибка
+                # Проверяем это после парсинга entry
     else:
         try:
             raw_data = await request.json()
@@ -953,24 +976,47 @@ async def create_or_update_mock(
 
     # Если вместе с описанием пришёл файл — преобразуем его в файловое тело ответа,
     # не требуя, чтобы base64 хранился в JSON, который приходит от фронтенда.
-    if upload_file is not None and upload_file.filename:
+    if upload_file is not None:
         try:
+            # Сбрасываем позицию файла на начало (на случай если он уже был прочитан)
+            if hasattr(upload_file, 'seek'):
+                await upload_file.seek(0)
             content = await upload_file.read()
+            if not content or len(content) == 0:
+                logger.warning(f"Uploaded file is empty, filename: {getattr(upload_file, 'filename', 'unknown')}")
+                raise HTTPException(400, "Загруженный файл пуст")
             data_b64 = base64.b64encode(content).decode("ascii")
+            
+            # Получаем filename и mime_type
+            filename = getattr(upload_file, 'filename', None) or "file"
+            mime_type = getattr(upload_file, 'content_type', None) or "application/octet-stream"
+        except HTTPException:
+            raise
         except Exception as e:
+            logger.error(f"Error reading uploaded file: {str(e)}, type: {type(upload_file)}")
             raise HTTPException(400, f"Не удалось прочитать файл: {str(e)}")
 
         entry.response_config.body = {
             "__file__": True,
-            "filename": upload_file.filename,
-            "mime_type": upload_file.content_type or "application/octet-stream",
+            "filename": filename,
+            "mime_type": mime_type,
             "data_base64": data_b64,
         }
     # Если файл не пришёл, но в body уже есть структура __file__ с data_base64,
     # значит это редактирование существующего мока с файлом - оставляем как есть
     elif isinstance(entry.response_config.body, dict) and entry.response_config.body.get("__file__") is True:
         # Проверяем, что есть data_base64, иначе это некорректная структура
-        if "data_base64" not in entry.response_config.body or not entry.response_config.body.get("data_base64"):
+        # Но только если это не multipart/form-data запрос (в котором файл должен был прийти отдельно)
+        if content_type.startswith("multipart/form-data"):
+            # Если это multipart запрос, но файл не был определен, значит файл не был отправлен или не распознан
+            logger.warning(f"Multipart request with __file__ structure but no file detected. Body keys: {list(entry.response_config.body.keys())}")
+            # Используем сохраненный флаг file_was_in_form
+            if file_was_in_form:
+                logger.warning(f"File was in form but not recognized. Type: {type(possible_file)}, value: {possible_file}")
+                raise HTTPException(400, f"Файл был отправлен, но не может быть прочитан. Тип: {type(possible_file)}. Убедитесь, что файл отправляется корректно в поле 'file'.")
+            else:
+                raise HTTPException(400, "Для файлового ответа требуется загрузить файл в поле 'file' при multipart/form-data запросе")
+        elif "data_base64" not in entry.response_config.body or not entry.response_config.body.get("data_base64"):
             raise HTTPException(400, "Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64")
 
     _save_mock_entry(entry, db)
