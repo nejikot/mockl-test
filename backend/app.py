@@ -16,7 +16,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, PlainTextResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
@@ -256,14 +256,25 @@ class MockRequestCondition(BaseModel):
 
     method: str = Field(..., description="HTTP‑метод запроса (GET, POST, PUT, DELETE, PATCH и т.д.)")
     path: str = Field(..., description="Путь запроса, например `/api/users` или `/status?code=200`")
-    headers: Optional[Dict[str, str]] = Field(
+    headers: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Набор заголовков, которые должны совпадать (полнейшее совпадение по ключу и значению)",
+        description="Набор заголовков, которые должны совпадать. Может быть Dict[str, str] для обязательных заголовков или Dict[str, {'value': str, 'optional': bool}] для необязательных.",
     )
     body_contains: Optional[str] = Field(
         default=None,
         description="Произвольный фрагмент текста, который должен содержаться в теле запроса",
     )
+    
+    @field_validator('headers', mode='before')
+    @classmethod
+    def validate_headers(cls, v):
+        """Валидатор для заголовков - принимает как строки, так и объекты с optional."""
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("headers must be a dictionary")
+        # Возвращаем как есть - валидация формата будет в логике обработки
+        return v
 
 
 
