@@ -147,15 +147,21 @@ const headersToFormList = headersObj => {
     // Формат 1 (старый): {"header_name": "value"}
     // Формат 2 (новый): {"header_name": {"value": "expected_value", "optional": false}}
     // Формат 3 (необязательный): {"header_name": {"value": null, "optional": true}}
-    if (typeof v === 'object' && v !== null && ('optional' in v || 'value' in v)) {
+    if (typeof v === 'object' && v !== null && !Array.isArray(v) && ('optional' in v || 'value' in v)) {
+      // Новый формат с объектом
+      const isOptional = v.optional === true; // Явная проверка на true
+      const headerValue = v.value !== null && v.value !== undefined ? v.value : "";
       return { 
         key: k, 
-        value: v.value || "", 
-        optional: v.optional === true  // Явная проверка на true
+        value: headerValue, 
+        optional: isOptional
       };
+    } else if (typeof v === 'string' || typeof v === 'number') {
+      // Старый формат - просто строка или число
+      return { key: k, value: String(v || ""), optional: false };
     } else {
-      // Старый формат - просто строка
-      return { key: k, value: v || "", optional: false };
+      // Неизвестный формат - используем значение по умолчанию
+      return { key: k, value: "", optional: false };
     }
   });
   return list.length ? list : [{ key: "", value: "", optional: false }];
@@ -659,13 +665,14 @@ export default function App() {
       cache_enabled = false;
     }
 
+    const requestHeadersList = headersToFormList(m.request_condition.headers);
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
       name: m.name || "",
       method: m.request_condition.method,
       path: m.request_condition.path,
-      requestHeaders: headersToFormList(m.request_condition.headers),
+      requestHeaders: requestHeadersList,
       request_body_mode,
       request_body_raw,
       request_body_params,
@@ -679,6 +686,8 @@ export default function App() {
       cache_ttl,
       response_body: JSON.stringify(m.response_config.body, null, 2)
     });
+    // Принудительно обновляем форму после установки значений
+    form.validateFields().catch(() => {});
     setModalOpen(true);
   };
 
