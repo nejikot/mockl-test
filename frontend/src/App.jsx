@@ -177,38 +177,55 @@ const headersToFormList = headersObj => {
 
 // Компонент для строки заголовка с поддержкой необязательных заголовков
 const HeaderRow = ({ field, remove, fieldsLength }) => {
-  // Используем Form.useWatch для отслеживания изменений конкретного заголовка
-  const headerValue = Form.useWatch(['requestHeaders', field.name]);
-  const isOptional = headerValue?.optional === true;
-  
   return (
     <Form.Item key={field.key} style={{ marginTop: 8 }}>
-      <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <Form.Item {...field} name={[field.name, 'key']} noStyle>
-          <Input placeholder="Ключ" style={{ width: isOptional ? '40%' : '30%' }} />
-        </Form.Item>
-        {!isOptional && (
-          <Form.Item {...field} name={[field.name, 'value']} noStyle>
-            <Input placeholder="Значение" style={{ flex: 1 }} />
-          </Form.Item>
-        )}
-        {isOptional && (
-          <div style={{ flex: 1, padding: '4px 11px', background: '#f0f0f0', borderRadius: 4, color: '#666', fontSize: 12, display: 'flex', alignItems: 'center' }}>
-            Заполняется автоматически
-          </div>
-        )}
-        <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
-          <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
-            <Checkbox>Авто</Checkbox>
-          </Tooltip>
-        </Form.Item>
-        {fieldsLength > 1 && (
-          <MinusCircleOutlined
-            onClick={() => remove(field.name)}
-            style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
-          />
-        )}
-      </Input.Group>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => {
+          // Отслеживаем изменения конкретного заголовка
+          const prevHeader = prevValues?.requestHeaders?.[field.name];
+          const currentHeader = currentValues?.requestHeaders?.[field.name];
+          // Сравниваем значение optional
+          const prevOptional = prevHeader?.optional;
+          const currentOptional = currentHeader?.optional;
+          return prevOptional !== currentOptional;
+        }}
+      >
+        {({ getFieldValue }) => {
+          const headers = getFieldValue('requestHeaders') || [];
+          const headerValue = headers[field.name] || {};
+          const isOptional = headerValue.optional === true;
+          
+          return (
+            <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Form.Item {...field} name={[field.name, 'key']} noStyle>
+                <Input placeholder="Ключ" style={{ width: isOptional ? '40%' : '30%' }} />
+              </Form.Item>
+              {!isOptional && (
+                <Form.Item {...field} name={[field.name, 'value']} noStyle>
+                  <Input placeholder="Значение" style={{ flex: 1 }} />
+                </Form.Item>
+              )}
+              {isOptional && (
+                <div style={{ flex: 1, padding: '4px 11px', background: '#f0f0f0', borderRadius: 4, color: '#666', fontSize: 12, display: 'flex', alignItems: 'center' }}>
+                  Заполняется автоматически
+                </div>
+              )}
+              <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
+                <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
+                  <Checkbox>Авто</Checkbox>
+                </Tooltip>
+              </Form.Item>
+              {fieldsLength > 1 && (
+                <MinusCircleOutlined
+                  onClick={() => remove(field.name)}
+                  style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
+                />
+              )}
+            </Input.Group>
+          );
+        }}
+      </Form.Item>
     </Form.Item>
   );
 };
@@ -745,15 +762,28 @@ export default function App() {
     setTimeout(() => {
       // Проверяем и устанавливаем значения чекбоксов
       const currentHeaders = form.getFieldValue('requestHeaders') || [];
+      console.log('Current headers after setFieldsValue:', currentHeaders);
+      console.log('Expected headers list:', requestHeadersList);
+      
+      // Устанавливаем значения для каждого заголовка
       requestHeadersList.forEach((header, index) => {
         if (header.optional === true) {
           form.setFieldValue(['requestHeaders', index, 'optional'], true);
           console.log(`Setting optional=true for header ${index}:`, header);
+        } else {
+          form.setFieldValue(['requestHeaders', index, 'optional'], false);
         }
       });
+      
       // Принудительно обновляем форму
       form.validateFields().catch(() => {});
-    }, 100);
+      
+      // Еще раз проверяем значения после установки
+      setTimeout(() => {
+        const finalHeaders = form.getFieldValue('requestHeaders') || [];
+        console.log('Final headers after setting values:', finalHeaders);
+      }, 50);
+    }, 200);
     
     setModalOpen(true);
   };
