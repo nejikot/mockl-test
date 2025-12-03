@@ -167,6 +167,58 @@ const headersToFormList = headersObj => {
   return list.length ? list : [{ key: "", value: "", optional: false }];
 };
 
+// Компонент для строки заголовка с поддержкой необязательных заголовков
+const HeaderRow = ({ field, remove, fieldsLength }) => {
+  return (
+    <Form.Item key={field.key} style={{ marginTop: 8 }}>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => {
+          const prevHeader = prevValues?.requestHeaders?.[field.name];
+          const currentHeader = currentValues?.requestHeaders?.[field.name];
+          // Сравниваем весь объект заголовка
+          return JSON.stringify(prevHeader) !== JSON.stringify(currentHeader);
+        }}
+      >
+        {({ getFieldValue }) => {
+          const headers = getFieldValue('requestHeaders') || [];
+          const headerValue = headers[field.name];
+          const isOptional = headerValue?.optional === true;
+          
+          return (
+            <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Form.Item {...field} name={[field.name, 'key']} noStyle>
+                <Input placeholder="Ключ" style={{ width: isOptional ? '40%' : '30%' }} />
+              </Form.Item>
+              {!isOptional && (
+                <Form.Item {...field} name={[field.name, 'value']} noStyle>
+                  <Input placeholder="Значение" style={{ flex: 1 }} />
+                </Form.Item>
+              )}
+              {isOptional && (
+                <div style={{ flex: 1, padding: '4px 11px', background: '#f0f0f0', borderRadius: 4, color: '#666', fontSize: 12, display: 'flex', alignItems: 'center' }}>
+                  Заполняется автоматически
+                </div>
+              )}
+              <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
+                <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
+                  <Checkbox>Авто</Checkbox>
+                </Tooltip>
+              </Form.Item>
+              {fieldsLength > 1 && (
+                <MinusCircleOutlined
+                  onClick={() => remove(field.name)}
+                  style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
+                />
+              )}
+            </Input.Group>
+          );
+        }}
+      </Form.Item>
+    </Form.Item>
+  );
+};
+
 const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
@@ -666,6 +718,8 @@ export default function App() {
     }
 
     const requestHeadersList = headersToFormList(m.request_condition.headers);
+    
+    // Устанавливаем значения формы
     form.setFieldsValue({
       id: m.id,
       folder: m.folder,
@@ -686,8 +740,7 @@ export default function App() {
       cache_ttl,
       response_body: JSON.stringify(m.response_config.body, null, 2)
     });
-    // Принудительно обновляем форму после установки значений
-    form.validateFields().catch(() => {});
+    
     setModalOpen(true);
   };
 
@@ -1627,51 +1680,12 @@ export default function App() {
                         <>
                           <Typography.Text strong>Заголовки запроса</Typography.Text>
                           {fields.map(field => (
-                            <Form.Item key={field.key} style={{ marginTop: 8 }}>
-                              <Form.Item
-                                noStyle
-                                shouldUpdate={(prevValues, currentValues) => {
-                                  // Сравниваем весь массив requestHeaders для надежности
-                                  const prevHeaders = JSON.stringify(prevValues?.requestHeaders || []);
-                                  const currentHeaders = JSON.stringify(currentValues?.requestHeaders || []);
-                                  return prevHeaders !== currentHeaders;
-                                }}
-                              >
-                                {({ getFieldValue }) => {
-                                  const headers = getFieldValue('requestHeaders') || [];
-                                  const headerValue = headers[field.name];
-                                  const isOptional = headerValue?.optional === true;
-                                  return (
-                                    <Input.Group compact style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                      <Form.Item {...field} name={[field.name, 'key']} noStyle>
-                                        <Input placeholder="Ключ" style={{ width: isOptional ? '40%' : '30%' }} />
-                                      </Form.Item>
-                                      {!isOptional && (
-                                        <Form.Item {...field} name={[field.name, 'value']} noStyle>
-                                          <Input placeholder="Значение" style={{ flex: 1 }} />
-                                        </Form.Item>
-                                      )}
-                                      {isOptional && (
-                                        <div style={{ flex: 1, padding: '4px 11px', background: '#f0f0f0', borderRadius: 4, color: '#666', fontSize: 12, display: 'flex', alignItems: 'center' }}>
-                                          Заполняется автоматически
-                                        </div>
-                                      )}
-                                      <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
-                                        <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
-                                          <Checkbox>Авто</Checkbox>
-                                        </Tooltip>
-                                      </Form.Item>
-                                      {fields.length > 1 && (
-                                        <MinusCircleOutlined
-                                          onClick={() => remove(field.name)}
-                                          style={{ color: 'red', fontSize: 20, cursor: 'pointer' }}
-                                        />
-                                      )}
-                                    </Input.Group>
-                                  );
-                                }}
-                              </Form.Item>
-                            </Form.Item>
+                            <HeaderRow 
+                              key={field.key} 
+                              field={field} 
+                              remove={remove} 
+                              fieldsLength={fields.length}
+                            />
                           ))}
                           <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ key: "", value: "", optional: false })} style={{ marginTop: 8 }}>
                             Добавить заголовок
