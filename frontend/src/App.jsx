@@ -177,9 +177,45 @@ const headersToFormList = headersObj => {
 
 // Компонент для строки заголовка с поддержкой необязательных заголовков
 const HeaderRow = ({ field, remove, fieldsLength, form }) => {
-  // Используем Form.useWatch для отслеживания значения optional
-  const optionalValue = Form.useWatch(['requestHeaders', field.name, 'optional'], form);
-  const isOptional = optionalValue === true;
+  const [isOptional, setIsOptional] = React.useState(false);
+  
+  // Отслеживаем изменения значения optional через useEffect
+  React.useEffect(() => {
+    const updateOptionalState = () => {
+      try {
+        const headers = form.getFieldValue('requestHeaders') || [];
+        const headerValue = headers[field.name];
+        const optionalValue = headerValue?.optional === true;
+        setIsOptional(optionalValue);
+      } catch (e) {
+        // Игнорируем ошибки
+      }
+    };
+    
+    // Проверяем сразу
+    updateOptionalState();
+    
+    // Подписываемся на изменения через интервал (временное решение)
+    const interval = setInterval(updateOptionalState, 200);
+    
+    return () => clearInterval(interval);
+  }, [field.name, form]);
+  
+  // Обработчик изменения переключателя
+  const handleOptionalChange = (checked) => {
+    // Устанавливаем значение в форму
+    form.setFieldValue(['requestHeaders', field.name, 'optional'], checked);
+    // Обновляем локальное состояние
+    setIsOptional(checked);
+  };
+  
+  // Получаем текущее значение переключателя из формы
+  const optionalValue = Form.useWatch(['requestHeaders', field.name, 'optional'], form) || false;
+  
+  // Синхронизируем локальное состояние с формой
+  React.useEffect(() => {
+    setIsOptional(optionalValue === true);
+  }, [optionalValue]);
   
   return (
     <Form.Item key={field.key} style={{ marginTop: 8 }}>
@@ -187,20 +223,24 @@ const HeaderRow = ({ field, remove, fieldsLength, form }) => {
         <Form.Item {...field} name={[field.name, 'key']} noStyle>
           <Input placeholder="Ключ" style={{ width: isOptional ? '40%' : '30%' }} />
         </Form.Item>
-        {!isOptional ? (
+        {!isOptional && (
           <Form.Item {...field} name={[field.name, 'value']} noStyle>
             <Input placeholder="Значение" style={{ flex: 1 }} />
           </Form.Item>
-        ) : (
+        )}
+        {isOptional && (
           <div style={{ flex: 1, padding: '4px 11px', background: '#f0f0f0', borderRadius: 4, color: '#666', fontSize: 12, display: 'flex', alignItems: 'center' }}>
             Заполняется автоматически
           </div>
         )}
-        <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
-          <Tooltip title="Заполняется автоматически - заголовок проверяется только на наличие, значение игнорируется">
-            <Checkbox>Авто</Checkbox>
-          </Tooltip>
-        </Form.Item>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Form.Item {...field} name={[field.name, 'optional']} noStyle valuePropName="checked">
+            <Tooltip title={isOptional ? "Включено: значение не учитывается, проверяется только наличие заголовка" : "Выключено: значение обязательно, проверяется и наличие заголовка, и точное значение"}>
+              <Switch checked={isOptional} onChange={handleOptionalChange} />
+            </Tooltip>
+          </Form.Item>
+          <span style={{ fontSize: 12, color: '#666' }}>Авто</span>
+        </div>
         {fieldsLength > 1 && (
           <MinusCircleOutlined
             onClick={() => remove(field.name)}
