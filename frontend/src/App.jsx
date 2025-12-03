@@ -895,7 +895,7 @@ export default function App() {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
         name: (vals.name || "").trim() || null,
-        active: vals.active !== false,
+        active: vals.active !== undefined ? vals.active !== false : true,
         request_condition: {
           method: vals.method,
           path: vals.path,
@@ -1706,10 +1706,6 @@ export default function App() {
                   </Form.Item>
                 </Col>
               </Row>
-
-              <Form.Item name="active" valuePropName="checked" style={{ marginBottom: 24 }}>
-                <Checkbox>Активный мок</Checkbox>
-              </Form.Item>
 
               <Divider style={{ margin: "16px 0" }} />
 
