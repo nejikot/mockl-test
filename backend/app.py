@@ -1124,6 +1124,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     Генерирует моки по OpenAPI/Swagger спецификации в указанную папку.
     Поддерживает OpenAPI 3.x и Swagger 2.0 форматы.
     Для каждого пути/метода создаётся мок с примерами запроса и ответа из спецификации.
+    Оптимизирован для быстрой работы с большими спецификациями.
     """
     # Определяем формат спецификации
     is_swagger_2 = spec.get("swagger") == "2.0"
@@ -1138,6 +1139,18 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
         return 0
 
     allowed_methods = {"get", "post", "put", "delete", "patch", "options", "head"}
+    
+    # ОПТИМИЗАЦИЯ: Загружаем все существующие моки для папки одним запросом
+    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name).all()
+    # Используем нормализованные пути для сравнения
+    existing_keys = {(m.method, m.path) for m in existing_mocks}
+    
+    # ОПТИМИЗАЦИЯ: Получаем максимальный order один раз
+    max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+    next_order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
+    
+    # ОПТИМИЗАЦИЯ: Собираем все новые моки в список для bulk insert
+    new_mocks = []
     created = 0
 
     for path, path_item in paths.items():
@@ -1150,14 +1163,11 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
 
             method_upper = method_name.upper()
 
-            # Проверяем, нет ли уже такого мока
-            existing = db.query(Mock).filter_by(
-                folder_name=folder_name,
-                method=method_upper,
-                path=path,
-            ).first()
-
-            if existing:
+            # Нормализуем путь для проверки существования
+            normalized_path = _normalize_path_for_storage(path)
+            
+            # Проверяем, нет ли уже такого мока (быстрая проверка в памяти)
+            if (method_upper, normalized_path) in existing_keys:
                 continue
 
             op = operation or {}
@@ -1398,28 +1408,31 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                         except (ValueError, TypeError):
                             continue
 
-            entry = MockEntry(
-                folder=folder_name,
+            # Создаём объект Mock напрямую для bulk insert (normalized_path уже вычислен выше)
+            mock = Mock(
+                id=str(uuid4()),
+                folder_name=folder_name,
                 name=mock_name,
-                request_condition=MockRequestCondition(
-                    method=method_upper,
-                    path=path,
-                    headers=request_headers if request_headers else None,
-                    body_contains=request_body_contains
-                ),
-                response_config=MockResponseConfig(
-                    status_code=response_status,
-                    headers=response_headers if response_headers else None,
-                    body=response_body,
-                ),
+                method=method_upper,
+                path=normalized_path,
+                headers=request_headers if request_headers else {},
+                body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
+                status_code=response_status,
+                response_headers=response_headers if response_headers else {},
+                response_body=response_body,
                 active=True,
                 delay_ms=0,
+                order=next_order + created,
             )
-
-            _save_mock_entry(entry, db)
+            
+            new_mocks.append(mock)
             created += 1
 
-    db.commit()
+    # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков одним запросом
+    if new_mocks:
+        db.bulk_save_objects(new_mocks)
+        db.flush()
+    
     logger.info(f"Generated {created} mocks for OpenAPI in folder '{folder_name}'")
 
     return created
