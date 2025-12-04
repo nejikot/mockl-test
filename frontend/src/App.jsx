@@ -288,7 +288,7 @@ const DraggableMockRow = (props) => {
   );
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme }) => {
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, isSubfolder = false, parentFolder = null }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
@@ -329,6 +329,9 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         justifyContent: "space-between",
         alignItems: "center",
         transition: "all 0.3s",
+        marginLeft: isSubfolder ? 24 : 0,
+        borderLeft: isSubfolder ? `3px solid ${theme === "dark" ? "#1890ff" : "#1890ff"}` : "none",
+        paddingLeft: isSubfolder ? 16 : 12,
       }}
       onMouseEnter={e => {
         if (!isActive) e.currentTarget.style.background = hoverBgColor;
@@ -342,6 +345,11 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
         <Typography.Text style={{ color: textColor }}>
           {folder === "default" ? "Главная" : folder}
+          {isSubfolder && parentFolder && (
+            <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+              ({parentFolder})
+            </Typography.Text>
+          )}
         </Typography.Text>
       </div>
       {folder !== "default" && (
@@ -365,6 +373,7 @@ export default function App() {
   const [folderForm] = Form.useForm();
   const [renameForm] = Form.useForm();
   const [folders, setFolders] = useState(["default"]);
+  const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
   const [selectedFolder, setSelectedFolder] = useState("default");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -519,14 +528,28 @@ export default function App() {
       let data = await res.json();
       if (!data.length) data = [{ name: "default", parent_folder: null, order: 0 }];
       
-      // Преобразуем в плоский список для обратной совместимости
-      // В будущем можно будет использовать иерархическую структуру
-      const folderNames = data.map(f => typeof f === 'string' ? f : f.name);
-      const sorted = ["default", ...folderNames.filter(f => f !== "default")];
+      // Сохраняем полную структуру папок с parent_folder
+      const foldersData = data.map(f => typeof f === 'string' ? { name: f, parent_folder: null, order: 0 } : f);
+      
+      // Сортируем: сначала default, потом корневые папки, потом подпапки
+      const defaultFolder = foldersData.find(f => f.name === "default") || { name: "default", parent_folder: null, order: 0 };
+      const rootFolders = foldersData.filter(f => f.name !== "default" && !f.parent_folder).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const subFolders = foldersData.filter(f => f.name !== "default" && f.parent_folder).sort((a, b) => (a.order || 0) - (b.order || 0));
+      
+      // Формируем плоский список: default, корневые, подпапки (с отступом)
+      const sorted = [
+        defaultFolder.name,
+        ...rootFolders.map(f => f.name),
+        ...subFolders.map(f => f.name)
+      ];
+      
       setFolders(sorted);
+      // Сохраняем полные данные папок для использования в форме
+      setFoldersData(foldersData);
       if (!sorted.includes(selectedFolder)) setSelectedFolder(sorted[0]);
     } catch {
       setFolders(["default"]);
+      setFoldersData([{ name: "default", parent_folder: null, order: 0 }]);
       setSelectedFolder("default");
       message.error("Ошибка получения папок");
     }
@@ -1521,19 +1544,25 @@ export default function App() {
                   <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
                     Перетаскивайте, чтобы упорядочить, или удаляйте ненужные.
                   </Typography.Paragraph>
-                  {folders.map((f, i) => (
-                    <DraggableFolder
-                      key={f}
-                      folder={f}
-                      index={i}
-                      moveFolder={moveFolder}
-                      selectedFolder={selectedFolder}
-                      setSelectedFolder={setSelectedFolder}
-                      deleteFolder={deleteFolder}
-                      startRename={startRenameFolder}
-                      theme={theme}
-                    />
-                  ))}
+                  {folders.map((f, i) => {
+                    const folderInfo = foldersData.find(fd => fd.name === f) || { name: f, parent_folder: null };
+                    const isSubfolder = folderInfo.parent_folder !== null;
+                    return (
+                      <DraggableFolder
+                        key={f}
+                        folder={f}
+                        index={i}
+                        moveFolder={moveFolder}
+                        selectedFolder={selectedFolder}
+                        setSelectedFolder={setSelectedFolder}
+                        deleteFolder={deleteFolder}
+                        startRename={startRenameFolder}
+                        theme={theme}
+                        isSubfolder={isSubfolder}
+                        parentFolder={folderInfo.parent_folder}
+                      />
+                    );
+                  })}
                 </div>
               </Sider>
 
@@ -2413,7 +2442,9 @@ export default function App() {
                 <Select
                   placeholder="Выберите родительскую папку (необязательно)"
                   allowClear
-                  options={folders.filter(f => f !== "default").map(f => ({ label: f, value: f }))}
+                  options={foldersData
+                    .filter(f => f.name !== "default" && !f.parent_folder)
+                    .map(f => ({ label: f.name, value: f.name }))}
                 />
               </Form.Item>
               <Form.Item>

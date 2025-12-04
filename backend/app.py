@@ -1040,28 +1040,46 @@ def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str
     return _ensure_folder(folder_name, db=db)
 
 
-def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[Dict[str, Any]] = None, components: Optional[Dict[str, Any]] = None) -> Any:
+def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[Dict[str, Any]] = None, components: Optional[Dict[str, Any]] = None, visited_refs: Optional[set] = None) -> Any:
     """
     Генерирует пример данных из OpenAPI/Swagger схемы.
     Поддерживает Swagger 2.0 (definitions) и OpenAPI 3.x (components/schemas).
+    Защищена от бесконечной рекурсии при циклических ссылках.
     """
     if not isinstance(schema, dict):
         return None
     
+    # Инициализируем множество посещенных ссылок для защиты от рекурсии
+    if visited_refs is None:
+        visited_refs = set()
+    
     # Проверяем $ref ссылки (может быть только $ref или вместе с другими полями)
     ref = schema.get("$ref")
     if ref:
-        # Swagger 2.0: #/definitions/Pet
-        # OpenAPI 3.x: #/components/schemas/Pet
-        if ref.startswith("#/definitions/"):
-            def_name = ref.split("/")[-1]
-            if definitions and def_name in definitions:
-                return _generate_example_from_schema(definitions[def_name], definitions, components)
-        elif ref.startswith("#/components/schemas/"):
-            def_name = ref.split("/")[-1]
-            schemas = components.get("schemas", {}) if components else {}
-            if def_name in schemas:
-                return _generate_example_from_schema(schemas[def_name], definitions, components)
+        # Проверяем, не посещали ли мы уже эту ссылку (защита от циклических ссылок)
+        if ref in visited_refs:
+            logger.warning(f"Circular reference detected: {ref}, returning None")
+            return None
+        
+        # Добавляем ссылку в посещенные
+        visited_refs.add(ref)
+        
+        try:
+            # Swagger 2.0: #/definitions/Pet
+            # OpenAPI 3.x: #/components/schemas/Pet
+            if ref.startswith("#/definitions/"):
+                def_name = ref.split("/")[-1]
+                if definitions and def_name in definitions:
+                    return _generate_example_from_schema(definitions[def_name], definitions, components, visited_refs)
+            elif ref.startswith("#/components/schemas/"):
+                def_name = ref.split("/")[-1]
+                schemas = components.get("schemas", {}) if components else {}
+                if def_name in schemas:
+                    return _generate_example_from_schema(schemas[def_name], definitions, components, visited_refs)
+        finally:
+            # Удаляем ссылку после обработки (для поддержки повторного использования в разных контекстах)
+            visited_refs.discard(ref)
+        
         # Если $ref не разрешился, возвращаем None
         return None
     
@@ -1078,7 +1096,7 @@ def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[
         
         for prop_name, prop_schema in properties.items():
             if isinstance(prop_schema, dict):
-                example_value = _generate_example_from_schema(prop_schema, definitions, components)
+                example_value = _generate_example_from_schema(prop_schema, definitions, components, visited_refs)
                 if example_value is not None:
                     result[prop_name] = example_value
                 elif prop_name in required:
@@ -1102,7 +1120,7 @@ def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[
     elif schema_type == "array":
         items = schema.get("items", {})
         if isinstance(items, dict):
-            item_example = _generate_example_from_schema(items, definitions, components)
+            item_example = _generate_example_from_schema(items, definitions, components, visited_refs)
             if item_example is not None:
                 return [item_example]
         return []
@@ -1229,7 +1247,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                     request_headers["Content-Type"] = media_type
                                 else:
                                     # Генерируем пример из схемы
-                                    generated = _generate_example_from_schema(schema, definitions, components)
+                                    generated = _generate_example_from_schema(schema, definitions, components, None)
                                     if generated is not None:
                                         request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
                                         request_headers["Content-Type"] = media_type
@@ -1253,7 +1271,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                 request_headers["Content-Type"] = "application/json"
                             else:
                                 # Генерируем пример из схемы
-                                generated = _generate_example_from_schema(schema, definitions, components)
+                                generated = _generate_example_from_schema(schema, definitions, components, None)
                                 if generated is not None:
                                     request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
                                     request_headers["Content-Type"] = "application/json"
@@ -1314,7 +1332,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                     if not found_example:
                                         schema = media_spec.get("schema", {})
                                         if schema and isinstance(schema, dict):
-                                            generated = _generate_example_from_schema(schema, definitions, components)
+                                            generated = _generate_example_from_schema(schema, definitions, components, None)
                                             if generated is not None:
                                                 response_body = generated
                                                 response_headers["Content-Type"] = media_type
@@ -1366,7 +1384,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                                 found_example = True
                                             else:
                                                 # Генерируем из схемы
-                                                generated = _generate_example_from_schema(schema, definitions, components)
+                                                generated = _generate_example_from_schema(schema, definitions, components, None)
                                                 if generated is not None:
                                                     response_body = generated
                                                     response_headers["Content-Type"] = media_type
@@ -1398,7 +1416,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                     found_example = True
                                 else:
                                     # Генерируем из схемы
-                                    generated = _generate_example_from_schema(schema, definitions, components)
+                                    generated = _generate_example_from_schema(schema, definitions, components, None)
                                     if generated is not None:
                                         response_body = generated
                                         response_headers["Content-Type"] = "application/json"
@@ -2219,6 +2237,10 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             folder_name = _ensure_folder(folder_slug, db=db)
             mocks_created = generate_mocks_for_openapi(spec, folder_name, db)
             db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error generating mocks from OpenAPI spec: {e}", exc_info=True)
+            raise HTTPException(500, f"Ошибка при генерации моков из OpenAPI спецификации: {str(e)}")
         finally:
             db.close()
 
@@ -2228,6 +2250,17 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             "folder_name": folder_name,
             "mocks_created": mocks_created,
         }
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error loading OpenAPI spec from URL: {e}")
+        raise HTTPException(400, f"Не удалось загрузить спецификацию по URL: {str(e)}")
+    except (json.JSONDecodeError, yaml.YAMLError) as e:
+        logger.error(f"Parse error loading OpenAPI spec: {e}")
+        raise HTTPException(400, f"Ошибка парсинга спецификации (JSON/YAML): {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error loading OpenAPI spec: {e}", exc_info=True)
+        raise HTTPException(500, f"Неожиданная ошибка при загрузке спецификации: {str(e)}")
     except Exception as e:
         raise HTTPException(400, f"Failed to load spec: {str(e)}")
 
