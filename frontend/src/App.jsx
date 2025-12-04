@@ -452,18 +452,29 @@ export default function App() {
     }
   };
 
-  const deactivateAllMocks = () => {
+  const deactivateAllMocks = (folderName = null) => {
+    const isCurrentFolder = folderName === selectedFolder || folderName === null;
     Modal.confirm({
-      title: 'Отключить все моки во всех папках?',
+      title: folderName ? `Отключить все моки в папке "${folderName}"?` : 'Отключить все моки во всех папках?',
+      content: folderName ? 'Будут отключены все моки в этой папке и всех её вложенных папках.' : 'Будут отключены все моки во всех папках.',
       icon: <ExclamationCircleOutlined />,
-      okText: 'Отключить все',
+      okText: 'Отключить',
       cancelText: 'Отмена',
       onOk: async () => {
         try {
-          const res = await fetch(`${host}/api/mocks/deactivate-all`, { method: "PATCH" });
+          const url = folderName 
+            ? `${host}/api/mocks/deactivate-all?folder=${encodeURIComponent(folderName)}`
+            : `${host}/api/mocks/deactivate-all`;
+          const res = await fetch(url, { method: "POST" });
           if (!res.ok) throw new Error();
-          setMocks(prev => prev.map(m => ({ ...m, active: false })));
-          message.success("Все моки отключены");
+          if (isCurrentFolder) {
+            setMocks(prev => prev.map(m => ({ ...m, active: false })));
+          }
+          const data = await res.json();
+          message.success(data.message || `Отключено моков: ${data.count || 0}`);
+          if (isCurrentFolder) {
+            await fetchMocks();
+          }
         } catch {
           message.error("Ошибка отключения");
         }
@@ -506,8 +517,12 @@ export default function App() {
       const res = await fetch(`${host}/api/mocks/folders`);
       if (!res.ok) throw new Error();
       let data = await res.json();
-      if (!data.length) data = ["default"];
-      const sorted = ["default", ...data.filter(f => f !== "default")];
+      if (!data.length) data = [{ name: "default", parent_folder: null, order: 0 }];
+      
+      // Преобразуем в плоский список для обратной совместимости
+      // В будущем можно будет использовать иерархическую структуру
+      const folderNames = data.map(f => typeof f === 'string' ? f : f.name);
+      const sorted = ["default", ...folderNames.filter(f => f !== "default")];
       setFolders(sorted);
       if (!sorted.includes(selectedFolder)) setSelectedFolder(sorted[0]);
     } catch {
@@ -1206,17 +1221,27 @@ export default function App() {
     const name = vals.name.trim();
     if (folders.includes(name)) return message.error("Уже существует");
     try {
+      const payload = {
+        name: name,
+        parent_folder: vals.parent_folder || null
+      };
       const res = await fetch(`${host}/api/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name })
+        body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Ошибка создания папки");
+      }
       message.success("Создано");
       setFolderModalOpen(false);
-      fetchFolders();
+      folderForm.resetFields();
+      await fetchFolders();
+      setSelectedFolder(name);
+      await fetchMocks();
     } catch (e) {
-      message.error("Ошибка: " + e.message);
+      message.error("Ошибка: " + (e.message || "Не удалось создать папку"));
     }
   };
 
@@ -1404,11 +1429,12 @@ export default function App() {
         <Button
           danger
           icon={<PoweroffOutlined />}
-          onClick={deactivateAllMocks}
+          onClick={() => deactivateAllMocks(selectedFolder)}
           disabled={!mocks.length}
           style={{ ...primaryButtonStyle, justifySelf: "flex-end" }}
+          title="Отключить все моки в текущей папке"
         >
-          Отключить все
+          Отключить все в папке
         </Button>
       </div>
     </div>
@@ -2378,6 +2404,17 @@ export default function App() {
                 ]}
               >
                 <Input placeholder="Например lost" />
+              </Form.Item>
+              <Form.Item
+                name="parent_folder"
+                label="Родительская папка (опционально)"
+                tooltip="Выберите родительскую папку для создания вложенной папки. Если не указано, создаётся корневая папка."
+              >
+                <Select
+                  placeholder="Выберите родительскую папку (необязательно)"
+                  allowClear
+                  options={folders.filter(f => f !== "default").map(f => ({ label: f, value: f }))}
+                />
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>Создать</Button>

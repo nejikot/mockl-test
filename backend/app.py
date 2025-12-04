@@ -145,6 +145,10 @@ class Folder(Base):
     proxy_base_url = Column(String, nullable=True)
     # Порядок отображения папки
     order = Column(Integer, default=0, index=True)
+    # Родительская папка для поддержки вложенных папок
+    parent_folder = Column(String, ForeignKey("folders.name"), nullable=True, index=True)
+    # Вложенные папки
+    subfolders = relationship("Folder", backref="parent", remote_side=[name], cascade="all, delete")
 
 
 
@@ -448,6 +452,15 @@ def ensure_migrations():
                 except Exception as e:
                     logger.warning(f"Error adding folders.order: {e}")
             
+            # Добавляем колонку parent_folder для вложенных папок
+            if ('folders', 'parent_folder') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE folders ADD COLUMN parent_folder VARCHAR NULL"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_folders_parent_folder ON folders (parent_folder)"))
+                    logger.info("Added column folders.parent_folder")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.parent_folder: {e}")
+            
             # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
                 try:
@@ -508,29 +521,43 @@ def on_shutdown():
 
 
 
+class FolderCreatePayload(BaseModel):
+    """Модель запроса для создания папки."""
+    name: str = Field(..., description="Имя новой папки. Пример: `auth`, `users`, `payments`.")
+    parent_folder: Optional[str] = Field(
+        default=None,
+        description="Имя родительской папки для создания вложенной папки. Если не указано, создаётся корневая папка."
+    )
+
+
 @app.post(
     "/api/folders",
     summary="Создать папку (страницу) для моков",
     description=(
         "Создаёт новую папку (логическую группу моков).\n\n"
-        "Имя папки должно быть уникальным. Папка `default` создаётся автоматически при старте сервиса."
+        "Имя папки должно быть уникальным. Папка `default` создаётся автоматически при старте сервиса.\n"
+        "Можно создать вложенную папку, указав parent_folder."
     ),
 )
 def create_folder(
-    name: str = Body(
-        ...,
-        embed=True,
-        description="Имя новой папки. Пример: `auth`, `users`, `payments`.",
-        examples=["auth"],
-    ),
+    payload: FolderCreatePayload = Body(...),
     db: Session = Depends(get_db),
 ):
-    name = name.strip()
+    name = payload.name.strip()
     if not name or db.query(Folder).filter_by(name=name).first():
         raise HTTPException(400, "Некорректное или уже существующее имя папки")
-    db.add(Folder(name=name))
+    
+    # Проверяем родительскую папку, если указана
+    parent_folder = None
+    if payload.parent_folder:
+        parent_folder_obj = db.query(Folder).filter_by(name=payload.parent_folder).first()
+        if not parent_folder_obj:
+            raise HTTPException(404, f"Родительская папка '{payload.parent_folder}' не найдена")
+        parent_folder = payload.parent_folder
+    
+    db.add(Folder(name=name, parent_folder=parent_folder))
     db.commit()
-    return {"message": "Папка добавлена"}
+    return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
 
 
 
@@ -1510,18 +1537,43 @@ def update_folder_settings(
     return {"message": "Настройки папки обновлены"}
 
 
+class FolderInfo(BaseModel):
+    """Информация о папке."""
+    name: str
+    parent_folder: Optional[str] = None
+    order: int = 0
+
+
 @app.get(
     "/api/mocks/folders",
-    response_model=List[str],
+    response_model=List[FolderInfo],
     summary="Получить список папок",
-    description="Возвращает список всех существующих папок. Папка `default` всегда первая.",
+    description="Возвращает список всех существующих папок с информацией о вложенности. Папка `default` всегда первая.",
 )
 def list_folders(db: Session = Depends(get_db)):
-    names = [f.name for f in db.query(Folder).all()]
-    if "default" in names:
-        names.remove("default")
-        names.insert(0, "default")
-    return names
+    folders = db.query(Folder).order_by(Folder.order).all()
+    result = []
+    default_folder = None
+    
+    for f in folders:
+        if f.name == "default":
+            default_folder = f
+        else:
+            result.append(FolderInfo(
+                name=f.name,
+                parent_folder=f.parent_folder,
+                order=f.order or 0
+            ))
+    
+    # Добавляем default в начало
+    if default_folder:
+        result.insert(0, FolderInfo(
+            name="default",
+            parent_folder=None,
+            order=0
+        ))
+    
+    return result
 
 
 
@@ -1738,10 +1790,10 @@ def toggle_mock(
 
 
 
-@app.patch(
+@app.post(
     "/api/mocks/deactivate-all",
     summary="Отключить все активные моки",
-    description="Массово отключает все моки, опционально только в указанной папке.",
+    description="Массово отключает все моки, опционально только в указанной папке (включая вложенные папки).",
 )
 def deactivate_all(
     folder: Optional[str] = Query(
@@ -1750,18 +1802,41 @@ def deactivate_all(
     ),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Mock).filter_by(active=True)
     if folder:
-        q = q.filter_by(folder_name=folder)
+        # Отключаем моки в указанной папке и всех её вложенных папках
+        # Сначала получаем все вложенные папки рекурсивно
+        def get_all_subfolders(parent_name: str, visited: set = None) -> List[str]:
+            if visited is None:
+                visited = set()
+            if parent_name in visited:
+                return []
+            visited.add(parent_name)
+            result = [parent_name]
+            subfolders = db.query(Folder).filter_by(parent_folder=parent_name).all()
+            for subfolder in subfolders:
+                result.extend(get_all_subfolders(subfolder.name, visited))
+            return result
+        
+        all_folders = get_all_subfolders(folder)
+        mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
+        if not mocks_in_folders:
+            raise HTTPException(404, "No matching mock found")
+        
+        count = len(mocks_in_folders)
+        for mock in mocks_in_folders:
+            mock.active = False
+    else:
+        # Отключаем все моки во всех папках
+        mocks_in_folders = db.query(Mock).filter_by(active=True).all()
+        if not mocks_in_folders:
+            raise HTTPException(404, "No matching mock found")
+        
+        count = len(mocks_in_folders)
+        for mock in mocks_in_folders:
+            mock.active = False
     
-    mocks_in_folder = q.all()
-    if not mocks_in_folder:
-        raise HTTPException(404, "No matching mock found")
-    
-    for m in mocks_in_folder:
-        m.active = False
     db.commit()
-    return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
+    return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated", "count": count}
 
 
 @app.patch(
