@@ -1383,7 +1383,7 @@ export default function App() {
             onClick={openOpenapiModal}
             style={primaryButtonStyle}
           >
-            Импорт OpenAPI
+            Импорт OpenAPI/Swagger
           </Button>
           <Button
             icon={<DownloadOutlined />}
@@ -1550,9 +1550,10 @@ export default function App() {
                             извлечёт метод, URL, заголовки и тело запроса. Поддерживаются все популярные форматы curl.</li>
                         <li><b>Импорт из Postman Collection</b> — используйте кнопку «Импорт» для загрузки Postman Collection v2.1.
                             Система автоматически создаст страницу и моки по всем запросам из коллекции, включая примеры ответов.</li>
-                        <li><b>Импорт из OpenAPI</b> — нажмите кнопку «Импорт OpenAPI» в верхней панели. Вставьте URL до OpenAPI-файла
-                            (JSON или YAML) или загрузите файл. Система автоматически извлечёт примеры запросов и ответов из спецификации
-                            и создаст соответствующие моки.</li>
+                        <li><b>Импорт из OpenAPI/Swagger</b> — нажмите кнопку «Импорт OpenAPI/Swagger» в верхней панели. Вставьте URL до спецификации
+                            (JSON или YAML) или загрузите файл. Система поддерживает <b>OpenAPI 3.x</b> и <b>Swagger 2.0</b> форматы.
+                            Автоматически извлекаются примеры запросов и ответов из спецификации. Если примеры не указаны явно,
+                            система генерирует их из схем (JSON Schema), создавая готовые моки с реалистичными данными для всех эндпоинтов.</li>
                         <li><b>Экспорт curl</b> — для любого мока можно скопировать готовую curl команду, нажав кнопку «Скопировать curl»
                             в таблице моков. Команда будет корректно сформирована с учётом метода, заголовков и тела запроса.</li>
                       </ul>
@@ -1569,20 +1570,160 @@ export default function App() {
                         <li><b>Умные заголовки</b> — при настройке заголовков запроса можно указать, является ли заголовок обязательным
                             или необязательным. Для необязательных заголовков (переключатель «Авто») проверяется только наличие заголовка,
                             а его значение игнорируется. Это удобно для заголовков, которые автоматически заполняются клиентом или сервером.</li>
-                        <li><b>Подстановки в ответах и заголовках</b> — в форме мока в поле «Тело ответа» вы можете использовать плейсхолдеры
-                            <code>{'{'}'method'{'}'}</code>, <code>{'{'}'path'{'}'}</code>, <code>{'{'}'query_id'{'}'}</code>,
-                            <code>{'{'}'header_Authorization'{'}'}</code> и другие. При реальном вызове они будут автоматически
-                            заменены значениями из запроса.</li>
+                        <li><b>Подстановки в ответах и заголовках</b> — система поддерживает динамические плейсхолдеры, которые автоматически
+                            заменяются значениями из входящего запроса. Плейсхолдеры работают в теле ответа (JSON) и в заголовках ответа.
+                            <br/><br/>
+                            <b>Доступные плейсхолдеры:</b>
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li><code>{'{'}'method'{'}'}</code> — HTTP метод запроса (GET, POST, PUT, DELETE и т.д.)</li>
+                              <li><code>{'{'}'path'{'}'}</code> — путь запроса без query параметров (например: <code>/api/users</code>)</li>
+                              <li><code>{'{'}'full_path'{'}'}</code> — полный путь с query параметрами (например: <code>/api/users?page=1</code>)</li>
+                              <li><code>{'{'}'query'{'}'}</code> — строка query параметров целиком (например: <code>page=1&limit=10</code>)</li>
+                              <li><code>{'{'}'query_параметр'{'}'}</code> — значение конкретного query параметра (например: <code>{'{'}'query_page'{'}'}</code> для <code>?page=1</code>)</li>
+                              <li><code>{'{'}'header_ИмяЗаголовка'{'}'}</code> — значение заголовка запроса. Дефисы в имени заголовка заменяются на подчёркивания
+                                  (например: <code>{'{'}'header_Authorization'{'}'}</code> для заголовка <code>Authorization</code>,
+                                  <code>{'{'}'header_X_Custom_Header'{'}'}</code> для <code>X-Custom-Header</code>)</li>
+                            </ul>
+                            <br/>
+                            <b>Пример использования в теле ответа:</b>
+                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
+{`{
+  "request_method": "{method}",
+  "request_path": "{path}",
+  "user_id": "{query_user_id}",
+  "auth_token": "{header_Authorization}",
+  "message": "Запрос {method} на путь {path} обработан"
+}`}
+                            </pre>
+                            <b>Пример запроса:</b> <code>GET /api/users?user_id=123</code> с заголовком <code>Authorization: Bearer token123</code><br/>
+                            <b>Результат:</b>
+                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
+{`{
+  "request_method": "GET",
+  "request_path": "/api/users",
+  "user_id": "123",
+  "auth_token": "Bearer token123",
+  "message": "Запрос GET на путь /api/users обработан"
+}`}
+                            </pre>
+                            <b>Использование в заголовках ответа:</b> плейсхолдеры также работают в заголовках ответа. Например, заголовок
+                            <code>X-Request-ID: {header_X_Request_ID}</code> скопирует значение заголовка <code>X-Request-ID</code> из запроса в ответ.
+                        </li>
                         <li><b>Автоматическая нормализация JSON</b> — система автоматически нормализует JSON в запросах и ответах,
                             убирая лишние пробелы и форматирование. Это гарантирует корректное сопоставление моков даже при различиях
                             в форматировании JSON.</li>
                         <li><b>Кэширование ответов</b> — в настройках мока есть опция «Включить кэширование ответа» и поле «TTL кэша (сек)».
                             Включите её, если хотите, чтобы одинаковые запросы временно обслуживались из кэша без повторной обработки.
                             Статус кэша можно проверить через API <code>GET /api/cache/status</code>.</li>
-                        <li><b>Задержки</b> — вы можете задать фиксированную задержку в миллисекундах, либо диапазон (минимум/максимум)
-                            в теле ответа, чтобы эмулировать нестабильные сети и долгие операции.</li>
-                        <li><b>Имитация ошибок</b> — добавляя специальный блок в теле ответа, можно задать вероятность возврата ошибки
-                            вместо успешного ответа, а также статус-код и дополнительную задержку.</li>
+                        <li><b>Задержки ответа</b> — система поддерживает два способа задания задержки ответа для эмуляции медленных сетей
+                            или долгих операций на сервере.
+                            <br/><br/>
+                            <b>Способ 1: Фиксированная задержка через UI</b><br/>
+                            В форме создания/редактирования мока есть поле <b>«Задержка (мс)»</b>. Укажите значение в миллисекундах
+                            (например: <code>500</code> для задержки в 0.5 секунды, <code>2000</code> для 2 секунд).
+                            <br/><br/>
+                            <b>Способ 2: Диапазон задержек в теле ответа</b><br/>
+                            Для более реалистичной эмуляции нестабильных сетей можно задать случайную задержку из диапазона.
+                            Добавьте в тело ответа специальный блок <code>__delay_range_ms__</code>:
+                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
+{`{
+  "data": {
+    "message": "Успешный ответ"
+  },
+  "__delay_range_ms__": {
+    "min": 100,
+    "max": 500
+  }
+}`}
+                            </pre>
+                            <b>Параметры:</b>
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li><code>min</code> — минимальная задержка в миллисекундах (обязательный)</li>
+                              <li><code>max</code> — максимальная задержка в миллисекундах (обязательный)</li>
+                            </ul>
+                            При каждом запросе система случайным образом выберет значение задержки от <code>min</code> до <code>max</code> включительно.
+                            <br/><br/>
+                            <b>Примеры использования:</b>
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li><b>Медленная сеть:</b> <code>{"{"}"min": 1000, "max": 3000{"}"}</code> — задержка от 1 до 3 секунд</li>
+                              <li><b>Нестабильная сеть:</b> <code>{"{"}"min": 50, "max": 2000{"}"}</code> — задержка от 50 мс до 2 секунд</li>
+                              <li><b>Быстрая, но с вариациями:</b> <code>{"{"}"min": 100, "max": 300{"}"}</code> — задержка от 100 до 300 мс</li>
+                            </ul>
+                            <b>Приоритет:</b> Если задан диапазон в теле ответа, он имеет приоритет над фиксированной задержкой из UI.
+                            Если диапазон не задан или задан некорректно, используется фиксированная задержка из поля «Задержка (мс)».
+                        </li>
+                        <li><b>Имитация ошибок</b> — система позволяет эмулировать случайные ошибки сервера для тестирования обработки
+                            ошибок в клиентском приложении. Добавьте в тело ответа специальный блок <code>__error_simulation__</code>:
+                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
+{`{
+  "data": {
+    "message": "Успешный ответ"
+  },
+  "__error_simulation__": {
+    "probability": 0.3,
+    "status_code": 500,
+    "delay_ms": 100,
+    "body": {
+      "error": "Internal Server Error",
+      "message": "Произошла случайная ошибка"
+    }
+  }
+}`}
+                            </pre>
+                            <b>Параметры блока <code>__error_simulation__</code>:</b>
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li><code>probability</code> — вероятность возврата ошибки (от 0.0 до 1.0, обязательный).
+                                  <ul style={{ paddingLeft: 20, marginTop: 4 }}>
+                                    <li><code>0.0</code> — ошибка никогда не возвращается (функция отключена)</li>
+                                    <li><code>0.1</code> — ошибка возвращается в 10% запросов</li>
+                                    <li><code>0.5</code> — ошибка возвращается в 50% запросов</li>
+                                    <li><code>1.0</code> — ошибка возвращается всегда (100% запросов)</li>
+                                  </ul>
+                              </li>
+                              <li><code>status_code</code> — HTTP статус-код ошибки (по умолчанию: <code>500</code>, опциональный).
+                                  Может быть любым кодом ошибки: <code>400</code>, <code>401</code>, <code>403</code>, <code>404</code>,
+                                  <code>500</code>, <code>502</code>, <code>503</code> и т.д.</li>
+                              <li><code>delay_ms</code> — дополнительная задержка перед возвратом ошибки в миллисекундах (по умолчанию: <code>0</code>, опциональный).
+                                  Полезно для эмуляции таймаутов или медленных ошибок.</li>
+                              <li><code>body</code> — тело ответа при ошибке (по умолчанию: <code>{"{"}"error": "simulated error"{"}"}</code>, опциональный).
+                                  Может быть любым JSON объектом. В теле ошибки также работают плейсхолдеры.</li>
+                            </ul>
+                            <br/>
+                            <b>Примеры использования:</b>
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li><b>Редкие ошибки сервера (5%):</b>
+                                <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "8px", borderRadius: "4px", overflow: "auto", fontSize: "11px", marginTop: 4 }}>
+{`"__error_simulation__": {
+  "probability": 0.05,
+  "status_code": 500,
+  "body": {"error": "Временная ошибка сервера"}
+}`}
+                                </pre>
+                              </li>
+                              <li><b>Частые таймауты (30%):</b>
+                                <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "8px", borderRadius: "4px", overflow: "auto", fontSize: "11px", marginTop: 4 }}>
+{`"__error_simulation__": {
+  "probability": 0.3,
+  "status_code": 504,
+  "delay_ms": 5000,
+  "body": {"error": "Gateway Timeout", "message": "Сервер не ответил вовремя"}
+}`}
+                                </pre>
+                              </li>
+                              <li><b>Случайные 404 ошибки (20%):</b>
+                                <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "8px", borderRadius: "4px", overflow: "auto", fontSize: "11px", marginTop: 4 }}>
+{`"__error_simulation__": {
+  "probability": 0.2,
+  "status_code": 404,
+  "body": {"error": "Not Found", "path": "{path}"}
+}`}
+                                </pre>
+                              </li>
+                            </ul>
+                            <b>Как это работает:</b> При каждом запросе система генерирует случайное число от 0 до 1. Если это число меньше
+                            значения <code>probability</code>, возвращается ошибка с указанным статус-кодом и телом. В противном случае
+                            возвращается обычный успешный ответ. Это позволяет тестировать устойчивость клиентского приложения к ошибкам.
+                        </li>
                         <li><b>Файловые ответы</b> — выберите тип ответа «Файл» и загрузите нужный файл прямо из формы.
                             Сервис сам сформирует корректные заголовки для скачивания, включая поддержку кириллицы в именах файлов.</li>
                         <li><b>Управление порядком</b> — моки можно перетаскивать в таблице для изменения порядка отображения.
@@ -2266,7 +2407,7 @@ export default function App() {
           </Modal>
 
           <Modal
-            title="Импорт OpenAPI"
+            title="Импорт OpenAPI/Swagger"
             open={isOpenapiModalOpen}
             onCancel={() => setOpenapiModalOpen(false)}
             footer={null}
@@ -2275,8 +2416,9 @@ export default function App() {
             <Form form={openapiForm} onFinish={handleOpenapiImport} layout="vertical">
               <Form.Item
                 name="url"
-                label="URL OpenAPI (JSON/YAML)"
-                rules={[{ required: true, message: "Введите URL OpenAPI" }]}
+                label="URL OpenAPI/Swagger (JSON/YAML)"
+                rules={[{ required: true, message: "Введите URL OpenAPI/Swagger" }]}
+                help="Поддерживаются OpenAPI 3.x и Swagger 2.0 форматы"
               >
                 <Input placeholder="https://example.com/openapi.json" />
               </Form.Item>

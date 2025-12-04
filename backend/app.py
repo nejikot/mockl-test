@@ -190,7 +190,8 @@ app = FastAPI(
         "- группировать моки по папкам (\"страницам\");\n"
         "- настраивать условия срабатывания по методу, пути, заголовкам и фрагменту тела запроса;\n"
         "- задавать произвольный HTTP‑код, заголовки и JSON‑тело ответа;\n"
-        "- импортировать моки из Postman Collection v2.1."
+        "- импортировать моки из Postman Collection v2.1;\n"
+        "- импортировать моки из OpenAPI 3.x и Swagger 2.0 спецификаций с автоматической генерацией примеров запросов и ответов."
     ),
     version="1.0.0",
 )
@@ -1012,12 +1013,99 @@ def _ensure_folder_for_spec(spec_name: str, db: Optional[Session] = None) -> str
     return _ensure_folder(folder_name, db=db)
 
 
+def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[Dict[str, Any]] = None, components: Optional[Dict[str, Any]] = None) -> Any:
+    """
+    Генерирует пример данных из OpenAPI/Swagger схемы.
+    Поддерживает Swagger 2.0 (definitions) и OpenAPI 3.x (components/schemas).
+    """
+    if not isinstance(schema, dict):
+        return None
+    
+    # Проверяем $ref ссылки (может быть только $ref или вместе с другими полями)
+    ref = schema.get("$ref")
+    if ref:
+        # Swagger 2.0: #/definitions/Pet
+        # OpenAPI 3.x: #/components/schemas/Pet
+        if ref.startswith("#/definitions/"):
+            def_name = ref.split("/")[-1]
+            if definitions and def_name in definitions:
+                return _generate_example_from_schema(definitions[def_name], definitions, components)
+        elif ref.startswith("#/components/schemas/"):
+            def_name = ref.split("/")[-1]
+            schemas = components.get("schemas", {}) if components else {}
+            if def_name in schemas:
+                return _generate_example_from_schema(schemas[def_name], definitions, components)
+        # Если $ref не разрешился, возвращаем None
+        return None
+    
+    # Если есть example, используем его
+    if "example" in schema:
+        return schema["example"]
+    
+    schema_type = schema.get("type")
+    
+    if schema_type == "object":
+        result = {}
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        
+        for prop_name, prop_schema in properties.items():
+            if isinstance(prop_schema, dict):
+                example_value = _generate_example_from_schema(prop_schema, definitions, components)
+                if example_value is not None:
+                    result[prop_name] = example_value
+                elif prop_name in required:
+                    # Для обязательных полей генерируем базовые значения
+                    prop_type = prop_schema.get("type")
+                    if prop_type == "string":
+                        result[prop_name] = prop_schema.get("example", f"example_{prop_name}")
+                    elif prop_type == "integer":
+                        result[prop_name] = prop_schema.get("example", 0)
+                    elif prop_type == "number":
+                        result[prop_name] = prop_schema.get("example", 0.0)
+                    elif prop_type == "boolean":
+                        result[prop_name] = prop_schema.get("example", False)
+                    elif prop_type == "array":
+                        result[prop_name] = []
+                    elif prop_type == "object":
+                        result[prop_name] = {}
+        
+        return result if result else {}
+    
+    elif schema_type == "array":
+        items = schema.get("items", {})
+        if isinstance(items, dict):
+            item_example = _generate_example_from_schema(items, definitions, components)
+            if item_example is not None:
+                return [item_example]
+        return []
+    
+    elif schema_type == "string":
+        return schema.get("example", "string")
+    elif schema_type == "integer":
+        return schema.get("example", 0)
+    elif schema_type == "number":
+        return schema.get("example", 0.0)
+    elif schema_type == "boolean":
+        return schema.get("example", False)
+    
+    return None
+
+
 def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Session) -> int:
     """
-    Генерирует простые моки по OpenAPI‑спецификации в указанную папку.
-    Для каждого пути/метода создаётся мок с кодом 200 и простым JSON‑ответом.
-    Повторно существующие сочетания (folder, method, path) не создаются.
+    Генерирует моки по OpenAPI/Swagger спецификации в указанную папку.
+    Поддерживает OpenAPI 3.x и Swagger 2.0 форматы.
+    Для каждого пути/метода создаётся мок с примерами запроса и ответа из спецификации.
     """
+    # Определяем формат спецификации
+    is_swagger_2 = spec.get("swagger") == "2.0"
+    is_openapi_3 = spec.get("openapi", "").startswith("3.")
+    
+    # Получаем схемы (definitions для Swagger 2.0, components/schemas для OpenAPI 3.x)
+    definitions = spec.get("definitions", {}) if is_swagger_2 else {}
+    components = spec.get("components", {}) if is_openapi_3 else {}
+    
     paths = spec.get("paths") or {}
     if not isinstance(paths, dict):
         return 0
@@ -1055,6 +1143,8 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             # Извлекаем примеры запроса
             request_body_contains = None
             request_headers = {}
+            
+            # OpenAPI 3.x: requestBody
             req_body = op.get("requestBody", {})
             if req_body and isinstance(req_body, dict):
                 content = req_body.get("content", {})
@@ -1088,17 +1178,49 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                             if request_body_contains:
                                 break
                         
-                        # ПРИОРИТЕТ 3: Проверяем schema.example (для старых версий OpenAPI)
-                        schema = media_spec.get("schema", {})
+                        # ПРИОРИТЕТ 3: Генерируем из schema
+                        if not request_body_contains:
+                            schema = media_spec.get("schema", {})
+                            if schema and isinstance(schema, dict):
+                                # Сначала проверяем schema.example
+                                schema_example = schema.get("example")
+                                if schema_example is not None:
+                                    if isinstance(schema_example, (dict, list)):
+                                        request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
+                                    else:
+                                        request_body_contains = str(schema_example)
+                                    request_headers["Content-Type"] = media_type
+                                else:
+                                    # Генерируем пример из схемы
+                                    generated = _generate_example_from_schema(schema, definitions, components)
+                                    if generated is not None:
+                                        request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
+                                        request_headers["Content-Type"] = media_type
+                                if request_body_contains:
+                                    break
+            
+            # Swagger 2.0: parameters с in="body"
+            if not request_body_contains and is_swagger_2:
+                parameters = op.get("parameters", [])
+                for param in parameters:
+                    if isinstance(param, dict) and param.get("in") == "body":
+                        schema = param.get("schema", {})
                         if schema and isinstance(schema, dict):
+                            # Проверяем example в схеме
                             schema_example = schema.get("example")
-                            if schema_example is not None and not request_body_contains:
+                            if schema_example is not None:
                                 if isinstance(schema_example, (dict, list)):
                                     request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
                                 else:
                                     request_body_contains = str(schema_example)
-                                request_headers["Content-Type"] = media_type
-                                break
+                                request_headers["Content-Type"] = "application/json"
+                            else:
+                                # Генерируем пример из схемы
+                                generated = _generate_example_from_schema(schema, definitions, components)
+                                if generated is not None:
+                                    request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
+                                    request_headers["Content-Type"] = "application/json"
+                            break
 
             # Извлекаем примеры ответа
             response_status = 200
@@ -1155,13 +1277,9 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                     if not found_example:
                                         schema = media_spec.get("schema", {})
                                         if schema and isinstance(schema, dict):
-                                            schema_type = schema.get("type")
-                                            if schema_type == "object":
-                                                response_body = {}
-                                                response_headers["Content-Type"] = media_type
-                                                found_example = True
-                                            elif schema_type == "array":
-                                                response_body = []
+                                            generated = _generate_example_from_schema(schema, definitions, components)
+                                            if generated is not None:
+                                                response_body = generated
                                                 response_headers["Content-Type"] = media_type
                                                 found_example = True
                                 
@@ -1173,7 +1291,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                     except (ValueError, TypeError):
                         continue
             
-            # ПРИОРИТЕТ 2: Если не нашли пример в 2xx, ищем в любом ответе
+            # ПРИОРИТЕТ 2: Если не нашли пример в 2xx, ищем в любом ответе (OpenAPI 3.x)
             if not found_example:
                 for status_str, response_spec in responses.items():
                     if isinstance(response_spec, dict):
@@ -1209,10 +1327,47 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                                                 response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
                                                 response_headers["Content-Type"] = media_type
                                                 found_example = True
+                                            else:
+                                                # Генерируем из схемы
+                                                generated = _generate_example_from_schema(schema, definitions, components)
+                                                if generated is not None:
+                                                    response_body = generated
+                                                    response_headers["Content-Type"] = media_type
+                                                    found_example = True
+                                            if found_example:
                                                 break
                             
                             if found_example:
                                 break
+                        except (ValueError, TypeError):
+                            continue
+            
+            # ПРИОРИТЕТ 3: Swagger 2.0 - schema напрямую в responses
+            if not found_example and is_swagger_2:
+                for status_str, response_spec in responses.items():
+                    if isinstance(response_spec, dict):
+                        try:
+                            status_int = int(status_str) if status_str.isdigit() else 200
+                            # Предпочитаем 2xx
+                            if 200 <= status_int < 300:
+                                response_status = status_int
+                            schema = response_spec.get("schema", {})
+                            if schema and isinstance(schema, dict):
+                                # Проверяем example в схеме
+                                schema_example = schema.get("example")
+                                if schema_example is not None:
+                                    response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
+                                    response_headers["Content-Type"] = "application/json"
+                                    found_example = True
+                                else:
+                                    # Генерируем из схемы
+                                    generated = _generate_example_from_schema(schema, definitions, components)
+                                    if generated is not None:
+                                        response_body = generated
+                                        response_headers["Content-Type"] = "application/json"
+                                        found_example = True
+                                if found_example:
+                                    break
                         except (ValueError, TypeError):
                             continue
 
@@ -1282,7 +1437,7 @@ def load_openapi_specs_from_env():
     # Загрузка по URL
     for url in [u.strip() for u in OPENAPI_SPECS_URLS.split(",") if u.strip()]:
         try:
-            resp = httpx.get(url, timeout=10.0)
+            resp = httpx.get(url, timeout=300.0, follow_redirects=True)
             resp.raise_for_status()
             text_body = resp.text
 
@@ -1956,7 +2111,8 @@ class OpenApiFromUrlPayload(BaseModel):
 )
 async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
     try:
-        resp = httpx.get(payload.url, timeout=10.0)
+        # Увеличиваем таймаут для больших спецификаций
+        resp = httpx.get(payload.url, timeout=300.0, follow_redirects=True)
         resp.raise_for_status()
         text_body = resp.text
         try:
