@@ -423,6 +423,23 @@ def ensure_migrations():
                 "ADD COLUMN IF NOT EXISTS proxy_base_url VARCHAR NULL"
             )
         )
+        # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
+        try:
+            conn.execute(
+                text(
+                    'ALTER TABLE folders '
+                    'ADD COLUMN IF NOT EXISTS "order" INTEGER DEFAULT 0'
+                )
+            )
+            # Создаем индекс для order в folders, если его еще нет
+            conn.execute(
+                text(
+                    'CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка при добавлении колонки order в folders: {e}")
+        
         # Новые поля в mocks
         conn.execute(
             text(
@@ -436,6 +453,23 @@ def ensure_migrations():
                 "ADD COLUMN IF NOT EXISTS name VARCHAR NULL"
             )
         )
+        # Добавляем колонку order в mocks
+        try:
+            conn.execute(
+                text(
+                    'ALTER TABLE mocks '
+                    'ADD COLUMN IF NOT EXISTS "order" INTEGER DEFAULT 0'
+                )
+            )
+            # Создаем индекс для order в mocks, если его еще нет
+            conn.execute(
+                text(
+                    'CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Ошибка при добавлении колонки order в mocks: {e}")
+        
         conn.commit()
 
 
