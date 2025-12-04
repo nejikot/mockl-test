@@ -1168,12 +1168,15 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     next_order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     
     # ОПТИМИЗАЦИЯ: Собираем все новые моки в список для bulk insert
+    # Ограничиваем количество моков за один импорт для предотвращения перегрузки
+    MAX_MOCKS_PER_IMPORT = 10000
     new_mocks = []
     created = 0
 
-    for path, path_item in paths.items():
-        if not isinstance(path_item, dict):
-            continue
+    try:
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
 
         for method_name, operation in path_item.items():
             if method_name.lower() not in allowed_methods:
@@ -1445,11 +1448,29 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             
             new_mocks.append(mock)
             created += 1
-
-    # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков одним запросом
-    if new_mocks:
-        db.bulk_save_objects(new_mocks)
-        db.flush()
+            
+            # Ограничение на количество моков для предотвращения перегрузки
+            if created >= MAX_MOCKS_PER_IMPORT:
+                logger.warning(f"Reached maximum mocks limit ({MAX_MOCKS_PER_IMPORT}), stopping import")
+                break
+        
+        # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков батчами для предотвращения перегрузки памяти
+        BATCH_SIZE = 500
+        if new_mocks:
+            for i in range(0, len(new_mocks), BATCH_SIZE):
+                batch = new_mocks[i:i + BATCH_SIZE]
+                try:
+                    db.bulk_save_objects(batch)
+                    db.flush()
+                except Exception as e:
+                    logger.error(f"Error saving batch {i//BATCH_SIZE + 1}: {e}", exc_info=True)
+                    db.rollback()
+                    raise
+    
+    except Exception as e:
+        logger.error(f"Error in generate_mocks_for_openapi: {e}", exc_info=True)
+        db.rollback()
+        raise
     
     logger.info(f"Generated {created} mocks for OpenAPI in folder '{folder_name}'")
 

@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Table, Button, Form, Input, Select, Modal, Layout, message,
-  ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox, Row, Col, Divider
+  ConfigProvider, Typography, Grid, Tooltip, Switch, Checkbox, Row, Col, Divider, Collapse
 } from "antd";
 import { theme as antdTheme } from "antd";
 import {
   PlusOutlined, MinusCircleOutlined, DeleteOutlined,
   ExclamationCircleOutlined, CopyOutlined,
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
-  SnippetsOutlined, BgColorsOutlined, DownloadOutlined
+  SnippetsOutlined, BgColorsOutlined, DownloadOutlined,
+  DownOutlined, RightOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -288,7 +289,63 @@ const DraggableMockRow = (props) => {
   );
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, isSubfolder = false, parentFolder = null }) => {
+// Компонент для папки с подпапками
+const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, foldersData }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: 12,
+          borderRadius: 8,
+          background: theme === "dark" ? "#262626" : "#fafafa",
+          cursor: "pointer",
+        }}
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        {isExpanded ? <DownOutlined /> : <RightOutlined />}
+        <DraggableFolder
+          folder={rootFolder.name}
+          index={rootIndex}
+          moveFolder={moveFolder}
+          selectedFolder={selectedFolder}
+          setSelectedFolder={setSelectedFolder}
+          deleteFolder={deleteFolder}
+          startRename={startRename}
+          theme={theme}
+          isSubfolder={false}
+          parentFolder={null}
+          showExpandIcon={false}
+        />
+      </div>
+      {isExpanded && (
+        <div style={{ marginLeft: 24, marginTop: 4 }}>
+          {subFolders.map((subFolder, subIndex) => (
+            <DraggableFolder
+              key={subFolder.name}
+              folder={subFolder.name}
+              index={rootIndex + 1 + subIndex}
+              moveFolder={moveFolder}
+              selectedFolder={selectedFolder}
+              setSelectedFolder={setSelectedFolder}
+              deleteFolder={deleteFolder}
+              startRename={startRename}
+              theme={theme}
+              isSubfolder={true}
+              parentFolder={subFolder.parent_folder}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
@@ -1544,25 +1601,78 @@ export default function App() {
                   <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
                     Перетаскивайте, чтобы упорядочить, или удаляйте ненужные.
                   </Typography.Paragraph>
-                  {folders.map((f, i) => {
-                    const folderInfo = foldersData.find(fd => fd.name === f) || { name: f, parent_folder: null };
-                    const isSubfolder = folderInfo.parent_folder !== null;
-                    return (
-                      <DraggableFolder
-                        key={f}
-                        folder={f}
-                        index={i}
-                        moveFolder={moveFolder}
-                        selectedFolder={selectedFolder}
-                        setSelectedFolder={setSelectedFolder}
-                        deleteFolder={deleteFolder}
-                        startRename={startRenameFolder}
-                        theme={theme}
-                        isSubfolder={isSubfolder}
-                        parentFolder={folderInfo.parent_folder}
-                      />
-                    );
-                  })}
+                  {(() => {
+                    // Группируем папки по родителям
+                    const rootFolders = foldersData.filter(f => !f.parent_folder || f.name === "default");
+                    const foldersByParent = {};
+                    foldersData.forEach(f => {
+                      if (f.parent_folder && f.name !== "default") {
+                        if (!foldersByParent[f.parent_folder]) {
+                          foldersByParent[f.parent_folder] = [];
+                        }
+                        foldersByParent[f.parent_folder].push(f);
+                      }
+                    });
+                    
+                    return rootFolders.map((rootFolder, rootIndex) => {
+                      const subFolders = foldersByParent[rootFolder.name] || [];
+                      const hasSubfolders = subFolders.length > 0;
+                      
+                      if (rootFolder.name === "default") {
+                        // Для default папки показываем без сворачивания
+                        return (
+                          <DraggableFolder
+                            key={rootFolder.name}
+                            folder={rootFolder.name}
+                            index={rootIndex}
+                            moveFolder={moveFolder}
+                            selectedFolder={selectedFolder}
+                            setSelectedFolder={setSelectedFolder}
+                            deleteFolder={deleteFolder}
+                            startRename={startRenameFolder}
+                            theme={theme}
+                            isSubfolder={false}
+                            parentFolder={null}
+                          />
+                        );
+                      }
+                      
+                      // Для остальных папок используем FolderWithSubfolders если есть подпапки
+                      if (hasSubfolders) {
+                        return (
+                          <FolderWithSubfolders
+                            key={rootFolder.name}
+                            rootFolder={rootFolder}
+                            subFolders={subFolders}
+                            rootIndex={rootIndex}
+                            moveFolder={moveFolder}
+                            selectedFolder={selectedFolder}
+                            setSelectedFolder={setSelectedFolder}
+                            deleteFolder={deleteFolder}
+                            startRename={startRenameFolder}
+                            theme={theme}
+                            foldersData={foldersData}
+                          />
+                        );
+                      } else {
+                        return (
+                          <DraggableFolder
+                            key={rootFolder.name}
+                            folder={rootFolder.name}
+                            index={rootIndex}
+                            moveFolder={moveFolder}
+                            selectedFolder={selectedFolder}
+                            setSelectedFolder={setSelectedFolder}
+                            deleteFolder={deleteFolder}
+                            startRename={startRenameFolder}
+                            theme={theme}
+                            isSubfolder={false}
+                            parentFolder={null}
+                          />
+                        );
+                      }
+                    });
+                  })()}
                 </div>
               </Sider>
 
