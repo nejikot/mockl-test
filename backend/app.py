@@ -2638,10 +2638,18 @@ def _apply_templates(value: Any, req: Request, full_inner: str) -> Any:
     for k, v in req.query_params.items():
         context[f"query_{k}"] = v
 
+    # Создаём безопасный словарь, который возвращает пустую строку для отсутствующих ключей
+    class SafeDict(dict):
+        def __missing__(self, key):
+            return ""
+
+    safe_context = SafeDict(context)
+
     def _fmt(s: str) -> str:
         try:
-            return s.format(**context)
+            return s.format_map(safe_context)
         except Exception:
+            # Если форматирование не удалось, возвращаем исходную строку
             return s
 
     if isinstance(value, str):
