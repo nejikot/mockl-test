@@ -468,7 +468,7 @@ export default function App() {
           const res = await fetch(url, { method: "POST" });
           if (!res.ok) throw new Error();
           if (isCurrentFolder) {
-            setMocks(prev => prev.map(m => ({ ...m, active: false })));
+          setMocks(prev => prev.map(m => ({ ...m, active: false })));
           }
           const data = await res.json();
           message.success(data.message || `Отключено моков: ${data.count || 0}`);
@@ -966,7 +966,7 @@ export default function App() {
       // Сохраняем order только если мок новый (не редактируется)
       const isEditing = vals.id && editing;
       const currentMock = isEditing ? mocks.find(m => m.id === vals.id) : null;
-      
+
       const entry = {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
@@ -1614,11 +1614,11 @@ export default function App() {
                             <b>Пример использования в теле ответа:</b>
                             <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
 {`{
-  "request_method": "{method}",
-  "request_path": "{path}",
-  "user_id": "{query_user_id}",
-  "auth_token": "{header_Authorization}",
-  "message": "Запрос {method} на путь {path} обработан"
+  "request_method": "` + "{method}" + `",
+  "request_path": "` + "{path}" + `",
+  "user_id": "` + "{query_user_id}" + `",
+  "auth_token": "` + "{header_Authorization}" + `",
+  "message": "Запрос ` + "{method}" + ` на путь ` + "{path}" + ` обработан"
 }`}
                             </pre>
                             <b>Пример запроса:</b> <code>GET /api/users?user_id=123</code> с заголовком <code>Authorization: Bearer token123</code><br/>
@@ -1633,7 +1633,7 @@ export default function App() {
 }`}
                             </pre>
                             <b>Использование в заголовках ответа:</b> плейсхолдеры также работают в заголовках ответа. Например, заголовок
-                            <code>X-Request-ID: {header_X_Request_ID}</code> скопирует значение заголовка <code>X-Request-ID</code> из запроса в ответ.
+                            <code>X-Request-ID: {'{'}header_X_Request_ID{'}'}</code> скопирует значение заголовка <code>X-Request-ID</code> из запроса в ответ.
                         </li>
                         <li><b>Автоматическая нормализация JSON</b> — система автоматически нормализует JSON в запросах и ответах,
                             убирая лишние пробелы и форматирование. Это гарантирует корректное сопоставление моков даже при различиях
@@ -1741,7 +1741,7 @@ export default function App() {
 {`"__error_simulation__": {
   "probability": 0.2,
   "status_code": 404,
-  "body": {"error": "Not Found", "path": "{path}"}
+  "body": {"error": "Not Found", "path": "` + "{path}" + `"}
 }`}
                                 </pre>
                               </li>
