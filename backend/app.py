@@ -1178,281 +1178,281 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             if not isinstance(path_item, dict):
                 continue
 
-        for method_name, operation in path_item.items():
-            if method_name.lower() not in allowed_methods:
-                continue
+            for method_name, operation in path_item.items():
+                if method_name.lower() not in allowed_methods:
+                    continue
 
-            method_upper = method_name.upper()
+                method_upper = method_name.upper()
 
-            # Нормализуем путь для проверки существования
-            normalized_path = _normalize_path_for_storage(path)
-            
-            # Проверяем, нет ли уже такого мока (быстрая проверка в памяти)
-            if (method_upper, normalized_path) in existing_keys:
-                continue
+                # Нормализуем путь для проверки существования
+                normalized_path = _normalize_path_for_storage(path)
+                
+                # Проверяем, нет ли уже такого мока (быстрая проверка в памяти)
+                if (method_upper, normalized_path) in existing_keys:
+                    continue
 
-            op = operation or {}
-            mock_name = (
-                op.get("operationId")
-                or op.get("summary")
-                or f"{method_upper} {path}"
-            )
+                op = operation or {}
+                mock_name = (
+                    op.get("operationId")
+                    or op.get("summary")
+                    or f"{method_upper} {path}"
+                )
 
-            # Извлекаем примеры запроса
-            request_body_contains = None
-            request_headers = {}
-            
-            # OpenAPI 3.x: requestBody
-            req_body = op.get("requestBody", {})
-            if req_body and isinstance(req_body, dict):
-                content = req_body.get("content", {})
-                # Ищем первый доступный media type (обычно application/json)
-                for media_type, media_spec in content.items():
-                    if isinstance(media_spec, dict):
-                        # ПРИОРИТЕТ 1: Проверяем example (единственное число)
-                        example = media_spec.get("example")
-                        if example is not None:
-                            if isinstance(example, (dict, list)):
-                                request_body_contains = _normalize_json_string(json.dumps(example, ensure_ascii=False))
-                            else:
-                                request_body_contains = str(example)
-                            request_headers["Content-Type"] = media_type
-                            break
-                        
-                        # ПРИОРИТЕТ 2: Проверяем examples (множественное число)
-                        examples = media_spec.get("examples", {})
-                        if examples and isinstance(examples, dict):
-                            # Берем первый пример
-                            for example_name, example_obj in examples.items():
-                                if isinstance(example_obj, dict):
-                                    example_value = example_obj.get("value")
-                                    if example_value is not None:
-                                        if isinstance(example_value, (dict, list)):
-                                            request_body_contains = _normalize_json_string(json.dumps(example_value, ensure_ascii=False))
-                                        else:
-                                            request_body_contains = str(example_value)
-                                        request_headers["Content-Type"] = media_type
-                                        break
-                            if request_body_contains:
+                # Извлекаем примеры запроса
+                request_body_contains = None
+                request_headers = {}
+                
+                # OpenAPI 3.x: requestBody
+                req_body = op.get("requestBody", {})
+                if req_body and isinstance(req_body, dict):
+                    content = req_body.get("content", {})
+                    # Ищем первый доступный media type (обычно application/json)
+                    for media_type, media_spec in content.items():
+                        if isinstance(media_spec, dict):
+                            # ПРИОРИТЕТ 1: Проверяем example (единственное число)
+                            example = media_spec.get("example")
+                            if example is not None:
+                                if isinstance(example, (dict, list)):
+                                    request_body_contains = _normalize_json_string(json.dumps(example, ensure_ascii=False))
+                                else:
+                                    request_body_contains = str(example)
+                                request_headers["Content-Type"] = media_type
                                 break
-                        
-                        # ПРИОРИТЕТ 3: Генерируем из schema
-                        if not request_body_contains:
-                            schema = media_spec.get("schema", {})
+                            
+                            # ПРИОРИТЕТ 2: Проверяем examples (множественное число)
+                            examples = media_spec.get("examples", {})
+                            if examples and isinstance(examples, dict):
+                                # Берем первый пример
+                                for example_name, example_obj in examples.items():
+                                    if isinstance(example_obj, dict):
+                                        example_value = example_obj.get("value")
+                                        if example_value is not None:
+                                            if isinstance(example_value, (dict, list)):
+                                                request_body_contains = _normalize_json_string(json.dumps(example_value, ensure_ascii=False))
+                                            else:
+                                                request_body_contains = str(example_value)
+                                            request_headers["Content-Type"] = media_type
+                                            break
+                                if request_body_contains:
+                                    break
+                            
+                            # ПРИОРИТЕТ 3: Генерируем из schema
+                            if not request_body_contains:
+                                schema = media_spec.get("schema", {})
+                                if schema and isinstance(schema, dict):
+                                    # Сначала проверяем schema.example
+                                    schema_example = schema.get("example")
+                                    if schema_example is not None:
+                                        if isinstance(schema_example, (dict, list)):
+                                            request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
+                                        else:
+                                            request_body_contains = str(schema_example)
+                                        request_headers["Content-Type"] = media_type
+                                    else:
+                                        # Генерируем пример из схемы
+                                        generated = _generate_example_from_schema(schema, definitions, components, None)
+                                        if generated is not None:
+                                            request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
+                                            request_headers["Content-Type"] = media_type
+                                    if request_body_contains:
+                                        break
+                
+                # Swagger 2.0: parameters с in="body"
+                if not request_body_contains and is_swagger_2:
+                    parameters = op.get("parameters", [])
+                    for param in parameters:
+                        if isinstance(param, dict) and param.get("in") == "body":
+                            schema = param.get("schema", {})
                             if schema and isinstance(schema, dict):
-                                # Сначала проверяем schema.example
+                                # Проверяем example в схеме
                                 schema_example = schema.get("example")
                                 if schema_example is not None:
                                     if isinstance(schema_example, (dict, list)):
                                         request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
                                     else:
                                         request_body_contains = str(schema_example)
-                                    request_headers["Content-Type"] = media_type
+                                    request_headers["Content-Type"] = "application/json"
                                 else:
                                     # Генерируем пример из схемы
                                     generated = _generate_example_from_schema(schema, definitions, components, None)
                                     if generated is not None:
                                         request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
-                                        request_headers["Content-Type"] = media_type
-                                if request_body_contains:
-                                    break
-            
-            # Swagger 2.0: parameters с in="body"
-            if not request_body_contains and is_swagger_2:
-                parameters = op.get("parameters", [])
-                for param in parameters:
-                    if isinstance(param, dict) and param.get("in") == "body":
-                        schema = param.get("schema", {})
-                        if schema and isinstance(schema, dict):
-                            # Проверяем example в схеме
-                            schema_example = schema.get("example")
-                            if schema_example is not None:
-                                if isinstance(schema_example, (dict, list)):
-                                    request_body_contains = _normalize_json_string(json.dumps(schema_example, ensure_ascii=False))
-                                else:
-                                    request_body_contains = str(schema_example)
-                                request_headers["Content-Type"] = "application/json"
-                            else:
-                                # Генерируем пример из схемы
-                                generated = _generate_example_from_schema(schema, definitions, components, None)
-                                if generated is not None:
-                                    request_body_contains = _normalize_json_string(json.dumps(generated, ensure_ascii=False))
-                                    request_headers["Content-Type"] = "application/json"
-                            break
-
-            # Извлекаем примеры ответа
-            response_status = 200
-            response_body = {"message": "mock from OpenAPI"}
-            response_headers = {}
-            responses = op.get("responses", {})
-            found_example = False
-            
-            # ПРИОРИТЕТ 1: Ищем успешный ответ (2xx) с примером
-            for status_str, response_spec in responses.items():
-                if isinstance(response_spec, dict):
-                    try:
-                        status_int = int(status_str)
-                        # Предпочитаем 200, 201, но берем любой 2xx
-                        if 200 <= status_int < 300:
-                            response_status = status_int
-                            content = response_spec.get("content", {})
-                            # Ищем пример в content
-                            for media_type, media_spec in content.items():
-                                if isinstance(media_spec, dict):
-                                    # ПРИОРИТЕТ 1.1: Проверяем example (единственное число)
-                                    example = media_spec.get("example")
-                                    if example is not None:
-                                        response_body = example if isinstance(example, (dict, list)) else {"value": example}
-                                        response_headers["Content-Type"] = media_type
-                                        found_example = True
-                                        break
-                                    
-                                    # ПРИОРИТЕТ 1.2: Проверяем examples (множественное число)
-                                    if not found_example:
-                                        examples = media_spec.get("examples", {})
-                                        if examples and isinstance(examples, dict):
-                                            for example_name, example_obj in examples.items():
-                                                if isinstance(example_obj, dict):
-                                                    example_value = example_obj.get("value")
-                                                    if example_value is not None:
-                                                        response_body = example_value if isinstance(example_value, (dict, list)) else {"value": example_value}
-                                                        response_headers["Content-Type"] = media_type
-                                                        found_example = True
-                                                        break
-                                    
-                                    # ПРИОРИТЕТ 1.3: Проверяем schema.example (для старых версий)
-                                    if not found_example:
-                                        schema = media_spec.get("schema", {})
-                                        if schema and isinstance(schema, dict):
-                                            schema_example = schema.get("example")
-                                            if schema_example is not None:
-                                                response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
-                                                response_headers["Content-Type"] = media_type
-                                                found_example = True
-                                                break
-                                    
-                                    # ПРИОРИТЕТ 1.4: Если пример не найден, генерируем из schema
-                                    if not found_example:
-                                        schema = media_spec.get("schema", {})
-                                        if schema and isinstance(schema, dict):
-                                            generated = _generate_example_from_schema(schema, definitions, components, None)
-                                            if generated is not None:
-                                                response_body = generated
-                                                response_headers["Content-Type"] = media_type
-                                                found_example = True
-                                
-                                if found_example:
-                                    break
-                            
-                            if found_example:
+                                        request_headers["Content-Type"] = "application/json"
                                 break
-                    except (ValueError, TypeError):
-                        continue
-            
-            # ПРИОРИТЕТ 2: Если не нашли пример в 2xx, ищем в любом ответе (OpenAPI 3.x)
-            if not found_example:
+
+                # Извлекаем примеры ответа
+                response_status = 200
+                response_body = {"message": "mock from OpenAPI"}
+                response_headers = {}
+                responses = op.get("responses", {})
+                found_example = False
+                
+                # ПРИОРИТЕТ 1: Ищем успешный ответ (2xx) с примером
                 for status_str, response_spec in responses.items():
                     if isinstance(response_spec, dict):
                         try:
-                            response_status = int(status_str)
-                            content = response_spec.get("content", {})
-                            for media_type, media_spec in content.items():
-                                if isinstance(media_spec, dict):
-                                    example = media_spec.get("example")
-                                    if example is not None:
-                                        response_body = example if isinstance(example, (dict, list)) else {"value": example}
-                                        response_headers["Content-Type"] = media_type
-                                        found_example = True
-                                        break
-                                    
-                                    if not found_example:
-                                        examples = media_spec.get("examples", {})
-                                        if examples and isinstance(examples, dict):
-                                            for example_name, example_obj in examples.items():
-                                                if isinstance(example_obj, dict):
-                                                    example_value = example_obj.get("value")
-                                                    if example_value is not None:
-                                                        response_body = example_value if isinstance(example_value, (dict, list)) else {"value": example_value}
-                                                        response_headers["Content-Type"] = media_type
-                                                        found_example = True
-                                                        break
-                                    
-                                    if not found_example:
-                                        schema = media_spec.get("schema", {})
-                                        if schema and isinstance(schema, dict):
-                                            schema_example = schema.get("example")
-                                            if schema_example is not None:
-                                                response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
-                                                response_headers["Content-Type"] = media_type
-                                                found_example = True
-                                            else:
-                                                # Генерируем из схемы
+                            status_int = int(status_str)
+                            # Предпочитаем 200, 201, но берем любой 2xx
+                            if 200 <= status_int < 300:
+                                response_status = status_int
+                                content = response_spec.get("content", {})
+                                # Ищем пример в content
+                                for media_type, media_spec in content.items():
+                                    if isinstance(media_spec, dict):
+                                        # ПРИОРИТЕТ 1.1: Проверяем example (единственное число)
+                                        example = media_spec.get("example")
+                                        if example is not None:
+                                            response_body = example if isinstance(example, (dict, list)) else {"value": example}
+                                            response_headers["Content-Type"] = media_type
+                                            found_example = True
+                                            break
+                                        
+                                        # ПРИОРИТЕТ 1.2: Проверяем examples (множественное число)
+                                        if not found_example:
+                                            examples = media_spec.get("examples", {})
+                                            if examples and isinstance(examples, dict):
+                                                for example_name, example_obj in examples.items():
+                                                    if isinstance(example_obj, dict):
+                                                        example_value = example_obj.get("value")
+                                                        if example_value is not None:
+                                                            response_body = example_value if isinstance(example_value, (dict, list)) else {"value": example_value}
+                                                            response_headers["Content-Type"] = media_type
+                                                            found_example = True
+                                                            break
+                                        
+                                        # ПРИОРИТЕТ 1.3: Проверяем schema.example (для старых версий)
+                                        if not found_example:
+                                            schema = media_spec.get("schema", {})
+                                            if schema and isinstance(schema, dict):
+                                                schema_example = schema.get("example")
+                                                if schema_example is not None:
+                                                    response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
+                                                    response_headers["Content-Type"] = media_type
+                                                    found_example = True
+                                                    break
+                                        
+                                        # ПРИОРИТЕТ 1.4: Если пример не найден, генерируем из schema
+                                        if not found_example:
+                                            schema = media_spec.get("schema", {})
+                                            if schema and isinstance(schema, dict):
                                                 generated = _generate_example_from_schema(schema, definitions, components, None)
                                                 if generated is not None:
                                                     response_body = generated
                                                     response_headers["Content-Type"] = media_type
                                                     found_example = True
-                                            if found_example:
-                                                break
-                            
-                            if found_example:
-                                break
-                        except (ValueError, TypeError):
-                            continue
-            
-            # ПРИОРИТЕТ 3: Swagger 2.0 - schema напрямую в responses
-            if not found_example and is_swagger_2:
-                for status_str, response_spec in responses.items():
-                    if isinstance(response_spec, dict):
-                        try:
-                            status_int = int(status_str) if status_str.isdigit() else 200
-                            # Предпочитаем 2xx
-                            if 200 <= status_int < 300:
-                                response_status = status_int
-                            schema = response_spec.get("schema", {})
-                            if schema and isinstance(schema, dict):
-                                # Проверяем example в схеме
-                                schema_example = schema.get("example")
-                                if schema_example is not None:
-                                    response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
-                                    response_headers["Content-Type"] = "application/json"
-                                    found_example = True
-                                else:
-                                    # Генерируем из схемы
-                                    generated = _generate_example_from_schema(schema, definitions, components, None)
-                                    if generated is not None:
-                                        response_body = generated
-                                        response_headers["Content-Type"] = "application/json"
-                                        found_example = True
+                                    
+                                    if found_example:
+                                        break
+                                
                                 if found_example:
                                     break
                         except (ValueError, TypeError):
                             continue
+                
+                # ПРИОРИТЕТ 2: Если не нашли пример в 2xx, ищем в любом ответе (OpenAPI 3.x)
+                if not found_example:
+                    for status_str, response_spec in responses.items():
+                        if isinstance(response_spec, dict):
+                            try:
+                                response_status = int(status_str)
+                                content = response_spec.get("content", {})
+                                for media_type, media_spec in content.items():
+                                    if isinstance(media_spec, dict):
+                                        example = media_spec.get("example")
+                                        if example is not None:
+                                            response_body = example if isinstance(example, (dict, list)) else {"value": example}
+                                            response_headers["Content-Type"] = media_type
+                                            found_example = True
+                                            break
+                                        
+                                        if not found_example:
+                                            examples = media_spec.get("examples", {})
+                                            if examples and isinstance(examples, dict):
+                                                for example_name, example_obj in examples.items():
+                                                    if isinstance(example_obj, dict):
+                                                        example_value = example_obj.get("value")
+                                                        if example_value is not None:
+                                                            response_body = example_value if isinstance(example_value, (dict, list)) else {"value": example_value}
+                                                            response_headers["Content-Type"] = media_type
+                                                            found_example = True
+                                                            break
+                                        
+                                        if not found_example:
+                                            schema = media_spec.get("schema", {})
+                                            if schema and isinstance(schema, dict):
+                                                schema_example = schema.get("example")
+                                                if schema_example is not None:
+                                                    response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
+                                                    response_headers["Content-Type"] = media_type
+                                                    found_example = True
+                                                else:
+                                                    # Генерируем из схемы
+                                                    generated = _generate_example_from_schema(schema, definitions, components, None)
+                                                    if generated is not None:
+                                                        response_body = generated
+                                                        response_headers["Content-Type"] = media_type
+                                                        found_example = True
+                                                if found_example:
+                                                    break
+                                
+                                if found_example:
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                
+                # ПРИОРИТЕТ 3: Swagger 2.0 - schema напрямую в responses
+                if not found_example and is_swagger_2:
+                    for status_str, response_spec in responses.items():
+                        if isinstance(response_spec, dict):
+                            try:
+                                status_int = int(status_str) if status_str.isdigit() else 200
+                                # Предпочитаем 2xx
+                                if 200 <= status_int < 300:
+                                    response_status = status_int
+                                schema = response_spec.get("schema", {})
+                                if schema and isinstance(schema, dict):
+                                    # Проверяем example в схеме
+                                    schema_example = schema.get("example")
+                                    if schema_example is not None:
+                                        response_body = schema_example if isinstance(schema_example, (dict, list)) else {"value": schema_example}
+                                        response_headers["Content-Type"] = "application/json"
+                                        found_example = True
+                                    else:
+                                        # Генерируем из схемы
+                                        generated = _generate_example_from_schema(schema, definitions, components, None)
+                                        if generated is not None:
+                                            response_body = generated
+                                            response_headers["Content-Type"] = "application/json"
+                                            found_example = True
+                                    if found_example:
+                                        break
+                            except (ValueError, TypeError):
+                                continue
 
-            # Создаём объект Mock напрямую для bulk insert (normalized_path уже вычислен выше)
-            mock = Mock(
-                id=str(uuid4()),
-                folder_name=folder_name,
-                name=mock_name,
-                method=method_upper,
-                path=normalized_path,
-                headers=request_headers if request_headers else {},
-                body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
-                status_code=response_status,
-                response_headers=response_headers if response_headers else {},
-                response_body=response_body,
-                active=True,
-                delay_ms=0,
-                order=next_order + created,
-            )
-            
-            new_mocks.append(mock)
-            created += 1
-            
-            # Ограничение на количество моков для предотвращения перегрузки
-            if created >= MAX_MOCKS_PER_IMPORT:
-                logger.warning(f"Reached maximum mocks limit ({MAX_MOCKS_PER_IMPORT}), stopping import")
-                break
+                # Создаём объект Mock напрямую для bulk insert (normalized_path уже вычислен выше)
+                mock = Mock(
+                    id=str(uuid4()),
+                    folder_name=folder_name,
+                    name=mock_name,
+                    method=method_upper,
+                    path=normalized_path,
+                    headers=request_headers if request_headers else {},
+                    body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
+                    status_code=response_status,
+                    response_headers=response_headers if response_headers else {},
+                    response_body=response_body,
+                    active=True,
+                    delay_ms=0,
+                    order=next_order + created,
+                )
+                
+                new_mocks.append(mock)
+                created += 1
+                
+                # Ограничение на количество моков для предотвращения перегрузки
+                if created >= MAX_MOCKS_PER_IMPORT:
+                    logger.warning(f"Reached maximum mocks limit ({MAX_MOCKS_PER_IMPORT}), stopping import")
+                    break
         
         # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков батчами для предотвращения перегрузки памяти
         BATCH_SIZE = 500
