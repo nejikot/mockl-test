@@ -725,6 +725,7 @@ def parse_curl_command(curl_str: str) -> Dict[str, Any]:
     Поддерживает различные форматы curl:
     - curl -X POST https://example.com/api -H "Header: value" -d '{"key":"value"}'
     - curl --request POST --url https://example.com/api --header "Header: value" --data '{"key":"value"}'
+    - curl --location --request GET 'https://example.com/api' --header 'Header: value' --data '{"key":"value"}'
     - curl https://example.com/api?param=value
     """
     import re
@@ -737,24 +738,69 @@ def parse_curl_command(curl_str: str) -> Dict[str, Any]:
         "body": None
     }
     
-    # Нормализуем строку: убираем переносы строк, заменяем на пробелы
-    curl_str = re.sub(r'\s+', ' ', curl_str.strip())
-    
     # Убираем начальный "curl" если есть
-    curl_str = re.sub(r'^\s*curl\s+', '', curl_str, flags=re.IGNORECASE)
+    curl_str = re.sub(r'^\s*curl\s+', '', curl_str.strip(), flags=re.IGNORECASE)
     
-    # Парсим аргументы
+    # Обрабатываем многострочные команды с обратными слэшами
+    # Объединяем строки, которые заканчиваются на обратный слэш
+    lines = curl_str.split('\n')
+    normalized_lines = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()  # Убираем пробелы справа, но не слева
+        # Если строка заканчивается на обратный слэш, объединяем со следующей
+        if line.endswith('\\'):
+            line = line[:-1].rstrip()  # Убираем обратный слэш и пробелы
+            # Объединяем со следующей строкой
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                line += ' ' + next_line
+                i += 2
+            else:
+                i += 1
+        else:
+            i += 1
+        if line.strip():  # Добавляем только непустые строки
+            normalized_lines.append(line.strip())
+    
+    # Объединяем все строки в одну
+    curl_str = ' '.join(normalized_lines)
+    
+    # Парсим аргументы с помощью shlex для правильной обработки кавычек
     try:
-        # Используем shlex для правильной обработки кавычек
         parts = shlex.split(curl_str)
     except ValueError:
-        # Если shlex не справился, используем простой split
-        parts = curl_str.split()
+        # Если shlex не справился, пробуем более простой подход
+        # Извлекаем данные между кавычками вручную
+        parts = []
+        i = 0
+        while i < len(curl_str):
+            if curl_str[i] in ['"', "'"]:
+                quote_char = curl_str[i]
+                end = i + 1
+                while end < len(curl_str):
+                    if curl_str[end] == quote_char and curl_str[end-1] != '\\':
+                        break
+                    end += 1
+                parts.append(curl_str[i+1:end])
+                i = end + 1
+            elif curl_str[i].isspace():
+                i += 1
+            else:
+                start = i
+                while i < len(curl_str) and not curl_str[i].isspace() and curl_str[i] not in ['"', "'"]:
+                    i += 1
+                parts.append(curl_str[start:i])
     
     i = 0
     while i < len(parts):
         arg = parts[i]
         arg_lower = arg.lower()
+        
+        # Пропускаем служебные флаги
+        if arg_lower in ['--location', '-l', '--location-trusted']:
+            i += 1
+            continue
         
         # Метод запроса
         if arg_lower in ['-x', '--request']:
@@ -762,10 +808,10 @@ def parse_curl_command(curl_str: str) -> Dict[str, Any]:
                 result["method"] = parts[i + 1].upper()
                 i += 2
                 continue
-        elif arg_lower.startswith('-x'):
+        elif arg_lower.startswith('-x') and len(arg_lower) > 2:
             # -XPOST формат
-            method = arg_lower[2:] or (parts[i + 1] if i + 1 < len(parts) else "GET")
-            result["method"] = method.upper()
+            method = arg_lower[2:].upper()
+            result["method"] = method
             i += 1
             continue
         
@@ -789,9 +835,11 @@ def parse_curl_command(curl_str: str) -> Dict[str, Any]:
                     result["headers"][key.strip()] = value.strip()
                 i += 2
                 continue
-        elif arg_lower.startswith('-h'):
+        elif arg_lower.startswith('-h') and len(arg) > 2:
             # -H"Header: value" формат
-            header_str = arg[2:] or (parts[i + 1] if i + 1 < len(parts) else "")
+            header_str = arg[2:]
+            if header_str.startswith('"') or header_str.startswith("'"):
+                header_str = header_str[1:-1] if len(header_str) > 2 else header_str[1:]
             if ':' in header_str:
                 key, value = header_str.split(':', 1)
                 result["headers"][key.strip()] = value.strip()
@@ -804,9 +852,12 @@ def parse_curl_command(curl_str: str) -> Dict[str, Any]:
                 result["body"] = parts[i + 1]
                 i += 2
                 continue
-        elif arg_lower.startswith('-d'):
+        elif arg_lower.startswith('-d') and len(arg) > 2:
             # -d'{"key":"value"}' формат
-            result["body"] = arg[2:] or (parts[i + 1] if i + 1 < len(parts) else "")
+            body_str = arg[2:]
+            if body_str.startswith('"') or body_str.startswith("'"):
+                body_str = body_str[1:-1] if len(body_str) > 2 else body_str[1:]
+            result["body"] = body_str
             i += 1
             continue
         elif arg_lower in ['--data-urlencode']:
@@ -1989,6 +2040,44 @@ async def upload_openapi_specs(files: List[UploadFile] = File(...)):
     return {"message": f"Loaded {len(loaded)} specs", "items": loaded}
 
 
+@app.get(
+    "/api/cache/status",
+    summary="Получить статус кэша",
+    description="Возвращает информацию о текущем состоянии кэша: количество записей, примеры ключей.",
+)
+async def get_cache_status():
+    """Возвращает статус кэша."""
+    cache_items = []
+    current_time = time.time()
+    expired_count = 0
+    active_count = 0
+    
+    for key, (expires_at, payload) in RESPONSE_CACHE.items():
+        is_expired = expires_at <= current_time
+        if is_expired:
+            expired_count += 1
+        else:
+            active_count += 1
+        
+        cache_items.append({
+            "key": key,
+            "expires_at": expires_at,
+            "ttl_remaining": max(0, expires_at - current_time),
+            "expired": is_expired,
+            "status_code": payload.get("status_code"),
+        })
+    
+    # Сортируем по времени истечения
+    cache_items.sort(key=lambda x: x["expires_at"])
+    
+    return {
+        "total": len(RESPONSE_CACHE),
+        "active": active_count,
+        "expired": expired_count,
+        "items": cache_items[:20]  # Возвращаем первые 20 для примера
+    }
+
+
 @app.delete(
     "/api/cache",
     summary="Очистить кэш ответов",
@@ -2279,7 +2368,12 @@ def _get_cache_ttl_from_body(body: Any) -> int:
     if isinstance(body, dict):
         ttl = body.get("__cache_ttl__")
         if isinstance(ttl, (int, float)) and ttl > 0:
+            logger.debug(f"Cache TTL found in body: {ttl} seconds")
             return int(ttl)
+        else:
+            logger.debug(f"Cache TTL not found or invalid in body: {ttl}, using default: {DEFAULT_CACHE_TTL_SECONDS}")
+    else:
+        logger.debug(f"Body is not a dict, using default cache TTL: {DEFAULT_CACHE_TTL_SECONDS}")
     return DEFAULT_CACHE_TTL_SECONDS
 
 
@@ -2448,10 +2542,13 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             cache_key = None
             if ttl > 0:
                 cache_key = _cache_key_for_mock(m, request.method, full_inner)
+                logger.info(f"Cache check for mock {m.id}: ttl={ttl}, cache_key={cache_key}")
                 cached = RESPONSE_CACHE.get(cache_key)
                 if cached:
                     expires_at, cached_payload = cached
-                    if expires_at > time.time():
+                    current_time = time.time()
+                    if expires_at > current_time:
+                        logger.info(f"Cache HIT for mock {m.id}: expires_at={expires_at}, current_time={current_time}, ttl_remaining={expires_at - current_time:.2f}s")
                         CACHE_HITS.labels(folder=folder_name).inc()
                         REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="cache_hit").inc()
                         # Восстанавливаем Response из кэша
@@ -2464,6 +2561,12 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                             resp.headers[k] = v
                         RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
                         return resp
+                    else:
+                        logger.info(f"Cache EXPIRED for mock {m.id}: expires_at={expires_at}, current_time={current_time}")
+                        # Удаляем истекший кеш
+                        RESPONSE_CACHE.pop(cache_key, None)
+                else:
+                    logger.info(f"Cache MISS for mock {m.id}: key not found in cache")
 
             # Задержка ответа при необходимости
             # (фиксированная или диапазон)
@@ -2542,8 +2645,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
             # Сохраняем в кэш, если включено
             if cache_key and ttl > 0:
+                expires_at = time.time() + ttl
                 RESPONSE_CACHE[cache_key] = (
-                    time.time() + ttl,
+                    expires_at,
                     {
                         "status_code": resp.status_code,
                         "content": resp.body,
@@ -2551,6 +2655,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         "headers": dict(resp.headers),
                     },
                 )
+                logger.info(f"Cache SAVED for mock {m.id}: cache_key={cache_key}, ttl={ttl}s, expires_at={expires_at}")
+            elif ttl == 0:
+                logger.debug(f"Cache DISABLED for mock {m.id}: ttl=0")
+            elif not cache_key:
+                logger.debug(f"Cache SKIPPED for mock {m.id}: cache_key not generated")
 
             MOCK_HITS.labels(folder=folder_name).inc()
             RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
