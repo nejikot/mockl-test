@@ -409,97 +409,69 @@ def ensure_migrations():
     Render уже создал таблицы по старой схеме, create_all не добавляет новые столбцы,
     поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
     """
-    with engine.begin() as conn:
-        # Новые поля в folders
-        try:
-            conn.execute(
-                text(
-                    "ALTER TABLE folders "
-                    "ADD COLUMN IF NOT EXISTS proxy_enabled BOOLEAN DEFAULT FALSE"
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Колонка proxy_enabled уже существует или ошибка: {e}")
-        
-        try:
-            conn.execute(
-                text(
-                    "ALTER TABLE folders "
-                    "ADD COLUMN IF NOT EXISTS proxy_base_url VARCHAR NULL"
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Колонка proxy_base_url уже существует или ошибка: {e}")
-        
-        # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
-        # Используем DO блок для проверки существования колонки
-        try:
-            conn.execute(
+    try:
+        with engine.begin() as conn:
+            # Проверяем существование колонок одним запросом для оптимизации
+            existing_columns = conn.execute(
                 text("""
-                    DO $$ 
-                    BEGIN 
-                        IF NOT EXISTS (
-                            SELECT 1 FROM information_schema.columns 
-                            WHERE table_name='folders' AND column_name='order'
-                        ) THEN
-                            ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0;
-                        END IF;
-                    END $$;
+                    SELECT table_name, column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name IN ('folders', 'mocks')
+                    AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name')
                 """)
-            )
-            # Создаем индекс для order в folders, если его еще нет
-            conn.execute(
-                text(
-                    'CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'
-                )
-            )
-        except Exception as e:
-            logger.warning(f"Ошибка при добавлении колонки order в folders: {e}")
-        
-        # Новые поля в mocks
-        try:
-            conn.execute(
-                text(
-                    "ALTER TABLE mocks "
-                    "ADD COLUMN IF NOT EXISTS delay_ms INTEGER DEFAULT 0"
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Колонка delay_ms уже существует или ошибка: {e}")
-        
-        try:
-            conn.execute(
-                text(
-                    "ALTER TABLE mocks "
-                    "ADD COLUMN IF NOT EXISTS name VARCHAR NULL"
-                )
-            )
-        except Exception as e:
-            logger.debug(f"Колонка name уже существует или ошибка: {e}")
-        
-        # Добавляем колонку order в mocks
-        try:
-            conn.execute(
-                text("""
-                    DO $$ 
-                    BEGIN 
-                        IF NOT EXISTS (
-                            SELECT 1 FROM information_schema.columns 
-                            WHERE table_name='mocks' AND column_name='order'
-                        ) THEN
-                            ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0;
-                        END IF;
-                    END $$;
-                """)
-            )
-            # Создаем индекс для order в mocks, если его еще нет
-            conn.execute(
-                text(
-                    'CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'
-                )
-            )
-        except Exception as e:
-            logger.warning(f"Ошибка при добавлении колонки order в mocks: {e}")
+            ).fetchall()
+            
+            existing_set = {(row[0], row[1]) for row in existing_columns}
+            
+            # Новые поля в folders
+            if ('folders', 'proxy_enabled') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
+                    logger.info("Added column folders.proxy_enabled")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.proxy_enabled: {e}")
+            
+            if ('folders', 'proxy_base_url') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_base_url VARCHAR NULL"))
+                    logger.info("Added column folders.proxy_base_url")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.proxy_base_url: {e}")
+            
+            # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
+            if ('folders', 'order') not in existing_set:
+                try:
+                    conn.execute(text('ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0'))
+                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'))
+                    logger.info("Added column folders.order")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.order: {e}")
+            
+            # Новые поля в mocks
+            if ('mocks', 'delay_ms') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
+                    logger.info("Added column mocks.delay_ms")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.delay_ms: {e}")
+            
+            if ('mocks', 'name') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN name VARCHAR NULL"))
+                    logger.info("Added column mocks.name")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.name: {e}")
+            
+            # Добавляем колонку order в mocks
+            if ('mocks', 'order') not in existing_set:
+                try:
+                    conn.execute(text('ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0'))
+                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'))
+                    logger.info("Added column mocks.order")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.order: {e}")
+    except Exception as e:
+        logger.error(f"Error during migrations: {e}", exc_info=True)
 
 
 
@@ -932,7 +904,6 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         mock = Mock(id=entry.id)
         db.add(mock)
         # Для нового мока устанавливаем порядок в конец списка
-        max_order = db.query(db.query(Mock).filter_by(folder_name=entry.folder).with_entities(Mock.order).order_by(Mock.order.desc()).first())
         max_order_result = db.query(Mock).filter_by(folder_name=entry.folder).with_entities(Mock.order).order_by(Mock.order.desc()).first()
         mock.order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     # При обновлении существующего мока не меняем порядок, если он не указан явно
