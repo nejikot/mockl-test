@@ -139,10 +139,12 @@ Base = declarative_base()
 class Folder(Base):
     __tablename__ = "folders"
     name = Column(String, primary_key=True)
-    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete")
+    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
     proxy_base_url = Column(String, nullable=True)
+    # Порядок отображения папки
+    order = Column(Integer, default=0, index=True)
 
 
 
@@ -168,6 +170,8 @@ class Mock(Base):
     active = Column(Boolean, default=True)
     # Задержка ответа в миллисекундах
     delay_ms = Column(Integer, default=0)
+    # Порядок отображения мока в папке
+    order = Column(Integer, default=0, index=True)
 
 
     folder_obj = relationship("Folder", back_populates="mocks")
@@ -323,6 +327,10 @@ class MockEntry(BaseModel):
     delay_ms: Optional[int] = Field(
         default=0,
         description="Искусственная задержка ответа в миллисекундах (например 500 = 0.5 секунды).",
+    )
+    order: Optional[int] = Field(
+        default=None,
+        description="Порядок отображения мока в папке. Если не указан, мок будет добавлен в конец.",
     )
 
 
@@ -647,6 +655,121 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
 
 
 
+def parse_curl_command(curl_str: str) -> Dict[str, Any]:
+    """
+    Парсит curl команду и извлекает метод, URL, заголовки и тело запроса.
+    
+    Поддерживает различные форматы curl:
+    - curl -X POST https://example.com/api -H "Header: value" -d '{"key":"value"}'
+    - curl --request POST --url https://example.com/api --header "Header: value" --data '{"key":"value"}'
+    - curl https://example.com/api?param=value
+    """
+    import re
+    import shlex
+    
+    result = {
+        "method": "GET",
+        "url": "",
+        "headers": {},
+        "body": None
+    }
+    
+    # Нормализуем строку: убираем переносы строк, заменяем на пробелы
+    curl_str = re.sub(r'\s+', ' ', curl_str.strip())
+    
+    # Убираем начальный "curl" если есть
+    curl_str = re.sub(r'^\s*curl\s+', '', curl_str, flags=re.IGNORECASE)
+    
+    # Парсим аргументы
+    try:
+        # Используем shlex для правильной обработки кавычек
+        parts = shlex.split(curl_str)
+    except ValueError:
+        # Если shlex не справился, используем простой split
+        parts = curl_str.split()
+    
+    i = 0
+    while i < len(parts):
+        arg = parts[i]
+        arg_lower = arg.lower()
+        
+        # Метод запроса
+        if arg_lower in ['-x', '--request']:
+            if i + 1 < len(parts):
+                result["method"] = parts[i + 1].upper()
+                i += 2
+                continue
+        elif arg_lower.startswith('-x'):
+            # -XPOST формат
+            method = arg_lower[2:] or (parts[i + 1] if i + 1 < len(parts) else "GET")
+            result["method"] = method.upper()
+            i += 1
+            continue
+        
+        # URL
+        elif arg_lower in ['--url']:
+            if i + 1 < len(parts):
+                result["url"] = parts[i + 1]
+                i += 2
+                continue
+        elif arg.startswith('http://') or arg.startswith('https://'):
+            result["url"] = arg
+            i += 1
+            continue
+        
+        # Заголовки
+        elif arg_lower in ['-h', '--header']:
+            if i + 1 < len(parts):
+                header_str = parts[i + 1]
+                if ':' in header_str:
+                    key, value = header_str.split(':', 1)
+                    result["headers"][key.strip()] = value.strip()
+                i += 2
+                continue
+        elif arg_lower.startswith('-h'):
+            # -H"Header: value" формат
+            header_str = arg[2:] or (parts[i + 1] if i + 1 < len(parts) else "")
+            if ':' in header_str:
+                key, value = header_str.split(':', 1)
+                result["headers"][key.strip()] = value.strip()
+            i += 1
+            continue
+        
+        # Тело запроса
+        elif arg_lower in ['-d', '--data', '--data-raw']:
+            if i + 1 < len(parts):
+                result["body"] = parts[i + 1]
+                i += 2
+                continue
+        elif arg_lower.startswith('-d'):
+            # -d'{"key":"value"}' формат
+            result["body"] = arg[2:] or (parts[i + 1] if i + 1 < len(parts) else "")
+            i += 1
+            continue
+        elif arg_lower in ['--data-urlencode']:
+            if i + 1 < len(parts):
+                result["body"] = parts[i + 1]
+                i += 2
+                continue
+        
+        i += 1
+    
+    # Извлекаем путь из URL
+    if result["url"]:
+        try:
+            parsed_url = urlparse(result["url"])
+            path = parsed_url.path
+            if parsed_url.query:
+                path += "?" + parsed_url.query
+            result["path"] = path
+        except Exception:
+            result["path"] = result["url"]
+    else:
+        result["path"] = "/"
+    
+    return result
+
+
 def _normalize_json_string(json_str: str) -> str:
     """Нормализует JSON строку: убирает лишние пробелы, переносы строк и форматирование.
     
@@ -690,9 +813,17 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         db.flush()
 
     mock = db.query(Mock).filter_by(id=entry.id).first()
-    if not mock:
+    is_new = not mock
+    if is_new:
         mock = Mock(id=entry.id)
         db.add(mock)
+        # Для нового мока устанавливаем порядок в конец списка
+        max_order = db.query(db.query(Mock).filter_by(folder_name=entry.folder).with_entities(Mock.order).order_by(Mock.order.desc()).first())
+        max_order_result = db.query(Mock).filter_by(folder_name=entry.folder).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+        mock.order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
+    # При обновлении существующего мока не меняем порядок, если он не указан явно
+    elif hasattr(entry, 'order') and entry.order is not None:
+        mock.order = entry.order
 
     mock.folder_name = entry.folder
     mock.name = entry.name
@@ -1300,6 +1431,9 @@ def list_mocks(
     if folder:
         q = q.filter_by(folder_name=folder)
     
+    # Сортируем по order, затем по id для стабильности
+    q = q.order_by(Mock.order.asc(), Mock.id.asc())
+    
     results = []
     for m in q.all():
         results.append(
@@ -1320,6 +1454,7 @@ def list_mocks(
                 ),
                 active=m.active,
                 delay_ms=m.delay_ms or 0,
+                order=m.order if m.order is not None else 0,
             )
         )
     return results
@@ -1387,6 +1522,54 @@ def deactivate_all(
         m.active = False
     db.commit()
     return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated"}
+
+
+@app.patch(
+    "/api/mocks/reorder",
+    summary="Изменить порядок моков",
+    description="Изменяет порядок моков в папке. Принимает список ID моков в новом порядке.",
+)
+def reorder_mocks(
+    folder: str = Query(..., description="Имя папки"),
+    mock_ids: List[str] = Body(..., description="Список ID моков в новом порядке"),
+    db: Session = Depends(get_db),
+):
+    """Изменяет порядок моков в указанной папке."""
+    # Проверяем, что все моки принадлежат указанной папке
+    mocks = db.query(Mock).filter(
+        Mock.id.in_(mock_ids),
+        Mock.folder_name == folder
+    ).all()
+    
+    if len(mocks) != len(mock_ids):
+        raise HTTPException(400, "Некоторые моки не найдены или принадлежат другой папке")
+    
+    # Создаем словарь для быстрого доступа
+    mock_dict = {m.id: m for m in mocks}
+    
+    # Обновляем порядок согласно новому списку
+    for order, mock_id in enumerate(mock_ids):
+        if mock_id in mock_dict:
+            mock_dict[mock_id].order = order
+    
+    db.commit()
+    return {"message": "Порядок моков обновлен"}
+
+
+@app.post(
+    "/api/mocks/parse-curl",
+    summary="Распарсить curl команду",
+    description="Парсит curl команду и возвращает структуру запроса (метод, URL, заголовки, тело).",
+)
+def parse_curl_endpoint(
+    curl_command: str = Body(..., embed=True, description="curl команда для парсинга"),
+):
+    """Парсит curl команду и возвращает структуру запроса."""
+    try:
+        parsed = parse_curl_command(curl_command)
+        return parsed
+    except Exception as e:
+        raise HTTPException(400, f"Ошибка парсинга curl команды: {str(e)}")
 
 
 def encode_filename_rfc5987(filename: str) -> str:

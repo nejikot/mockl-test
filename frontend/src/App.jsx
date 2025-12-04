@@ -252,6 +252,42 @@ const HeaderRow = ({ field, remove, fieldsLength, form }) => {
   );
 };
 
+const DraggableMockRow = (props) => {
+  const { children, ...restProps } = props;
+  const mockId = restProps['data-row-key'];
+  const index = restProps.index !== undefined ? restProps.index : -1;
+  const moveMock = restProps.moveMock;
+  
+  const [{ isDragging }, drag] = useDrag({
+    type: 'mock',
+    item: { index, mockId },
+    collect: monitor => ({ isDragging: monitor.isDragging() })
+  });
+  const [, drop] = useDrop({
+    accept: 'mock',
+    hover: (item) => {
+      if (item.index !== index && item.index !== -1 && index !== -1 && moveMock) {
+        moveMock(item.index, index);
+        item.index = index;
+      }
+    }
+  });
+  
+  return (
+    <tr
+      {...restProps}
+      ref={node => drag(drop(node))}
+      style={{
+        ...restProps.style,
+        opacity: isDragging ? 0.5 : 1,
+        cursor: 'move'
+      }}
+    >
+      {children}
+    </tr>
+  );
+};
+
 const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
@@ -442,6 +478,27 @@ export default function App() {
     const defIdx = arr.indexOf("default");
     if (defIdx > 0) arr.unshift(arr.splice(defIdx, 1)[0]);
     setFolders(arr);
+  };
+
+  const moveMock = async (from, to) => {
+    const arr = [...mocks];
+    const [m] = arr.splice(from, 1);
+    arr.splice(to, 0, m);
+    setMocks(arr);
+    
+    // Сохраняем новый порядок на сервере
+    try {
+      const mockIds = arr.map(m => m.id);
+      await fetch(`${host}/api/mocks/reorder?folder=${selectedFolder}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(mockIds)
+      });
+    } catch (e) {
+      message.error("Ошибка сохранения порядка моков");
+      // Откатываем изменения
+      fetchMocks();
+    }
   };
 
   const fetchFolders = async () => {
@@ -891,6 +948,10 @@ export default function App() {
         delete responseBodyObj.__cache_ttl__;
       }
 
+      // Сохраняем order только если мок новый (не редактируется)
+      const isEditing = vals.id && editing;
+      const currentMock = isEditing ? mocks.find(m => m.id === vals.id) : null;
+      
       const entry = {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
         folder: vals.folder,
@@ -909,6 +970,11 @@ export default function App() {
         },
         delay_ms: Number(vals.delay_ms || 0) || 0
       };
+      
+      // При редактировании не меняем order, при создании он будет установлен автоматически
+      if (isEditing && currentMock && currentMock.order !== undefined) {
+        entry.order = currentMock.order;
+      }
 
       let res;
       if ((vals.response_type === "file") && responseFile) {
@@ -981,6 +1047,7 @@ export default function App() {
       const copy = {
         folder: mock.folder,
         active: mock.active !== false,
+        name: mock.name ? `${mock.name} copy` : "copy",
         request_condition: {
           method: mock.request_condition.method,
           path: mock.request_condition.path,
@@ -1003,6 +1070,35 @@ export default function App() {
       fetchMocks();
     } catch {
       message.error("Не удалось продублировать мок");
+    }
+  };
+
+  const parseCurlCommand = async (curlStr) => {
+    try {
+      const res = await fetch(`${host}/api/mocks/parse-curl`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ curl_command: curlStr })
+      });
+      if (!res.ok) throw new Error("Ошибка парсинга curl");
+      const parsed = await res.json();
+      
+      // Заполняем форму данными из curl
+      form.setFieldsValue({
+        method: parsed.method || "GET",
+        path: parsed.path || "/",
+        requestHeaders: Object.entries(parsed.headers || {}).map(([key, value]) => ({
+          key,
+          value: typeof value === 'string' ? value : (value.value || ''),
+          optional: typeof value === 'object' && value.optional === true
+        })),
+        request_body_mode: parsed.body ? "raw" : "none",
+        request_body_raw: parsed.body || ""
+      });
+      
+      message.success("Curl команда успешно распарсена");
+    } catch (e) {
+      message.error("Ошибка парсинга curl команды: " + e.message);
     }
   };
 
@@ -1580,7 +1676,20 @@ export default function App() {
                     rowKey="id"
                     size="middle"
                     pagination={false}
+                    components={{
+                      body: {
+                        row: (props) => {
+                          const index = mocks.findIndex(m => m.id === props['data-row-key']);
+                          return <DraggableMockRow {...props} index={index} moveMock={moveMock} />;
+                        }
+                      }
+                    }}
                     columns={[
+                      {
+                        title: "",
+                        width: 40,
+                        render: () => <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
+                      },
                       {
                         title: "№",
                         width: 60,
@@ -1721,6 +1830,40 @@ export default function App() {
                     <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
                       Настройки запроса
                     </Typography.Title>
+
+                    <Form.Item label="Импорт из curl" style={{ marginBottom: 16 }}>
+                      <Input.Group compact style={{ display: "flex", gap: 8 }}>
+                        <TextArea
+                          placeholder="Вставьте curl команду здесь..."
+                          rows={3}
+                          style={{ flex: 1 }}
+                          onPaste={async (e) => {
+                            const text = e.clipboardData.getData('text');
+                            if (text.trim().toLowerCase().startsWith('curl')) {
+                              e.preventDefault();
+                              await parseCurlCommand(text);
+                            }
+                          }}
+                        />
+                        <Button
+                          type="primary"
+                          onClick={async () => {
+                            try {
+                              const text = await navigator.clipboard.readText();
+                              if (text.trim().toLowerCase().startsWith('curl')) {
+                                await parseCurlCommand(text);
+                              } else {
+                                message.warning("Буфер обмена не содержит curl команду");
+                              }
+                            } catch (e) {
+                              message.error("Не удалось прочитать буфер обмена");
+                            }
+                          }}
+                        >
+                          Из буфера
+                        </Button>
+                      </Input.Group>
+                    </Form.Item>
 
                     <Form.Item label="Метод и путь" required>
                       <Input.Group compact style={{ display: "flex", gap: 8 }}>
