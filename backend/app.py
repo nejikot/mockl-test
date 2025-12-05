@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_, foreign
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -594,7 +594,7 @@ def ensure_migrations():
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
             
-            # Новые поля в folders
+        # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
@@ -712,7 +712,7 @@ def ensure_migrations():
                 logger.error(f"Error migrating folders primary key: {e}", exc_info=True)
                 # Продолжаем выполнение, даже если миграция не удалась
             
-            # Новые поля в mocks
+        # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
@@ -1621,9 +1621,9 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             if not isinstance(path_item, dict):
                 continue
 
-        for method_name, operation in path_item.items():
-            if method_name.lower() not in allowed_methods:
-                continue
+            for method_name, operation in path_item.items():
+                if method_name.lower() not in allowed_methods:
+                    continue
 
             method_upper = method_name.upper()
 
@@ -2356,7 +2356,7 @@ def deactivate_all(
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
             raise HTTPException(404, "No matching mock found")
-    
+        
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:
             mock.active = False
