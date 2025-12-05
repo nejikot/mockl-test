@@ -650,18 +650,22 @@ def ensure_migrations():
                     logger.info("Updated existing root folders: set parent_folder = ''")
                     
                     # Шаг 2: Удаляем все внешние ключи, которые ссылаются на folders.name
-                    # Находим все внешние ключи
+                    # Находим все внешние ключи используя правильный синтаксис PostgreSQL
                     fk_list = conn.execute(
                         text("""
-                            SELECT constraint_name, table_name
-                            FROM information_schema.table_constraints
-                            WHERE constraint_type = 'FOREIGN KEY'
-                            AND constraint_name IN (
-                                SELECT constraint_name
-                                FROM information_schema.key_column_usage
-                                WHERE referenced_table_name = 'folders'
-                                AND referenced_column_name = 'name'
-                            )
+                            SELECT 
+                                tc.constraint_name,
+                                tc.table_name
+                            FROM information_schema.table_constraints AS tc
+                            JOIN information_schema.key_column_usage AS kcu
+                                ON tc.constraint_name = kcu.constraint_name
+                                AND tc.table_schema = kcu.table_schema
+                            JOIN information_schema.constraint_column_usage AS ccu
+                                ON ccu.constraint_name = tc.constraint_name
+                                AND ccu.table_schema = tc.table_schema
+                            WHERE tc.constraint_type = 'FOREIGN KEY'
+                                AND ccu.table_name = 'folders'
+                                AND ccu.column_name = 'name'
                         """)
                     ).fetchall()
                     
