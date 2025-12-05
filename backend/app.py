@@ -541,19 +541,14 @@ def ensure_migrations():
             if tables:
                 logger.info(f"Найдено таблиц для удаления: {len(tables)}")
                 
-                # Отключаем проверку внешних ключей временно
-                conn.execute(text("SET session_replication_role = 'replica'"))
-                
                 # Удаляем все таблицы с CASCADE для автоматического удаления зависимостей
+                # CASCADE автоматически удалит все внешние ключи и зависимости
                 for (table_name,) in tables:
                     try:
                         conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
                         logger.info(f"Удалена таблица: {table_name}")
                     except Exception as e:
                         logger.warning(f"Ошибка при удалении таблицы {table_name}: {e}")
-                
-                # Включаем обратно проверку внешних ключей
-                conn.execute(text("SET session_replication_role = 'origin'"))
                 
                 logger.info("Все таблицы успешно удалены")
         
