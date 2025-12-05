@@ -635,61 +635,74 @@ def ensure_migrations():
             # Решение: изменяем PK на составной (name, COALESCE(parent_folder, ''))
             try:
                 # Проверяем, есть ли уже составной первичный ключ
+                # Проверяем количество колонок в первичном ключе - если их 2, значит составной PK уже создан
                 pk_check = conn.execute(
                     text("""
-                        SELECT constraint_name
-                        FROM information_schema.table_constraints
+                        SELECT COUNT(*)
+                        FROM information_schema.key_column_usage
                         WHERE table_name = 'folders'
-                        AND constraint_type = 'PRIMARY KEY'
-                        AND constraint_name LIKE '%name_parent%'
+                        AND constraint_name IN (
+                            SELECT constraint_name
+                            FROM information_schema.table_constraints
+                            WHERE table_name = 'folders'
+                            AND constraint_type = 'PRIMARY KEY'
+                        )
                     """)
                 ).fetchone()
                 
-                if not pk_check:
+                has_composite_pk = pk_check and pk_check[0] >= 2
+                
+                if not has_composite_pk:
                     logger.info("Starting critical migration: changing folders primary key to support subfolders...")
                     
-                    # Шаг 1: Обновляем существующие записи - устанавливаем parent_folder = '' для корневых папок
-                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
-                    logger.info("Updated existing root folders: set parent_folder = ''")
-                    
-                    # Шаг 2: Удаляем все внешние ключи, которые ссылаются на folders.name
-                    # Находим все внешние ключи используя правильный синтаксис PostgreSQL
-                    fk_list = conn.execute(
+                    # Шаг 0: Убеждаемся, что колонка parent_folder существует
+                    parent_folder_col = conn.execute(
                         text("""
-                            SELECT 
-                                tc.constraint_name,
-                                tc.table_name
-                            FROM information_schema.table_constraints AS tc
-                            JOIN information_schema.key_column_usage AS kcu
-                                ON tc.constraint_name = kcu.constraint_name
-                                AND tc.table_schema = kcu.table_schema
-                            JOIN information_schema.constraint_column_usage AS ccu
-                                ON ccu.constraint_name = tc.constraint_name
-                                AND ccu.table_schema = tc.table_schema
-                            WHERE tc.constraint_type = 'FOREIGN KEY'
-                                AND ccu.table_name = 'folders'
-                                AND ccu.column_name = 'name'
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_name = 'folders' AND column_name = 'parent_folder'
                         """)
-                    ).fetchall()
+                    ).fetchone()
                     
-                    # Удаляем внешние ключи
-                    for fk_name, table_name in fk_list:
-                        try:
-                            conn.execute(text(f'ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {fk_name}'))
-                            logger.info(f"Dropped foreign key {fk_name} from {table_name}")
-                        except Exception as e:
-                            logger.warning(f"Error dropping foreign key {fk_name}: {e}")
+                    if not parent_folder_col:
+                        # Если колонка не существует, добавляем её
+                        conn.execute(text("ALTER TABLE folders ADD COLUMN parent_folder VARCHAR NULL"))
+                        logger.info("Added column folders.parent_folder during PK migration")
                     
-                    # Шаг 3: Удаляем старый первичный ключ
+                    # Шаг 1: Обновляем существующие записи - устанавливаем parent_folder = '' для корневых папок
+                    # Сначала делаем колонку NOT NULL, если она еще NULL
                     try:
-                        conn.execute(text("ALTER TABLE folders DROP CONSTRAINT IF EXISTS folders_pkey"))
-                        logger.info("Dropped old primary key folders_pkey")
+                        conn.execute(text("ALTER TABLE folders ALTER COLUMN parent_folder SET DEFAULT ''"))
+                        conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
+                        conn.execute(text("ALTER TABLE folders ALTER COLUMN parent_folder SET NOT NULL"))
+                        logger.info("Updated existing root folders: set parent_folder = ''")
                     except Exception as e:
-                        logger.warning(f"Error dropping old primary key: {e}")
+                        logger.warning(f"Error updating parent_folder: {e}")
+                        # Если не удалось обновить, продолжаем с NULL значениями
                     
-                    # Шаг 4: Обновляем parent_folder для корневых папок (уже NULL -> '')
-                    # Убеждаемся, что все корневые папки имеют parent_folder = ''
+                    # Шаг 2: Удаляем старый первичный ключ с CASCADE для автоматического удаления зависимых объектов
+                    # CASCADE автоматически удалит все внешние ключи, которые зависят от этого первичного ключа
+                    try:
+                        conn.execute(text("ALTER TABLE folders DROP CONSTRAINT IF EXISTS folders_pkey CASCADE"))
+                        logger.info("Dropped old primary key folders_pkey with CASCADE (foreign keys were automatically dropped)")
+                    except Exception as e:
+                        logger.error(f"Error dropping old primary key: {e}")
+                        # Если не удалось удалить PK, пропускаем миграцию
+                        raise
+                    
+                    # Шаг 3: Убеждаемся, что все записи имеют parent_folder = '' (для корневых папок)
+                    # Это уже сделано в шаге 1, но повторяем для надежности
                     conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
+                    
+                    # Шаг 4: Убеждаемся, что колонка parent_folder NOT NULL перед созданием PK
+                    # Проверяем, что колонка существует и все значения установлены
+                    try:
+                        # Устанавливаем NOT NULL, если еще не установлено
+                        conn.execute(text("ALTER TABLE folders ALTER COLUMN parent_folder SET NOT NULL"))
+                        logger.info("Set parent_folder column to NOT NULL")
+                    except Exception as e:
+                        logger.warning(f"Error setting parent_folder to NOT NULL: {e}")
+                        # Продолжаем, возможно колонка уже NOT NULL
                     
                     # Шаг 5: Создаем новый составной первичный ключ
                     # В PostgreSQL нельзя использовать COALESCE в PK, поэтому используем parent_folder напрямую
@@ -704,15 +717,20 @@ def ensure_migrations():
                     except Exception as e:
                         logger.error(f"Error creating new primary key: {e}")
                         # Если не удалось создать составной PK, создаем обычный уникальный индекс
-                        conn.execute(text("""
-                            CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
-                            ON folders (name, parent_folder)
-                        """))
-                        logger.warning("Created unique index instead of composite PK")
+                        try:
+                            conn.execute(text("""
+                                CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
+                                ON folders (name, parent_folder)
+                            """))
+                            logger.warning("Created unique index instead of composite PK")
+                        except Exception as e2:
+                            logger.error(f"Error creating unique index: {e2}")
+                            raise
                     
                     # Шаг 5: Восстанавливаем внешние ключи (но теперь они должны ссылаться на составной ключ)
-                    # Это сложно, поэтому пока оставляем без FK
-                    logger.warning("Foreign keys need to be recreated manually if needed")
+                    # Внешние ключи были удалены CASCADE, их нужно будет пересоздать позже если необходимо
+                    # Но для работы приложения они не критичны
+                    logger.info("Note: Foreign keys were dropped with CASCADE and need to be recreated if needed")
                     
                     logger.info("Migration completed: folders can now have subfolders with same names")
             except Exception as e:
