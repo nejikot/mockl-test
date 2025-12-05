@@ -162,7 +162,14 @@ class Folder(Base):
     # Это позволяет иметь подпапки с именами, совпадающими с корневыми папками
     name = Column(String, primary_key=True)
     parent_folder = Column(String, primary_key=True, default='')
-    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
+    mocks = relationship(
+        "Mock",
+        back_populates="folder_obj",
+        cascade="all, delete",
+        order_by="Mock.order",
+        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)",
+        viewonly=False
+    )
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
     proxy_base_url = Column(String, nullable=True)
@@ -225,7 +232,11 @@ class Mock(Base):
     error_simulation_body = Column(SAJSON, nullable=True)
     error_simulation_delay_ms = Column(Integer, nullable=True)
 
-    folder_obj = relationship("Folder", back_populates="mocks")
+    folder_obj = relationship(
+        "Folder",
+        back_populates="mocks",
+        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
+    )
 
 
 class RequestLog(Base):
@@ -234,7 +245,9 @@ class RequestLog(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     timestamp = Column(String, nullable=False, index=True)  # ISO format timestamp
-    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    # Убрали ForeignKey, так как теперь folders имеет составной PK (name, parent_folder)
+    # Связь определяется через primaryjoin в relationship
+    folder_name = Column(String, nullable=False, index=True)
     method = Column(String, nullable=False, index=True)
     path = Column(String, nullable=False, index=True)
     is_proxied = Column(Boolean, default=False, index=True)
