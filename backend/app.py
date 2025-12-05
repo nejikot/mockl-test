@@ -992,8 +992,18 @@ def create_folder(
             logger.warning(f"create_folder: parent folder '{payload.parent_folder}' not found")
             raise HTTPException(404, f"Родительская папка '{payload.parent_folder}' не найдена")
         parent_folder = payload.parent_folder
-        # Для подпапок разрешаем дубликаты имен (даже если есть корневая папка с таким же именем)
-        # Проверяем только, что в этой родительской папке нет подпапки с таким же именем
+        
+        # ОГРАНИЧЕНИЕ: подпапки не могут иметь имя, совпадающее с именем корневой папки
+        # Проверяем, не существует ли корневая папка с таким же именем
+        existing_root_folder = db.query(Folder).filter(
+            Folder.name == name,
+            Folder.parent_folder == ''
+        ).first()
+        if existing_root_folder:
+            logger.warning(f"create_folder: cannot create subfolder '{name}' - root folder with this name already exists")
+            raise HTTPException(400, f"Нельзя создать подпапку '{name}' - корневая папка с таким именем уже существует")
+        
+        # Проверяем, что в этой родительской папке нет подпапки с таким же именем
         existing_subfolder = db.query(Folder).filter(
             Folder.name == name,
             Folder.parent_folder == parent_folder
@@ -1339,6 +1349,16 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         
         def duplicate_folder_recursive(src_f: Folder, dst_name: str, dst_parent: str = ''):
             """Рекурсивно дублирует папку и все её подпапки."""
+            # ОГРАНИЧЕНИЕ: если создаем подпапку, проверяем, что её имя не совпадает с именем корневой папки
+            if dst_parent:  # Если это подпапка
+                existing_root_folder = db.query(Folder).filter(
+                    Folder.name == dst_name,
+                    Folder.parent_folder == ''
+                ).first()
+                if existing_root_folder:
+                    logger.warning(f"duplicate_folder: cannot create subfolder '{dst_name}' - root folder with this name already exists")
+                    raise HTTPException(400, f"Нельзя создать подпапку '{dst_name}' - корневая папка с таким именем уже существует")
+            
             # Создаём новую папку, копируя настройки прокси
             new_folder = Folder(
                 name=dst_name,
@@ -1490,7 +1510,17 @@ def rename_folder(
         
         # Проверяем, не существует ли уже папка с новым именем
         if parent_folder:
-            # Для подпапок проверяем в той же родительской папке
+            # Для подпапок проверяем:
+            # 1. ОГРАНИЧЕНИЕ: подпапки не могут иметь имя, совпадающее с именем корневой папки
+            existing_root_folder = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder == ''
+            ).first()
+            if existing_root_folder:
+                logger.warning(f"rename_folder: cannot rename subfolder to '{new_name}' - root folder with this name already exists")
+                raise HTTPException(400, f"Нельзя переименовать подпапку в '{new_name}' - корневая папка с таким именем уже существует")
+            
+            # 2. Проверяем, что в той же родительской папке нет подпапки с таким же именем
             existing = db.query(Folder).filter(
                 Folder.name == new_name,
                 Folder.parent_folder == parent_folder
