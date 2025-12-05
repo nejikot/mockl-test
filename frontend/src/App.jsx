@@ -1663,9 +1663,13 @@ export default function App() {
       cancelText: "Отмена",
       onOk: async () => {
         try {
-          // Для удаления используем только имя, бэкенд сам определит по parent_folder если нужно
-          const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(name)}`, { method: "DELETE" });
-          if (!res.ok) throw new Error();
+          // Передаем составной ключ для правильной идентификации папки/подпапки
+          const folderParam = parentFolder ? `${name}|${parentFolder}` : name;
+          const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(folderParam)}`, { method: "DELETE" });
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.detail || "Ошибка удаления");
+          }
           message.success("Удалено");
           // Если удаляем выбранную папку, переключаемся на default
           if (selectedFolder === folderKey) {
@@ -1673,8 +1677,8 @@ export default function App() {
           }
           fetchFolders();
           fetchMocks();
-        } catch {
-          message.error("Ошибка удаления");
+        } catch (e) {
+          message.error("Ошибка: " + (e.message || "Не удалось удалить папку"));
         }
       }
     });

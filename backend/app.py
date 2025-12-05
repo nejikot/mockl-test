@@ -875,7 +875,7 @@ def create_folder(
         # Это нужно для составного первичного ключа (name, parent_folder)
         folder = Folder(name=name, parent_folder=normalized_parent)
         db.add(folder)
-        db.commit()
+    db.commit()
         logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
         return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
     except HTTPException:
@@ -900,27 +900,90 @@ def create_folder(
     summary="Удалить папку и все её моки",
     description=(
         "Удаляет указанную папку и все связанные с ней моки.\n\n"
-        "Папку `default` удалить нельзя."
+        "Папку `default` удалить нельзя.\n\n"
+        "Поддерживает формат `name|parent_folder` для удаления подпапок."
     ),
 )
 def delete_folder(
-    name: str = Query(..., description="Имя папки, которую нужно удалить"),
+    name: str = Query(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
     db: Session = Depends(get_db),
 ):
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
-    # Ищем папку (сначала как корневую, потом среди всех)
-    folder = db.query(Folder).filter(
-        Folder.name == name,
-        Folder.parent_folder == ''
-    ).first()
-    if not folder:
-        folder = db.query(Folder).filter(Folder.name == name).first()
-    if not folder:
-        raise HTTPException(404, "Папка не найдена")
-    db.delete(folder)
-    db.commit()
-    return {"message": f"Папка '{name}' и все её моки удалены"}
+    
+    try:
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = name.strip()
+        parent_folder = None
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+            parent_folder = parts[1] if parts[1] else None
+        
+        # Ищем папку по составному ключу
+        if parent_folder:
+            # Ищем подпапку
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == parent_folder
+            ).first()
+        else:
+            # Ищем корневую папку (parent_folder = '')
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == ''
+            ).first()
+        
+        if not folder:
+            raise HTTPException(404, f"Папка '{folder_name}' не найдена")
+        
+        # Удаляем все подпапки рекурсивно перед удалением самой папки
+        # Используем составной ключ для точной идентификации подпапок
+        def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
+            # Ищем подпапки, у которых parent_folder == parent_name
+            # Важно: используем parent_name для поиска подпапок
+            subfolders = db.query(Folder).filter(
+                Folder.parent_folder == parent_name
+            ).all()
+            
+            for subfolder in subfolders:
+                # Удаляем моки подпапки
+                # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
+                # Это ограничение текущей схемы БД - моки не хранят parent_folder
+                subfolder_mocks = db.query(Mock).filter_by(folder_name=subfolder.name).all()
+                for mock in subfolder_mocks:
+                    db.delete(mock)
+                # Рекурсивно удаляем подпапки подпапки
+                delete_subfolders_recursive(subfolder.name, subfolder.parent_folder)
+                # Удаляем саму подпапку
+                db.delete(subfolder)
+        
+        # Удаляем подпапки текущей папки
+        # Используем folder_name как parent_folder для поиска подпапок
+        delete_subfolders_recursive(folder_name, parent_folder if parent_folder else '')
+        
+        # Удаляем моки самой папки
+        # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
+        # Это может удалить моки из других папок с таким же именем, если они существуют
+        # Это ограничение текущей схемы БД - моки не хранят parent_folder
+        # В будущем можно добавить parent_folder в Mock для точной идентификации
+        mocks_to_delete = db.query(Mock).filter_by(folder_name=folder_name).all()
+        for mock in mocks_to_delete:
+            db.delete(mock)
+        
+        # Удаляем саму папку
+        db.delete(folder)
+        db.commit()
+    
+        folder_type = "подпапка" if parent_folder else "папка"
+        return {"message": f"{folder_type.capitalize()} '{folder_name}' и все её моки удалены"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting folder '{name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при удалении папки: {str(e)}")
 
 
 
@@ -1529,15 +1592,15 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     created = 0
 
     try:
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+
+        for method_name, operation in path_item.items():
+            if method_name.lower() not in allowed_methods:
                 continue
 
-            for method_name, operation in path_item.items():
-                if method_name.lower() not in allowed_methods:
-                    continue
-
-                method_upper = method_name.upper()
+            method_upper = method_name.upper()
 
             # Нормализуем путь для проверки существования
             normalized_path = _normalize_path_for_storage(path)
@@ -2117,9 +2180,9 @@ async def create_or_update_mock(
             raise HTTPException(400, "Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64")
 
     try:
-        _save_mock_entry(entry, db)
-        db.commit()
-        return {"message": "mock saved", "mock": entry}
+    _save_mock_entry(entry, db)
+    db.commit()
+    return {"message": "mock saved", "mock": entry}
     except Exception as e:
         db.rollback()
         logger.error(f"Error saving mock: {e}", exc_info=True)
@@ -2146,8 +2209,8 @@ def list_mocks(
     try:
         # Логируем запрос для отладки
         logger.debug(f"list_mocks called with folder='{folder}'")
-        q = db.query(Mock)
-        if folder:
+    q = db.query(Mock)
+    if folder:
             # Поддерживаем формат "name|parent_folder" для подпапок
             folder = folder.strip()
             folder_name = folder
@@ -2161,28 +2224,28 @@ def list_mocks(
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
-        
-        results = []
-        for m in q.all():
+    
+    results = []
+    for m in q.all():
             try:
-                results.append(
-                    MockEntry(
-                        id=m.id,
-                        folder=m.folder_name,
-                        name=m.name,
-                        request_condition=MockRequestCondition(
-                            method=m.method,
-                            path=m.path,
-                            headers=m.headers if m.headers else None,
-                            body_contains=m.body_contains,
-                        ),
-                        response_config=MockResponseConfig(
-                            status_code=m.status_code,
-                            headers=m.response_headers if m.response_headers else None,
+        results.append(
+            MockEntry(
+                id=m.id,
+                folder=m.folder_name,
+                name=m.name,
+                request_condition=MockRequestCondition(
+                    method=m.method,
+                    path=m.path,
+                    headers=m.headers if m.headers else None,
+                    body_contains=m.body_contains,
+                ),
+                response_config=MockResponseConfig(
+                    status_code=m.status_code,
+                    headers=m.response_headers if m.response_headers else None,
                             body=_clean_response_body(m.response_body),
-                        ),
-                        active=m.active,
-                        delay_ms=m.delay_ms or 0,
+                ),
+                active=m.active,
+                delay_ms=m.delay_ms or 0,
                         delay_range_min_ms=m.delay_range_min_ms,
                         delay_range_max_ms=m.delay_range_max_ms,
                         cache_enabled=m.cache_enabled if m.cache_enabled is not None else False,
@@ -2199,7 +2262,7 @@ def list_mocks(
                 logger.error(f"Error processing mock {m.id}: {e}", exc_info=True)
                 # Пропускаем проблемный мок, но продолжаем обработку остальных
                 continue
-        return results
+    return results
     except Exception as e:
         logger.error(f"Error in list_mocks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка при получении списка моков: {str(e)}")
@@ -2279,7 +2342,7 @@ def deactivate_all(
         all_folders = get_all_subfolders(folder_name)
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
-            raise HTTPException(404, "No matching mock found")
+        raise HTTPException(404, "No matching mock found")
     
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:
@@ -2843,7 +2906,7 @@ async def metrics(folder: Optional[str] = Query(None, description="Фильтр 
         
         data = '\n'.join(filtered_lines).encode('utf-8')
     else:
-        data = generate_latest()
+    data = generate_latest()
     
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
@@ -3418,7 +3481,7 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
             return "&".join(f"{k}={v}" for k, v in params)
         
         if normalize_query(mock_query) != normalize_query(request_query):
-            return False
+        return False
     
     # Проверка заголовков
     # Если в моке указаны заголовки (непустой словарь), проверяем их
@@ -3514,7 +3577,7 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
                     normalized_contains = _normalize_json_string(m.body_contains)
                     if normalized_contains not in normalized_body:
                         logger.info(f"Body mismatch for mock {m.id} (GET with body): body_contains='{normalized_contains[:100]}...' not in request body. Request body: '{body[:200]}...'")
-                        return False
+                return False
                 else:
                     # Если тело пустое, игнорируем условие body_contains для GET запросов
                     logger.debug(f"Ignoring body_contains for mock {m.id} (GET request with empty body)")
@@ -3560,11 +3623,11 @@ def _get_delay_ms(m: Mock) -> int:
         try:
             mn = max(0, int(m.delay_range_min_ms))
             mx = max(mn, int(m.delay_range_max_ms))
-            if mn != mx:
-                return random.randint(mn, mx)
-            return mn
-        except Exception:
-            return base
+                if mn != mx:
+                    return random.randint(mn, mx)
+                return mn
+            except Exception:
+                return base
     return base
 
 
@@ -3578,7 +3641,7 @@ def _maybe_simulate_error(m: Mock, folder_name: str) -> Optional[Dict[str, Any]]
         try:
             prob = float(prob)
         except (ValueError, TypeError):
-            return None
+        return None
     elif not isinstance(prob, (int, float)):
         return None
     
@@ -3720,13 +3783,13 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     # Второй сегмент не подпапка, используем корневую папку
                     folder_name = first_segment
                     folder = root_folder
-                    inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
-            else:
+            inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
+        else:
                 # Только один сегмент - это корневая папка
                 folder_name = first_segment
                 folder = root_folder
                 inner_path = "/"
-        else:
+    else:
             # Первый сегмент не корневая папка - используем default
             folder = db.query(Folder).filter(
                 Folder.name == "default",
