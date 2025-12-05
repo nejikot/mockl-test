@@ -586,8 +586,8 @@ def create_folder(
     db: Session = Depends(get_db),
 ):
     name = payload.name.strip()
-    if not name or db.query(Folder).filter_by(name=name).first():
-        raise HTTPException(400, "Некорректное или уже существующее имя папки")
+    if not name:
+        raise HTTPException(400, "Некорректное имя папки")
     
     # Проверяем родительскую папку, если указана
     parent_folder = None
@@ -596,6 +596,16 @@ def create_folder(
         if not parent_folder_obj:
             raise HTTPException(404, f"Родительская папка '{payload.parent_folder}' не найдена")
         parent_folder = payload.parent_folder
+        # Для подпапок разрешаем дубликаты имен (даже если есть корневая папка с таким же именем)
+        # Проверяем только, что в этой родительской папке нет подпапки с таким же именем
+        existing_subfolder = db.query(Folder).filter_by(name=name, parent_folder=parent_folder).first()
+        if existing_subfolder:
+            raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
+    else:
+        # Для корневых папок проверяем уникальность имени (не должно быть корневой папки с таким именем)
+        existing_folder = db.query(Folder).filter_by(name=name, parent_folder=None).first()
+        if existing_folder:
+            raise HTTPException(400, f"Корневая папка '{name}' уже существует")
     
     db.add(Folder(name=name, parent_folder=parent_folder))
     db.commit()
@@ -3297,22 +3307,46 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             raise HTTPException(status_code=413, detail="Request entity too large")
 
     # Определяем папку по URL префиксу
-    path = request.url.path  # например "/auth/api/login"
+    # Поддерживаем пути вида /parent/sub/... для подпапок
+    path = request.url.path  # например "/nikita/cnsgate-t/api/login" или "/auth/api/login"
     segments = [seg for seg in path.split("/") if seg]
 
-
     inner_path = path
-
+    folder_name = "default"
+    folder = db.query(Folder).filter_by(name="default").first()
 
     if segments:
-        candidate = segments[0]
-        folder = db.query(Folder).filter_by(name=candidate).first()
-        if folder:
-            folder_name = candidate
-            inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
+        # Проверяем первый сегмент - это может быть корневая папка или начало пути к подпапке
+        first_segment = segments[0]
+        root_folder = db.query(Folder).filter_by(name=first_segment, parent_folder=None).first()
+        
+        if root_folder:
+            # Нашли корневую папку
+            if len(segments) > 1:
+                # Проверяем, может быть второй сегмент - это подпапка?
+                second_segment = segments[1]
+                subfolder = db.query(Folder).filter_by(name=second_segment, parent_folder=first_segment).first()
+                
+                if subfolder:
+                    # Нашли подпапку: /parent/sub/...
+                    folder_name = second_segment
+                    folder = subfolder
+                    inner_path = "/" + "/".join(segments[2:]) if len(segments) > 2 else "/"
+                else:
+                    # Второй сегмент не подпапка, используем корневую папку
+                    folder_name = first_segment
+                    folder = root_folder
+                    inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
+            else:
+                # Только один сегмент - это корневая папка
+                folder_name = first_segment
+                folder = root_folder
+                inner_path = "/"
         else:
+            # Первый сегмент не корневая папка - используем default
             folder = db.query(Folder).filter_by(name="default").first()
     else:
+        # Пустой путь - используем default
         folder = db.query(Folder).filter_by(name="default").first()
 
 

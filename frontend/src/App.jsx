@@ -120,12 +120,17 @@ function getBackendUrl() {
   return import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 }
 
-function buildFolderHost(baseHost, folder) {
+function buildFolderHost(baseHost, folder, parentFolder = null) {
   if (!baseHost || !folder || folder === "default") return baseHost;
   try {
     const url = new URL(baseHost);
     const basePath = url.pathname.replace(/\/+$/, "");
-    url.pathname = `${basePath}/${folder}`;
+    // Если есть родительская папка, формируем путь /parent/sub
+    if (parentFolder) {
+      url.pathname = `${basePath}/${parentFolder}/${folder}`;
+    } else {
+      url.pathname = `${basePath}/${folder}`;
+    }
     return url.toString().replace(/\/+$/, "");
   } catch {
     return baseHost;
@@ -1686,7 +1691,10 @@ export default function App() {
   const stickyTopOffset = isDesktop ? 88 : 64;
   const isDefaultFolder = selectedFolder === "default";
   const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
-  const baseFolderUrl = buildFolderHost(host, selectedFolder);
+  // Находим информацию о выбранной папке для получения родительской папки
+  const selectedFolderData = foldersData.find(f => f.name === selectedFolder);
+  const parentFolder = selectedFolderData?.parent_folder || null;
+  const baseFolderUrl = buildFolderHost(host, selectedFolder, parentFolder);
   const primaryButtonStyle = {
     minWidth: isDesktop ? 160 : "calc(50% - 8px)",
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
