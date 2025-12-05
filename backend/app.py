@@ -1193,29 +1193,29 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     created = 0
 
     try:
-    for path, path_item in paths.items():
-        if not isinstance(path_item, dict):
-            continue
-
-        for method_name, operation in path_item.items():
-            if method_name.lower() not in allowed_methods:
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
                 continue
 
-            method_upper = method_name.upper()
+            for method_name, operation in path_item.items():
+                if method_name.lower() not in allowed_methods:
+                    continue
+
+                method_upper = method_name.upper()
 
                 # Нормализуем путь для проверки существования
                 normalized_path = _normalize_path_for_storage(path)
                 
                 # Проверяем, нет ли уже такого мока (быстрая проверка в памяти)
                 if (method_upper, normalized_path) in existing_keys:
-                continue
+                    continue
 
-            op = operation or {}
-            mock_name = (
-                op.get("operationId")
-                or op.get("summary")
-                or f"{method_upper} {path}"
-            )
+                op = operation or {}
+                mock_name = (
+                    op.get("operationId")
+                    or op.get("summary")
+                    or f"{method_upper} {path}"
+                )
 
                 # Извлекаем примеры запроса
                 request_body_contains = None
@@ -1452,7 +1452,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 mock = Mock(
                     id=str(uuid4()),
                     folder_name=folder_name,
-                name=mock_name,
+                    name=mock_name,
                     method=method_upper,
                     path=normalized_path,
                     headers=request_headers if request_headers else {},
@@ -1460,31 +1460,31 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                     status_code=response_status,
                     response_headers=response_headers if response_headers else {},
                     response_body=response_body,
-                active=True,
-                delay_ms=0,
+                    active=True,
+                    delay_ms=0,
                     order=next_order + created,
-            )
+                )
 
                 new_mocks.append(mock)
-            created += 1
+                created += 1
 
                 # Ограничение на количество моков для предотвращения перегрузки
                 if created >= MAX_MOCKS_PER_IMPORT:
                     logger.warning(f"Reached maximum mocks limit ({MAX_MOCKS_PER_IMPORT}), stopping import")
                     break
         
-        # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков батчами для предотвращения перегрузки памяти
-        BATCH_SIZE = 500
-        if new_mocks:
-            for i in range(0, len(new_mocks), BATCH_SIZE):
-                batch = new_mocks[i:i + BATCH_SIZE]
-                try:
-                    db.bulk_save_objects(batch)
-                    db.flush()
-                except Exception as e:
-                    logger.error(f"Error saving batch {i//BATCH_SIZE + 1}: {e}", exc_info=True)
-                    db.rollback()
-                    raise
+            # ОПТИМИЗАЦИЯ: Bulk insert всех новых моков батчами для предотвращения перегрузки памяти
+            BATCH_SIZE = 500
+            if new_mocks:
+                for i in range(0, len(new_mocks), BATCH_SIZE):
+                    batch = new_mocks[i:i + BATCH_SIZE]
+                    try:
+                        db.bulk_save_objects(batch)
+                        db.flush()
+                    except Exception as e:
+                        logger.error(f"Error saving batch {i//BATCH_SIZE + 1}: {e}", exc_info=True)
+                        db.rollback()
+                        raise
     
     except Exception as e:
         logger.error(f"Error in generate_mocks_for_openapi: {e}", exc_info=True)
