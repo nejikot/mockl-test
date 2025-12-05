@@ -1354,9 +1354,18 @@ def rename_folder(
             raise HTTPException(400, "Новое имя должно отличаться от текущего")
         
         # Проверяем, не существует ли уже папка с новым именем в той же родительской папке
-        existing_folder = db.query(Folder).filter(
+        # Для корневых папок проверяем уникальность среди всех корневых папок
+        if folder.parent_folder_id is None:
+            # Корневая папка - проверяем уникальность среди всех корневых папок
+            existing_folder = db.query(Folder).filter(
                 Folder.name == new_name,
-            Folder.parent_folder_id == folder.parent_folder_id
+                Folder.parent_folder_id == None
+            ).first()
+        else:
+            # Подпапка - проверяем уникальность среди подпапок той же родительской папки
+            existing_folder = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder_id == folder.parent_folder_id
             ).first()
         
         if existing_folder:
@@ -1654,7 +1663,15 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         logger.debug(f"_save_mock_entry: saving headers: {headers_to_save}")
     # Нормализуем body_contains при сохранении (убираем лишние пробелы из JSON)
     mock.body_contains = _normalize_json_string(entry.request_condition.body_contains) if entry.request_condition.body_contains else None
-    mock.body_contains_required = entry.request_condition.body_contains_required if entry.request_condition.body_contains_required is not None else True
+    # Для GET, HEAD, OPTIONS, DELETE по умолчанию body_contains_required = False, если body_contains не указан
+    if entry.request_condition.body_contains_required is not None:
+        mock.body_contains_required = entry.request_condition.body_contains_required
+    else:
+        # Определяем по умолчанию на основе метода
+        if mock.method.upper() in ('GET', 'HEAD', 'OPTIONS', 'DELETE'):
+            mock.body_contains_required = False if not mock.body_contains else True
+        else:
+            mock.body_contains_required = True if mock.body_contains else False
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
     # Очищаем служебные поля из тела ответа перед сохранением
@@ -3986,7 +4003,16 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
     # - Если body_contains указан И body содержит body_contains -> мок срабатывает
     # - Если body_contains не указан, но body не пустой -> мок срабатывает (проверяем только наличие body)
     # Если body_contains_required = False, то проверка body необязательна (мок сработает независимо от тела)
-    body_contains_required = getattr(m, 'body_contains_required', True)  # По умолчанию True для обратной совместимости
+    # Для GET, HEAD, OPTIONS запросов body_contains_required по умолчанию False, если body_contains не указан
+    body_contains_required = getattr(m, 'body_contains_required', None)
+    if body_contains_required is None:
+        # Если явно не указано, определяем по методу и наличию body_contains
+        if req.method.upper() in ('GET', 'HEAD', 'OPTIONS', 'DELETE'):
+            # Для методов без тела по умолчанию не требуем body
+            body_contains_required = False if not m.body_contains else True
+        else:
+            # Для POST, PUT, PATCH по умолчанию требуем body, если body_contains указан
+            body_contains_required = True if m.body_contains else False
     
     if body_contains_required:
         # Обязательная проверка body - применяется ко всем форматам (raw, form-data, файл и т.д.)
@@ -4182,11 +4208,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="too_large").inc()
             raise HTTPException(status_code=413, detail="Request entity too large")
 
-    # Определяем папку по URL префиксу
-    # Поддерживаем пути вида /parent/sub/... для подпапок
-    path = request.url.path  # например "/nikita/cnsgate-t/api/login" или "/auth/api/login"
-    segments = [seg for seg in path.split("/") if seg]
-
+    # Определяем папку по поддомену
+    # Формат поддомена: mockl-test-имя-корневой-папки или mockl-test-имя-корневой-папки-имя-подпапки
+    hostname = request.headers.get("host", "").split(":")[0]  # Убираем порт если есть
+    path = request.url.path
     inner_path = path
     folder = None
     
@@ -4196,44 +4221,48 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         Folder.parent_folder_id == None
     ).first()
 
-    if segments:
-        # Проверяем первый сегмент - это может быть корневая папка или начало пути к подпапке
-        first_segment = segments[0]
-        root_folder = db.query(Folder).filter(
-            Folder.name == first_segment,
-            Folder.parent_folder_id == None
-        ).first()
+    # Парсим поддомен
+    # Ожидаемый формат: mockl-test-корневая-папка или mockl-test-корневая-папка-подпапка
+    if hostname:
+        # Разбиваем hostname по точкам и берем первую часть
+        hostname_parts = hostname.split(".")
+        base_hostname = hostname_parts[0] if hostname_parts else hostname
         
-        if root_folder:
-            # Нашли корневую папку
-            if len(segments) > 1:
-                # Проверяем, может быть второй сегмент - это подпапка?
-                second_segment = segments[1]
-                subfolder = db.query(Folder).filter(
-                    Folder.name == second_segment,
-                    Folder.parent_folder_id == root_folder.id
+        # Проверяем формат поддомена
+        if base_hostname.startswith("mockl-test-"):
+            # Извлекаем имена папок из поддомена
+            folder_names = base_hostname.replace("mockl-test-", "").split("-")
+            
+            if folder_names:
+                # Первое имя - корневая папка
+                root_folder_name = folder_names[0]
+                root_folder = db.query(Folder).filter(
+                    Folder.name == root_folder_name,
+                    Folder.parent_folder_id == None
                 ).first()
                 
-                if subfolder:
-                    # Нашли подпапку: /parent/sub/...
-                    folder = subfolder
-                    inner_path = "/" + "/".join(segments[2:]) if len(segments) > 2 else "/"
-                else:
-                    # Второй сегмент не подпапка, используем корневую папку
-                    folder = root_folder
-                    inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
-            else:
-                # Только один сегмент - это корневая папка
-                folder = root_folder
-                inner_path = "/"
-        else:
-            # Первый сегмент не корневая папка - используем default и весь путь как inner_path
-            folder = default_folder
-            inner_path = path
-    else:
-        # Пустой путь - используем default
+                if root_folder:
+                    if len(folder_names) > 1:
+                        # Есть подпапка
+                        subfolder_name = "-".join(folder_names[1:])  # Объединяем оставшиеся части
+                        subfolder = db.query(Folder).filter(
+                            Folder.name == subfolder_name,
+                            Folder.parent_folder_id == root_folder.id
+                        ).first()
+                        
+                        if subfolder:
+                            folder = subfolder
+                        else:
+                            # Подпапка не найдена, используем корневую
+                            folder = root_folder
+                    else:
+                        # Только корневая папка
+                        folder = root_folder
+    
+    # Если папка не определена по поддомену, используем default
+    if not folder:
         folder = default_folder
-        inner_path = "/"
+        inner_path = path
     
     # Получаем имя папки для метрик
     folder_name = folder.name if folder else "default"

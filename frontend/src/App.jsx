@@ -124,13 +124,25 @@ function buildFolderHost(baseHost, folder, parentFolder = null) {
   if (!baseHost || !folder || folder === "default") return baseHost;
   try {
     const url = new URL(baseHost);
-    const basePath = url.pathname.replace(/\/+$/, "");
-    // Если есть родительская папка, формируем путь /parent/sub
+    // Формируем поддомен: mockl-test-имя-корневой-папки или mockl-test-имя-корневой-папки-имя-подпапки
+    const hostname = url.hostname;
+    // Извлекаем базовое имя хоста (до первой точки)
+    const baseHostname = hostname.split('.')[0];
+    // Формируем новое имя хоста
+    let newHostname;
     if (parentFolder) {
-      url.pathname = `${basePath}/${parentFolder}/${folder}`;
+      // Подпапка: mockl-test-корневая-подпапка
+      newHostname = `${baseHostname}-${parentFolder}-${folder}`;
     } else {
-    url.pathname = `${basePath}/${folder}`;
+      // Корневая папка: mockl-test-корневая
+      newHostname = `${baseHostname}-${folder}`;
     }
+    // Заменяем имя хоста, сохраняя остальную часть домена
+    const domainParts = hostname.split('.');
+    domainParts[0] = newHostname;
+    url.hostname = domainParts.join('.');
+    // Убираем путь, оставляем только корень
+    url.pathname = "/";
     return url.toString().replace(/\/+$/, "");
   } catch {
     return baseHost;
@@ -1261,9 +1273,11 @@ export default function App() {
     console.log('Converted headers list:', requestHeadersList);
     
     // Устанавливаем значения формы
+    // Находим имя папки по folder_id
+    const folderName = foldersData.find(f => f.id === m.folder_id)?.name || m.folder || selectedFolder;
     form.setFieldsValue({
       id: m.id,
-      folder: m.folder_id || selectedFolder,
+      folder: folderName,
       name: m.name || "",
       method: m.request_condition.method,
       path: m.request_condition.path,
@@ -1412,7 +1426,7 @@ export default function App() {
           path: vals.path,
           headers: Object.keys(requestHeadersObj).length ? requestHeadersObj : {},
           body_contains: bodyContains || null,
-          body_contains_required: vals.body_contains_required !== undefined ? vals.body_contains_required : true
+          body_contains_required: vals.body_contains_required !== undefined ? vals.body_contains_required : (vals.method === "GET" || vals.method === "HEAD" || vals.method === "OPTIONS" || vals.method === "DELETE" ? false : true)
         },
         response_config: {
           status_code: Number(vals.status_code),
@@ -1856,12 +1870,14 @@ export default function App() {
   const isDefaultFolder = selectedFolderData.name === "default";
   const folderTitle = isDefaultFolder ? "Главная" : selectedFolderData.name;
   // Находим информацию о выбранной папке для получения родительской папки
-  const folderData = foldersData.find(f => 
-    f.name === selectedFolderData.name && 
-    (f.parent_folder || '') === (selectedFolderData.parent_folder || '')
-  );
-  const parentFolder = folderData?.parent_folder || selectedFolderData.parent_folder;
-  const baseFolderUrl = buildFolderHost(host, selectedFolderData.name, parentFolder);
+  const folderData = foldersData.find(f => f.id === selectedFolder);
+  // Если это подпапка, находим имя корневой папки
+  let parentFolderName = null;
+  if (folderData?.parent_folder_id) {
+    const parentFolderData = foldersData.find(f => f.id === folderData.parent_folder_id);
+    parentFolderName = parentFolderData?.name || null;
+  }
+  const baseFolderUrl = buildFolderHost(host, selectedFolderData.name, parentFolderName);
   const primaryButtonStyle = {
     minWidth: isDesktop ? 160 : "calc(50% - 8px)",
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
