@@ -727,18 +727,29 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if not folder:
             raise HTTPException(404, "Папка не найдена")
         
-        if db.query(Folder).filter_by(name=new).first():
-            raise HTTPException(400, "Папка с таким именем уже существует")
-
+        # Проверяем уникальность имени с учетом родительской папки
+        # Для корневых папок проверяем, что нет другой корневой папки с таким именем
+        # Для подпапок проверяем, что в той же родительской папке нет подпапки с таким именем
+        parent_folder = folder.parent_folder
+        if parent_folder is None:
+            # Это корневая папка - проверяем, что нет другой корневой папки с таким именем
+            existing_root = db.query(Folder).filter_by(name=new, parent_folder=None).first()
+            if existing_root:
+                raise HTTPException(400, f"Корневая папка '{new}' уже существует")
+        else:
+            # Это подпапка - проверяем, что в той же родительской папке нет подпапки с таким именем
+            existing_subfolder = db.query(Folder).filter_by(name=new, parent_folder=parent_folder).first()
+            if existing_subfolder:
+                raise HTTPException(400, f"Подпапка '{new}' уже существует в папке '{parent_folder}'")
 
         # Из‑за ограничений FK безопаснее всего:
         # 1) создать новую папку с новым именем,
         # 2) перевесить все моки на неё,
-        # 3) удалить старую папку.
+        # 3) перевесить все подпапки на неё,
+        # 4) удалить старую папку.
 
-
-        # 1. Создаём новую запись папки
-        new_folder = Folder(name=new)
+        # 1. Создаём новую запись папки с сохранением parent_folder
+        new_folder = Folder(name=new, parent_folder=parent_folder)
         db.add(new_folder)
         db.flush()
 
@@ -749,12 +760,17 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
             synchronize_session=False
         )
 
+        # 3. Обновляем все подпапки (если переименовывается корневая папка)
+        # Если переименовывается подпапка, подпапки у неё остаются с тем же parent_folder (новым именем)
+        db.query(Folder).filter_by(parent_folder=old).update(
+            {"parent_folder": new},
+            synchronize_session=False
+        )
 
-        # 3. Удаляем старую папку
+        # 4. Удаляем старую папку
         db.delete(folder)
 
-
-        # 4. Коммитим всё разом
+        # 5. Коммитим всё разом
         db.commit()
         return {"message": "Папка переименована", "old": old, "new": new}
     

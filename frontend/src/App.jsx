@@ -1594,7 +1594,7 @@ export default function App() {
 
   const addFolder = async vals => {
     const name = vals.name.trim();
-    if (folders.includes(name)) return message.error("Уже существует");
+    // Убираем проверку на фронтенде - бэкенд проверит с учетом parent_folder
     try {
       const payload = {
         name: name,
@@ -1649,24 +1649,25 @@ export default function App() {
       setRenameModalOpen(false);
       return;
     }
-    if (folders.includes(newName)) {
-      return message.error("Папка с таким именем уже существует");
-    }
+    // Убираем проверку на фронтенде - бэкенд проверит с учетом parent_folder
     try {
       const res = await fetch(`${host}/api/folders/rename`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ old_name: folderToRename, new_name: newName })
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Ошибка переименования");
+      }
       message.success("Переименовано");
       setRenameModalOpen(false);
       if (selectedFolder === folderToRename) {
         setSelectedFolder(newName);
       }
       fetchFolders();
-    } catch {
-      message.error("Ошибка переименования");
+    } catch (e) {
+      message.error(e.message || "Ошибка переименования");
     }
   };
 
@@ -2957,8 +2958,8 @@ export default function App() {
                 name="name"
                 label="Имя страницы"
                 rules={[
-                  { required: true, message: "Введите имя страницы" },
-                  { validator: (_, val) => folders.includes(val) ? Promise.reject("Уже существует") : Promise.resolve() }
+                  { required: true, message: "Введите имя страницы" }
+                  // Убираем проверку на дубликаты - бэкенд проверит с учетом parent_folder
                 ]}
               >
                 <Input placeholder="Например lost" />
