@@ -557,7 +557,9 @@ export default function App() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       message.success('История вызовов очищена');
+      // Обновляем и историю, и метрики, так как метрики содержат данные из истории
       loadRequestLogs(true);
+      loadMetrics(true);
     } catch (error) {
       message.error(`Ошибка очистки истории: ${error.message}`);
     }
@@ -630,7 +632,9 @@ export default function App() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       message.success('История вызовов очищена');
+      // Обновляем и историю, и метрики, так как метрики содержат данные из истории
       loadGlobalRequestLogs(true);
+      loadGlobalMetrics(true);
     } catch (error) {
       message.error(`Ошибка очистки истории: ${error.message}`);
     }
