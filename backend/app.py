@@ -1891,7 +1891,7 @@ def deactivate_all(
         all_folders = get_all_subfolders(folder)
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
-        raise HTTPException(404, "No matching mock found")
+          raise HTTPException(404, "No matching mock found")
     
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:
@@ -2446,7 +2446,7 @@ async def metrics(folder: Optional[str] = Query(None, description="Фильтр 
         
         data = '\n'.join(filtered_lines).encode('utf-8')
     else:
-    data = generate_latest()
+     data = generate_latest()
     
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
@@ -2888,7 +2888,7 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
             return "&".join(f"{k}={v}" for k, v in params)
         
         if normalize_query(mock_query) != normalize_query(request_query):
-        return False
+          return False
     
     # Проверка заголовков
     # Если в моке указаны заголовки (непустой словарь), проверяем их
@@ -2987,11 +2987,13 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     logger.debug(f"Ignoring body_contains for mock {m.id} (GET request with empty body)")
             else:
                 # Для POST, PUT, PATCH, DELETE проверяем тело
-            body = (await req.body()).decode("utf-8")
+                body = (await req.body()).decode("utf-8")
                 # Нормализуем оба значения для сравнения
                 normalized_body = _normalize_json_string(body)
                 normalized_contains = _normalize_json_string(m.body_contains)
                 if normalized_contains not in normalized_body:
+                    logger.debug(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:50]}...' not in request body")
+                    return False
                     logger.debug(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:50]}...' not in request body")
                 return False
         except Exception as e:
