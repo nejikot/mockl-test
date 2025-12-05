@@ -443,7 +443,7 @@ class MockEntry(BaseModel):
 
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": "d7f9f6b4-6c86-4d3b-a8d2-0b8c2e1e1234",
                 "folder_id": "a1b2c3d4-5e6f-7g8h-9i0j-1k2l3m4n5o6p",
@@ -516,6 +516,8 @@ def ensure_migrations():
     поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
     """
     try:
+        # Используем отдельные транзакции для разных частей миграции
+        # чтобы ошибка в одной части не прерывала другую
         with engine.begin() as conn:
             # КРИТИЧЕСКАЯ МИГРАЦИЯ: Переход с name на id для папок
             # Проверяем, есть ли уже колонка id в folders
@@ -568,10 +570,10 @@ def ensure_migrations():
                         WHERE id IS NULL
                     """))
                     
-                    # Шаг 3: Делаем id NOT NULL и первичным ключом
+                    # Шаг 3: Делаем id NOT NULL
                     conn.execute(text("ALTER TABLE folders ALTER COLUMN id SET NOT NULL"))
                     
-                    # Удаляем старые внешние ключи
+                    # Шаг 4: Удаляем старые внешние ключи ПЕРЕД удалением первичного ключа
                     fk_list = conn.execute(
                         text("""
                             SELECT 
@@ -592,23 +594,53 @@ def ensure_migrations():
                     
                     for fk_name, table_name in fk_list:
                         try:
-                            conn.execute(text(f'ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {fk_name}'))
+                            conn.execute(text(f'ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {fk_name} CASCADE'))
                             logger.info(f"Dropped foreign key {fk_name} from {table_name}")
                         except Exception as e:
                             logger.warning(f"Error dropping foreign key {fk_name}: {e}")
                     
-                    # Удаляем старый первичный ключ
+                    # Шаг 5: Удаляем старый первичный ключ (если он еще существует)
                     try:
-                        conn.execute(text("ALTER TABLE folders DROP CONSTRAINT IF EXISTS folders_pkey"))
-                        logger.info("Dropped old primary key folders_pkey")
+                        # Проверяем, существует ли старый PK
+                        old_pk_check = conn.execute(
+                            text("""
+                                SELECT constraint_name
+                                FROM information_schema.table_constraints
+                                WHERE table_name = 'folders'
+                                AND constraint_type = 'PRIMARY KEY'
+                                AND constraint_name = 'folders_pkey'
+                            """)
+                        ).fetchone()
+                        
+                        if old_pk_check:
+                            conn.execute(text("ALTER TABLE folders DROP CONSTRAINT folders_pkey CASCADE"))
+                            logger.info("Dropped old primary key folders_pkey")
                     except Exception as e:
-                        logger.warning(f"Error dropping old primary key: {e}")
+                        logger.warning(f"Error dropping old primary key (may already be dropped): {e}")
                     
-                    # Создаем новый первичный ключ на id
-                    conn.execute(text("ALTER TABLE folders ADD CONSTRAINT folders_pkey PRIMARY KEY (id)"))
-                    logger.info("Created new primary key on folders.id")
+                    # Шаг 6: Создаем новый первичный ключ на id
+                    # Проверяем, может быть PK уже создан
+                    pk_check = conn.execute(
+                        text("""
+                            SELECT constraint_name
+                            FROM information_schema.table_constraints
+                            WHERE table_name = 'folders'
+                            AND constraint_type = 'PRIMARY KEY'
+                            AND constraint_name = 'folders_pkey'
+                        """)
+                    ).fetchone()
                     
-                    # Шаг 4: Добавляем parent_folder_id и обновляем данные
+                    if not pk_check:
+                        try:
+                            conn.execute(text("ALTER TABLE folders ADD CONSTRAINT folders_pkey PRIMARY KEY (id)"))
+                            logger.info("Created new primary key on folders.id")
+                        except Exception as e:
+                            logger.error(f"Error creating new primary key: {e}")
+                            raise
+                    else:
+                        logger.info("Primary key folders_pkey already exists")
+                    
+                    # Шаг 7: Добавляем parent_folder_id и обновляем данные
                     parent_folder_id_exists = conn.execute(
                         text("""
                             SELECT column_name
@@ -632,7 +664,7 @@ def ensure_migrations():
                         """))
                         logger.info("Updated parent_folder_id based on parent_folder names")
                     
-                    # Шаг 5: Обновляем mocks: добавляем folder_id и обновляем данные
+                    # Шаг 8: Обновляем mocks: добавляем folder_id и обновляем данные
                     folder_id_exists = conn.execute(
                         text("""
                             SELECT column_name
@@ -665,7 +697,7 @@ def ensure_migrations():
                         """))
                         logger.info("Created foreign key mocks.folder_id -> folders.id")
                     
-                    # Шаг 6: Обновляем request_logs: добавляем folder_id и обновляем данные
+                    # Шаг 9: Обновляем request_logs: добавляем folder_id и обновляем данные
                     request_logs_folder_id_exists = conn.execute(
                         text("""
                             SELECT column_name
@@ -698,7 +730,7 @@ def ensure_migrations():
                         """))
                         logger.info("Created foreign key request_logs.folder_id -> folders.id")
                     
-                    # Шаг 7: Создаем внешний ключ для parent_folder_id
+                    # Шаг 10: Создаем внешний ключ для parent_folder_id
                     try:
                         conn.execute(text("""
                             ALTER TABLE folders 
@@ -709,7 +741,7 @@ def ensure_migrations():
                     except Exception as e:
                         logger.warning(f"Error creating parent_folder_id foreign key: {e}")
                     
-                    # Шаг 8: Создаем индексы
+                    # Шаг 11: Создаем индексы
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_folders_id ON folders (id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_folders_parent_folder_id ON folders (parent_folder_id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mocks_folder_id ON mocks (folder_id)"))
@@ -720,257 +752,108 @@ def ensure_migrations():
                     logger.error(f"Error during folder id migration: {e}", exc_info=True)
                     raise
             
-            # Старая логика миграций (оставляем для обратной совместимости, но она больше не будет выполняться)
             # Проверяем существование колонок одним запросом для оптимизации
-            # Проверяем, нужно ли мигрировать первичный ключ folders
-            # Проверяем, есть ли уже составной первичный ключ или уникальный индекс
-            pk_check = conn.execute(
+            # Только если миграция на id уже выполнена (колонка id существует)
+            id_column_exists = conn.execute(
                 text("""
-                    SELECT constraint_name, constraint_type
-                    FROM information_schema.table_constraints
-                    WHERE table_name = 'folders'
-                    AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'folders' AND column_name = 'id'
                 """)
-            ).fetchall()
+            ).fetchone()
             
-            # Проверяем, есть ли уже уникальный индекс на (name, parent_folder)
-            index_check = conn.execute(
-                text("""
-                    SELECT indexname
-                    FROM pg_indexes
-                    WHERE tablename = 'folders'
-                    AND indexname LIKE '%name_parent%'
-                """)
-            ).fetchall()
-            
-            # Если первичный ключ только на name и нет уникального индекса, нужно мигрировать
-            has_composite_pk = any('name' in str(row) and 'parent' in str(row) for row in pk_check)
-            has_unique_index = len(index_check) > 0
-            
-            if not has_composite_pk and not has_unique_index:
-                logger.info("Migrating folders table to support subfolders with same names...")
-                try:
-                    # Сначала добавляем колонку parent_folder, если её нет
-                    parent_folder_exists = conn.execute(
-                        text("""
-                            SELECT column_name
-                            FROM information_schema.columns
-                            WHERE table_name = 'folders' AND column_name = 'parent_folder'
-                        """)
-                    ).fetchone()
-                    
-                    if not parent_folder_exists:
-                        conn.execute(text("ALTER TABLE folders ADD COLUMN parent_folder VARCHAR NULL"))
-                        logger.info("Added column folders.parent_folder")
-                    
-                    # Обновляем существующие записи: устанавливаем parent_folder = '' для корневых папок
-                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
-                    
-                    # Создаем уникальный индекс на (name, COALESCE(parent_folder, ''))
-                    # Это позволит иметь одинаковые имена в разных родительских папках
-                    conn.execute(text("""
-                        CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
-                        ON folders (name, COALESCE(parent_folder, ''))
-                    """))
-                    logger.info("Created unique index on folders (name, parent_folder)")
-                    
-                    # Удаляем старый первичный ключ и создаем новый составной
-                    # Но это может быть проблематично из-за внешних ключей
-                    # Поэтому оставляем старый PK и добавляем уникальный индекс
-                    logger.info("Migration completed: folders can now have subfolders with same names")
-                except Exception as e:
-                    logger.warning(f"Error migrating folders table: {e}")
-                    # Продолжаем выполнение, даже если миграция не удалась
-            
-            # Проверяем существование колонок одним запросом для оптимизации
-            existing_columns = conn.execute(
-                text("""
-                    SELECT table_name, column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name IN ('folders', 'mocks')
-                    AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
-                                        'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
-                                        'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
-                                        'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms',
-                                        'parent_folder')
-                """)
-            ).fetchall()
-            
-            existing_set = {(row[0], row[1]) for row in existing_columns}
-            
-        # Новые поля в folders
-            if ('folders', 'proxy_enabled') not in existing_set:
-                try:
-                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
-                    logger.info("Added column folders.proxy_enabled")
-                except Exception as e:
-                    logger.warning(f"Error adding folders.proxy_enabled: {e}")
-            
-            if ('folders', 'proxy_base_url') not in existing_set:
-                try:
-                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_base_url VARCHAR NULL"))
-                    logger.info("Added column folders.proxy_base_url")
-                except Exception as e:
-                    logger.warning(f"Error adding folders.proxy_base_url: {e}")
-            
-            # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
-            if ('folders', 'order') not in existing_set:
-                try:
-                    conn.execute(text('ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0'))
-                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'))
-                    logger.info("Added column folders.order")
-                except Exception as e:
-                    logger.warning(f"Error adding folders.order: {e}")
-            
-            # Добавляем колонку parent_folder для вложенных папок
-            if ('folders', 'parent_folder') not in existing_set:
-                try:
-                    conn.execute(text("ALTER TABLE folders ADD COLUMN parent_folder VARCHAR NULL"))
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_folders_parent_folder ON folders (parent_folder)"))
-                    logger.info("Added column folders.parent_folder")
-                except Exception as e:
-                    logger.warning(f"Error adding folders.parent_folder: {e}")
-            
-            # КРИТИЧЕСКАЯ МИГРАЦИЯ: Изменение первичного ключа для поддержки подпапок с одинаковыми именами
-            # Проблема: текущий PK на name не позволяет создать подпапку с именем корневой папки
-            # Решение: изменяем PK на составной (name, COALESCE(parent_folder, ''))
-            try:
-                # Проверяем, есть ли уже составной первичный ключ
-                pk_check = conn.execute(
+            # Если миграция на id выполнена, проверяем только дополнительные колонки
+            if id_column_exists:
+                existing_columns = conn.execute(
                     text("""
-                        SELECT constraint_name
-                        FROM information_schema.table_constraints
-                        WHERE table_name = 'folders'
-                        AND constraint_type = 'PRIMARY KEY'
-                        AND constraint_name LIKE '%name_parent%'
+                        SELECT table_name, column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name IN ('folders', 'mocks')
+                        AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
+                                            'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
+                                            'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
+                                            'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms',
+                                            'body_contains_required')
                     """)
-                ).fetchone()
+                ).fetchall()
                 
-                if not pk_check:
-                    logger.info("Starting critical migration: changing folders primary key to support subfolders...")
-                    
-                    # Шаг 1: Обновляем существующие записи - устанавливаем parent_folder = '' для корневых папок
-                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
-                    logger.info("Updated existing root folders: set parent_folder = ''")
-                    
-                    # Шаг 2: Удаляем все внешние ключи, которые ссылаются на folders.name
-                    # Находим все внешние ключи используя правильный синтаксис PostgreSQL
-                    fk_list = conn.execute(
-                        text("""
-                            SELECT 
-                                tc.constraint_name,
-                                tc.table_name
-                            FROM information_schema.table_constraints AS tc
-                            JOIN information_schema.key_column_usage AS kcu
-                                ON tc.constraint_name = kcu.constraint_name
-                                AND tc.table_schema = kcu.table_schema
-                            JOIN information_schema.constraint_column_usage AS ccu
-                                ON ccu.constraint_name = tc.constraint_name
-                                AND ccu.table_schema = tc.table_schema
-                            WHERE tc.constraint_type = 'FOREIGN KEY'
-                                AND ccu.table_name = 'folders'
-                                AND ccu.column_name = 'name'
-                        """)
-                    ).fetchall()
-                    
-                    # Удаляем внешние ключи
-                    for fk_name, table_name in fk_list:
+                existing_set = {(row[0], row[1]) for row in existing_columns}
+                
+                # Новые поля в folders
+                if ('folders', 'proxy_enabled') not in existing_set:
+                    try:
+                        conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
+                        logger.info("Added column folders.proxy_enabled")
+                    except Exception as e:
+                        logger.warning(f"Error adding folders.proxy_enabled: {e}")
+                
+                if ('folders', 'proxy_base_url') not in existing_set:
+                    try:
+                        conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_base_url VARCHAR NULL"))
+                        logger.info("Added column folders.proxy_base_url")
+                    except Exception as e:
+                        logger.warning(f"Error adding folders.proxy_base_url: {e}")
+                
+                # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
+                if ('folders', 'order') not in existing_set:
+                    try:
+                        conn.execute(text('ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0'))
+                        conn.execute(text('CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'))
+                        logger.info("Added column folders.order")
+                    except Exception as e:
+                        logger.warning(f"Error adding folders.order: {e}")
+                
+                # Новые поля в mocks
+                if ('mocks', 'delay_ms') not in existing_set:
+                    try:
+                        conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
+                        logger.info("Added column mocks.delay_ms")
+                    except Exception as e:
+                        logger.warning(f"Error adding mocks.delay_ms: {e}")
+                
+                if ('mocks', 'name') not in existing_set:
+                    try:
+                        conn.execute(text("ALTER TABLE mocks ADD COLUMN name VARCHAR NULL"))
+                        logger.info("Added column mocks.name")
+                    except Exception as e:
+                        logger.warning(f"Error adding mocks.name: {e}")
+                
+                # Добавляем колонку order в mocks
+                if ('mocks', 'order') not in existing_set:
+                    try:
+                        conn.execute(text('ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0'))
+                        conn.execute(text('CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'))
+                        logger.info("Added column mocks.order")
+                    except Exception as e:
+                        logger.warning(f"Error adding mocks.order: {e}")
+                
+                # Добавляем поля для кэширования, задержки и имитации ошибок
+                new_mock_columns = [
+                    ('delay_range_min_ms', 'INTEGER NULL'),
+                    ('delay_range_max_ms', 'INTEGER NULL'),
+                    ('cache_enabled', 'BOOLEAN DEFAULT FALSE'),
+                    ('cache_ttl_seconds', 'INTEGER NULL'),
+                    ('error_simulation_enabled', 'BOOLEAN DEFAULT FALSE'),
+                    ('error_simulation_probability', 'JSON NULL'),
+                    ('error_simulation_status_code', 'INTEGER NULL'),
+                    ('error_simulation_body', 'JSON NULL'),
+                    ('error_simulation_delay_ms', 'INTEGER NULL'),
+                    ('body_contains_required', 'BOOLEAN DEFAULT TRUE NOT NULL'),
+                ]
+                
+                for col_name, col_def in new_mock_columns:
+                    if ('mocks', col_name) not in existing_set:
                         try:
-                            conn.execute(text(f'ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {fk_name}'))
-                            logger.info(f"Dropped foreign key {fk_name} from {table_name}")
+                            conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
+                            logger.info(f"Added column mocks.{col_name}")
                         except Exception as e:
-                            logger.warning(f"Error dropping foreign key {fk_name}: {e}")
-                    
-                    # Шаг 3: Удаляем старый первичный ключ
-                    try:
-                        conn.execute(text("ALTER TABLE folders DROP CONSTRAINT IF EXISTS folders_pkey"))
-                        logger.info("Dropped old primary key folders_pkey")
-                    except Exception as e:
-                        logger.warning(f"Error dropping old primary key: {e}")
-                    
-                    # Шаг 4: Обновляем parent_folder для корневых папок (уже NULL -> '')
-                    # Убеждаемся, что все корневые папки имеют parent_folder = ''
-                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
-                    
-                    # Шаг 5: Создаем новый составной первичный ключ
-                    # В PostgreSQL нельзя использовать COALESCE в PK, поэтому используем parent_folder напрямую
-                    # Но parent_folder не может быть NULL, поэтому для корневых папок используем ''
-                    try:
-                        conn.execute(text("""
-                            ALTER TABLE folders 
-                            ADD CONSTRAINT folders_pkey 
-                            PRIMARY KEY (name, parent_folder)
-                        """))
-                        logger.info("Created new composite primary key on (name, parent_folder)")
-                    except Exception as e:
-                        logger.error(f"Error creating new primary key: {e}")
-                        # Если не удалось создать составной PK, создаем обычный уникальный индекс
-                        conn.execute(text("""
-                            CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
-                            ON folders (name, parent_folder)
-                        """))
-                        logger.warning("Created unique index instead of composite PK")
-                    
-                    # Шаг 5: Восстанавливаем внешние ключи (но теперь они должны ссылаться на составной ключ)
-                    # Это сложно, поэтому пока оставляем без FK
-                    logger.warning("Foreign keys need to be recreated manually if needed")
-                    
-                    logger.info("Migration completed: folders can now have subfolders with same names")
-            except Exception as e:
-                logger.error(f"Error migrating folders primary key: {e}", exc_info=True)
-                # Продолжаем выполнение, даже если миграция не удалась
-            
-        # Новые поля в mocks
-            if ('mocks', 'delay_ms') not in existing_set:
-                try:
-                    conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
-                    logger.info("Added column mocks.delay_ms")
-                except Exception as e:
-                    logger.warning(f"Error adding mocks.delay_ms: {e}")
-            
-            if ('mocks', 'name') not in existing_set:
-                try:
-                    conn.execute(text("ALTER TABLE mocks ADD COLUMN name VARCHAR NULL"))
-                    logger.info("Added column mocks.name")
-                except Exception as e:
-                    logger.warning(f"Error adding mocks.name: {e}")
-            
-            # Добавляем колонку order в mocks
-            if ('mocks', 'order') not in existing_set:
-                try:
-                    conn.execute(text('ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0'))
-                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'))
-                    logger.info("Added column mocks.order")
-                except Exception as e:
-                    logger.warning(f"Error adding mocks.order: {e}")
-            
-            # Добавляем поля для кэширования, задержки и имитации ошибок
-            new_mock_columns = [
-                ('delay_range_min_ms', 'INTEGER NULL'),
-                ('delay_range_max_ms', 'INTEGER NULL'),
-                ('cache_enabled', 'BOOLEAN DEFAULT FALSE'),
-                ('cache_ttl_seconds', 'INTEGER NULL'),
-                ('error_simulation_enabled', 'BOOLEAN DEFAULT FALSE'),
-                ('error_simulation_probability', 'JSON NULL'),
-                ('error_simulation_status_code', 'INTEGER NULL'),
-                ('error_simulation_body', 'JSON NULL'),
-                ('error_simulation_delay_ms', 'INTEGER NULL'),
-                ('body_contains_required', 'BOOLEAN DEFAULT TRUE NOT NULL'),
-            ]
-            
-            for col_name, col_def in new_mock_columns:
-                if ('mocks', col_name) not in existing_set:
-                    try:
-                        conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
-                        logger.info(f"Added column mocks.{col_name}")
-                    except Exception as e:
-                        # Если колонка уже существует (возможно, была добавлена вручную), это не критично
-                        if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                            logger.info(f"Column mocks.{col_name} already exists, skipping")
-                        else:
-                            logger.warning(f"Error adding mocks.{col_name}: {e}")
-                else:
-                    logger.debug(f"Column mocks.{col_name} already exists, skipping")
+                            # Если колонка уже существует (возможно, была добавлена вручную), это не критично
+                            if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                                logger.info(f"Column mocks.{col_name} already exists, skipping")
+                            else:
+                                logger.warning(f"Error adding mocks.{col_name}: {e}")
+                    else:
+                        logger.debug(f"Column mocks.{col_name} already exists, skipping")
         
         logger.info("Migrations completed successfully")
     except Exception as e:
@@ -3022,16 +2905,21 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             folder_id = _ensure_folder(folder_slug, db=db)
             mocks_created = generate_mocks_for_openapi(spec, folder_id, db)
             db.commit()
+            
+            # Получаем имя папки по folder_id
+            folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+            folder_name = folder_obj.name if folder_obj else folder_id
         except Exception as e:
             db.rollback()
             logger.error(f"Error generating mocks from OpenAPI spec: {e}", exc_info=True)
             raise HTTPException(500, f"Ошибка при генерации моков из OpenAPI спецификации: {str(e)}")
         finally:
             db.close()
-
+        
         return {
             "message": "spec loaded",
             "name": name,
+            "folder_id": folder_id,
             "folder_name": folder_name,
             "mocks_created": mocks_created,
         }
