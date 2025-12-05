@@ -685,10 +685,15 @@ def create_folder(
             raise HTTPException(400, f"Корневая папка '{name}' уже существует")
         logger.debug(f"create_folder: creating root folder '{name}'")
     
-    db.add(Folder(name=name, parent_folder=parent_folder))
-    db.commit()
-    logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
-    return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
+    try:
+        db.add(Folder(name=name, parent_folder=parent_folder))
+        db.commit()
+        logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
+        return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating folder '{name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при создании папки: {str(e)}")
 
 
 
@@ -1060,6 +1065,20 @@ def _normalize_json_string(json_str: str) -> str:
         return json_str
 
 
+def _clean_response_body(body: Any) -> Any:
+    """Очищает тело ответа от служебных полей."""
+    if body is None:
+        return None
+    if isinstance(body, dict):
+        # Создаем копию, чтобы не изменять исходный объект
+        body = body.copy()
+        body.pop("__cache_ttl__", None)
+        body.pop("__delay_range_ms__", None)
+        body.pop("__error_simulation__", None)
+    # Для других типов (str, list, int, etc.) возвращаем как есть
+    return body
+
+
 def _normalize_path_for_storage(path: str) -> str:
     """Нормализует путь для хранения в БД: убирает лишние слэши, но сохраняет query параметры."""
     if not path:
@@ -1077,11 +1096,16 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     if not entry.id:
         entry.id = str(uuid4())
 
-    folder = db.query(Folder).filter_by(name=entry.folder).first()
+    # Убеждаемся, что folder не None
+    folder_name = entry.folder or "default"
+    if not folder_name:
+        folder_name = "default"
+    
+    folder = db.query(Folder).filter_by(name=folder_name).first()
     if not folder:
         # Автоматически создаем папку, если её нет
         # Это нужно для обратной совместимости
-        folder = Folder(name=entry.folder)
+        folder = Folder(name=folder_name)
         db.add(folder)
         db.flush()
 
@@ -1091,13 +1115,13 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         mock = Mock(id=entry.id)
         db.add(mock)
         # Для нового мока устанавливаем порядок в конец списка
-        max_order_result = db.query(Mock).filter_by(folder_name=entry.folder).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+        max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
         mock.order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     # При обновлении существующего мока не меняем порядок, если он не указан явно
     elif hasattr(entry, 'order') and entry.order is not None:
         mock.order = entry.order
 
-    mock.folder_name = entry.folder
+    mock.folder_name = folder_name
     mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
     normalized_path = _normalize_path_for_storage(entry.request_condition.path)
@@ -1927,9 +1951,14 @@ async def create_or_update_mock(
         elif "data_base64" not in entry.response_config.body or not entry.response_config.body.get("data_base64"):
             raise HTTPException(400, "Для файлового ответа требуется либо загрузить новый файл, либо сохранить существующий с data_base64")
 
-    _save_mock_entry(entry, db)
-    db.commit()
-    return {"message": "mock saved", "mock": entry}
+    try:
+        _save_mock_entry(entry, db)
+        db.commit()
+        return {"message": "mock saved", "mock": entry}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error saving mock: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при сохранении мока: {str(e)}")
 
 
 
@@ -1949,51 +1978,60 @@ def list_mocks(
     ),
     db: Session = Depends(get_db),
 ):
-    # Логируем запрос для отладки
-    logger.debug(f"list_mocks called with folder='{folder}'")
-    q = db.query(Mock)
-    if folder:
-        # Декодируем имя папки на случай URL-кодирования
-        folder = folder.strip()
-        logger.debug(f"Filtering mocks by folder_name='{folder}'")
-        q = q.filter_by(folder_name=folder)
-    
-    # Сортируем по order, затем по id для стабильности
-    q = q.order_by(Mock.order.asc(), Mock.id.asc())
-    
-    results = []
-    for m in q.all():
-        results.append(
-            MockEntry(
-                id=m.id,
-                folder=m.folder_name,
-                name=m.name,
-                request_condition=MockRequestCondition(
-                    method=m.method,
-                    path=m.path,
-                    headers=m.headers if m.headers else None,
-                    body_contains=m.body_contains,
-                ),
-                response_config=MockResponseConfig(
-                    status_code=m.status_code,
-                    headers=m.response_headers if m.response_headers else None,
-                    body=_clean_response_body(m.response_body),
-                ),
-                active=m.active,
-                delay_ms=m.delay_ms or 0,
-                delay_range_min_ms=m.delay_range_min_ms,
-                delay_range_max_ms=m.delay_range_max_ms,
-                cache_enabled=m.cache_enabled if m.cache_enabled is not None else False,
-                cache_ttl_seconds=m.cache_ttl_seconds,
-                error_simulation_enabled=m.error_simulation_enabled if m.error_simulation_enabled is not None else False,
-                error_simulation_probability=m.error_simulation_probability,
-                error_simulation_status_code=m.error_simulation_status_code,
-                error_simulation_body=m.error_simulation_body,
-                error_simulation_delay_ms=m.error_simulation_delay_ms,
-                order=m.order if m.order is not None else 0,
-            )
-        )
-    return results
+    try:
+        # Логируем запрос для отладки
+        logger.debug(f"list_mocks called with folder='{folder}'")
+        q = db.query(Mock)
+        if folder:
+            # Декодируем имя папки на случай URL-кодирования
+            folder = folder.strip()
+            logger.debug(f"Filtering mocks by folder_name='{folder}'")
+            q = q.filter_by(folder_name=folder)
+        
+        # Сортируем по order, затем по id для стабильности
+        q = q.order_by(Mock.order.asc(), Mock.id.asc())
+        
+        results = []
+        for m in q.all():
+            try:
+                results.append(
+                    MockEntry(
+                        id=m.id,
+                        folder=m.folder_name,
+                        name=m.name,
+                        request_condition=MockRequestCondition(
+                            method=m.method,
+                            path=m.path,
+                            headers=m.headers if m.headers else None,
+                            body_contains=m.body_contains,
+                        ),
+                        response_config=MockResponseConfig(
+                            status_code=m.status_code,
+                            headers=m.response_headers if m.response_headers else None,
+                            body=_clean_response_body(m.response_body),
+                        ),
+                        active=m.active,
+                        delay_ms=m.delay_ms or 0,
+                        delay_range_min_ms=m.delay_range_min_ms,
+                        delay_range_max_ms=m.delay_range_max_ms,
+                        cache_enabled=m.cache_enabled if m.cache_enabled is not None else False,
+                        cache_ttl_seconds=m.cache_ttl_seconds,
+                        error_simulation_enabled=m.error_simulation_enabled if m.error_simulation_enabled is not None else False,
+                        error_simulation_probability=m.error_simulation_probability,
+                        error_simulation_status_code=m.error_simulation_status_code,
+                        error_simulation_body=m.error_simulation_body,
+                        error_simulation_delay_ms=m.error_simulation_delay_ms,
+                        order=m.order if m.order is not None else 0,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Error processing mock {m.id}: {e}", exc_info=True)
+                # Пропускаем проблемный мок, но продолжаем обработку остальных
+                continue
+        return results
+    except Exception as e:
+        logger.error(f"Error in list_mocks: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при получении списка моков: {str(e)}")
 
 
 
@@ -3363,16 +3401,6 @@ def _maybe_simulate_error(m: Mock, folder_name: str) -> Optional[Dict[str, Any]]
         "delay_ms": delay_ms,
         "body": err_body,
     }
-
-
-def _clean_response_body(body: Any) -> Any:
-    """Очищает тело ответа от служебных полей."""
-    if isinstance(body, dict):
-        body = body.copy()
-        body.pop("__cache_ttl__", None)
-        body.pop("__delay_range_ms__", None)
-        body.pop("__error_simulation__", None)
-    return body
 
 
 def _apply_templates(value: Any, req: Request, full_inner: str) -> Any:
