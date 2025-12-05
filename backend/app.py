@@ -3436,13 +3436,19 @@ def get_request_logs(
     description="Удаляет все записи истории вызовов, опционально только для указанной папки.",
 )
 def clear_request_logs(
-    folder: Optional[str] = Query(None, description="Имя папки. Если не указано, удаляются все записи."),
+    folder: Optional[str] = Query(None, description="Имя папки (может быть в формате name|parent_folder для подпапок). Если не указано, удаляются все записи."),
     db: Session = Depends(get_db),
 ):
     """Очищает историю вызовов."""
     query = db.query(RequestLog)
     if folder:
-        query = query.filter_by(folder_name=folder)
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        # В request_logs хранится только folder_name (без parent_folder)
+        folder_name = folder.strip()
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+        query = query.filter_by(folder_name=folder_name)
     
     count = query.count()
     query.delete()
