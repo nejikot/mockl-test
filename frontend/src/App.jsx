@@ -1975,18 +1975,40 @@ export default function App() {
             flexWrap: "wrap",
             gap: 16,
             alignItems: "center",
-            justifyContent: "space-between",
+            position: "relative",
             boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
           }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-              <Typography.Title level={3} style={{ margin: 0 }}>ᨐᵒᶜᵏ</Typography.Title>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flex: "0 0 auto" }}>
+              <Typography.Title level={3} style={{ margin: 0, fontSize: "48px" }}>ᨐᵒᶜᵏ</Typography.Title>
               <Typography.Text type="secondary">mock-сервер</Typography.Text>
+            </div>
+            <div style={{
+              position: "absolute",
+              left: "50%",
+              transform: "translateX(-50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}>
+              <Typography.Text
+                style={{
+                  fontSize: "14px",
+                  fontWeight: 500,
+                  padding: "4px 12px",
+                  borderRadius: "4px",
+                  backgroundColor: theme === "dark" ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.06)",
+                  color: theme === "dark" ? "rgba(255, 255, 255, 0.85)" : "rgba(0, 0, 0, 0.85)"
+                }}
+              >
+                FIX
+              </Typography.Text>
             </div>
             <div style={{
               display: "flex",
               alignItems: "center",
               gap: 12,
-              flex: isDesktop ? "0 0 420px" : "1 1 100%"
+              flex: isDesktop ? "0 0 420px" : "1 1 100%",
+              marginLeft: "auto"
             }}>
               <Typography.Text strong>Бэк:</Typography.Text>
               <Tooltip title="Копировать адрес">
