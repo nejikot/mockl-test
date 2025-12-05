@@ -1096,7 +1096,7 @@ def delete_folder(
         def is_subfolder_in_branch(subfolder_name: str, subfolder_parent: str, target_parent_name: str, target_parent_parent: str) -> bool:
             """
             Проверяет, принадлежит ли подпапка правильной ветке иерархии.
-            Проверяет, что родительская папка подпапки существует с правильным parent_folder.
+            Использует рекурсивную проверку всей цепочки parent_folder до корня.
             """
             # Если parent_folder подпапки не совпадает с target_parent_name, то это не наша подпапка
             if subfolder_parent != target_parent_name:
@@ -1109,7 +1109,79 @@ def delete_folder(
                 Folder.parent_folder == target_parent_parent
             ).first()
             
-            return parent_exists is not None
+            if not parent_exists:
+                return False
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: нужно убедиться, что найденная подпапка действительно
+            # является дочерней удаляемой папки, а не дочерней другой папки с таким же именем.
+            # 
+            # Проблема: если есть две папки "test" (одна в корне, другая в "test-3"),
+            # то обе будут иметь подпапки с parent_folder = 'test'.
+            # 
+            # Решение: используем рекурсивную проверку всей цепочки иерархии.
+            # Строим путь от найденной подпапки вверх до корня и проверяем,
+            # что удаляемая папка находится в этом пути.
+            
+            def check_path_to_target(current_name: str, current_parent: str, target_name: str, target_parent: str, visited: set = None) -> bool:
+                """Рекурсивно проверяет, находится ли target папка в пути от current до корня."""
+                if visited is None:
+                    visited = set()
+                
+                # Защита от циклов
+                path_key = (current_name, current_parent)
+                if path_key in visited:
+                    return False
+                visited.add(path_key)
+                
+                # Если текущая папка - это целевая папка, возвращаем True
+                if current_name == target_name and current_parent == target_parent:
+                    return True
+                
+                # Если текущая папка - корневая, проверка завершена (не нашли целевую папку)
+                if current_parent == '':
+                    return False
+                
+                # Находим родительскую папку текущей папки
+                # ВАЖНО: parent_folder текущей папки (current_parent) - это name родительской папки
+                # Но может быть несколько папок с таким именем в разных местах
+                # Нам нужно найти ту, которая является родителем текущей папки
+                # 
+                # Проблема: мы не знаем parent_folder родительской папки напрямую
+                # Но мы знаем, что parent_folder подпапки = name родительской папки
+                # И мы знаем current_parent - это name родительской папки
+                #
+                # Решение: нужно найти родительскую папку, используя рекурсивный поиск
+                # Но это сложно. Вместо этого, используем более простой подход:
+                # проверяем все возможные родительские папки с name = current_parent
+                # и проверяем, может ли какая-то из них быть родителем
+                
+                # Ищем все папки с name = current_parent (это потенциальные родительские папки)
+                # Но нам нужно найти правильную - ту, которая является родителем текущей папки
+                # Проблема в том, что мы не можем напрямую определить, какая папка является родителем
+                # без проверки всей цепочки иерархии
+                
+                # Упрощенное решение: проверяем все возможные родительские папки
+                # и рекурсивно проверяем каждую
+                parent_candidates = db.query(Folder).filter(
+                    Folder.name == current_parent
+                ).all()
+                
+                # Проверяем каждую кандидатную родительскую папку
+                for parent_candidate in parent_candidates:
+                    # Рекурсивно проверяем, находится ли целевая папка в пути от родительской папки до корня
+                    if check_path_to_target(parent_candidate.name, parent_candidate.parent_folder, target_name, target_parent, visited):
+                        return True
+                
+                return False
+            
+            # Проверяем, что удаляемая папка находится в пути от найденной подпапки до корня
+            # Это гарантирует, что найденная подпапка действительно принадлежит удаляемой папке
+            # 
+            # Логика: если удаляемая папка находится в пути от найденной подпапки до корня,
+            # то найденная подпапка действительно является дочерней удаляемой папки
+            result = check_path_to_target(subfolder_name, subfolder_parent, target_parent_name, target_parent_parent)
+            logger.debug(f"is_subfolder_in_branch: subfolder='{subfolder_name}' parent='{subfolder_parent}', target='{target_parent_name}' target_parent='{target_parent_parent}', result={result}")
+            return result
         
         def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
             # Сначала проверяем, что родительская папка существует (для безопасности)
