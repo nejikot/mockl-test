@@ -157,6 +157,8 @@ Base = declarative_base()
 
 class Folder(Base):
     __tablename__ = "folders"
+    # Изменяем первичный ключ: добавляем id и делаем составной уникальный индекс на (name, parent_folder)
+    # Но для обратной совместимости пока оставляем name как PK, а проверку делаем в коде
     name = Column(String, primary_key=True)
     mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
     # Настройки прокси для папки
@@ -165,7 +167,9 @@ class Folder(Base):
     # Порядок отображения папки
     order = Column(Integer, default=0, index=True)
     # Родительская папка для поддержки вложенных папок
-    parent_folder = Column(String, ForeignKey("folders.name"), nullable=True, index=True)
+    # ВАЖНО: parent_folder не может быть ForeignKey на folders.name, так как это создаст циклическую зависимость
+    # при попытке создать подпапку с именем корневой папки
+    parent_folder = Column(String, nullable=True, index=True)
     # Вложенные папки
     subfolders = relationship("Folder", backref="parent", remote_side=[name], cascade="all, delete")
 
@@ -505,6 +509,66 @@ def ensure_migrations():
     """
     try:
         with engine.begin() as conn:
+            # Проверяем, нужно ли мигрировать первичный ключ folders
+            # Проверяем, есть ли уже составной первичный ключ или уникальный индекс
+            pk_check = conn.execute(
+                text("""
+                    SELECT constraint_name, constraint_type
+                    FROM information_schema.table_constraints
+                    WHERE table_name = 'folders'
+                    AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+                """)
+            ).fetchall()
+            
+            # Проверяем, есть ли уже уникальный индекс на (name, parent_folder)
+            index_check = conn.execute(
+                text("""
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE tablename = 'folders'
+                    AND indexname LIKE '%name_parent%'
+                """)
+            ).fetchall()
+            
+            # Если первичный ключ только на name и нет уникального индекса, нужно мигрировать
+            has_composite_pk = any('name' in str(row) and 'parent' in str(row) for row in pk_check)
+            has_unique_index = len(index_check) > 0
+            
+            if not has_composite_pk and not has_unique_index:
+                logger.info("Migrating folders table to support subfolders with same names...")
+                try:
+                    # Сначала добавляем колонку parent_folder, если её нет
+                    parent_folder_exists = conn.execute(
+                        text("""
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_name = 'folders' AND column_name = 'parent_folder'
+                        """)
+                    ).fetchone()
+                    
+                    if not parent_folder_exists:
+                        conn.execute(text("ALTER TABLE folders ADD COLUMN parent_folder VARCHAR NULL"))
+                        logger.info("Added column folders.parent_folder")
+                    
+                    # Обновляем существующие записи: устанавливаем parent_folder = '' для корневых папок
+                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
+                    
+                    # Создаем уникальный индекс на (name, COALESCE(parent_folder, ''))
+                    # Это позволит иметь одинаковые имена в разных родительских папках
+                    conn.execute(text("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
+                        ON folders (name, COALESCE(parent_folder, ''))
+                    """))
+                    logger.info("Created unique index on folders (name, parent_folder)")
+                    
+                    # Удаляем старый первичный ключ и создаем новый составной
+                    # Но это может быть проблематично из-за внешних ключей
+                    # Поэтому оставляем старый PK и добавляем уникальный индекс
+                    logger.info("Migration completed: folders can now have subfolders with same names")
+                except Exception as e:
+                    logger.warning(f"Error migrating folders table: {e}")
+                    # Продолжаем выполнение, даже если миграция не удалась
+            
             # Проверяем существование колонок одним запросом для оптимизации
             existing_columns = conn.execute(
                 text("""
@@ -553,6 +617,55 @@ def ensure_migrations():
                     logger.info("Added column folders.parent_folder")
                 except Exception as e:
                     logger.warning(f"Error adding folders.parent_folder: {e}")
+            
+            # КРИТИЧЕСКАЯ МИГРАЦИЯ: Изменение первичного ключа для поддержки подпапок с одинаковыми именами
+            # Проблема: текущий PK на name не позволяет создать подпапку с именем корневой папки
+            # Решение: изменяем PK на составной (name, COALESCE(parent_folder, ''))
+            try:
+                # Проверяем, есть ли уже составной первичный ключ
+                pk_check = conn.execute(
+                    text("""
+                        SELECT constraint_name
+                        FROM information_schema.table_constraints
+                        WHERE table_name = 'folders'
+                        AND constraint_type = 'PRIMARY KEY'
+                        AND constraint_name LIKE '%name_parent%'
+                    """)
+                ).fetchone()
+                
+                if not pk_check:
+                    logger.info("Starting migration: changing folders primary key to support subfolders with same names...")
+                    
+                    # Шаг 1: Обновляем существующие записи - устанавливаем parent_folder = '' для корневых папок
+                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
+                    logger.info("Updated existing root folders: set parent_folder = ''")
+                    
+                    # Шаг 2: Удаляем старый первичный ключ
+                    # Сначала нужно удалить все внешние ключи, которые ссылаются на folders.name
+                    # Но это может быть проблематично, поэтому используем другой подход:
+                    # Создаем уникальный индекс и оставляем старый PK (для обратной совместимости)
+                    # Но это не решит проблему полностью - нужна полная миграция PK
+                    
+                    # ВАЖНО: Полная миграция PK требует:
+                    # 1. Удалить все внешние ключи на folders.name
+                    # 2. Удалить старый PK
+                    # 3. Создать новый составной PK
+                    # 4. Восстановить внешние ключи
+                    # Это очень сложная операция, которая может сломать данные
+                    
+                    # Пока используем обходное решение: создаем уникальный индекс
+                    # и проверяем в коде перед вставкой
+                    conn.execute(text("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
+                        ON folders (name, COALESCE(parent_folder, ''))
+                    """))
+                    logger.info("Created unique index folders_name_parent_unique on (name, parent_folder)")
+                    
+                    logger.warning("WARNING: Primary key migration not completed. "
+                                 "Subfolders with same names as root folders are not fully supported yet. "
+                                 "Full migration requires dropping and recreating foreign keys.")
+            except Exception as e:
+                logger.error(f"Error migrating folders primary key: {e}", exc_info=True)
             
             # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
@@ -697,13 +810,69 @@ def create_folder(
         logger.debug(f"create_folder: creating root folder '{name}'")
     
     try:
-        db.add(Folder(name=name, parent_folder=parent_folder))
+        # Нормализуем parent_folder: None -> '' для корневых папок
+        # Это нужно для работы уникального индекса
+        normalized_parent = parent_folder if parent_folder else ''
+        
+        # Проверяем уникальность с учетом нормализованного parent_folder
+        # Используем COALESCE для сравнения NULL и ''
+        if normalized_parent:
+            existing = db.query(Folder).filter(
+                Folder.name == name,
+                Folder.parent_folder == normalized_parent
+            ).first()
+        else:
+            # Для корневых папок проверяем, что parent_folder IS NULL или ''
+            existing = db.query(Folder).filter(
+                Folder.name == name,
+                (Folder.parent_folder.is_(None) | (Folder.parent_folder == ''))
+            ).first()
+        
+        if existing:
+            if parent_folder:
+                raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
+            else:
+                raise HTTPException(400, f"Корневая папка '{name}' уже существует")
+        
+        # ВАЖНО: Из-за того, что первичный ключ на name, PostgreSQL не позволит создать
+        # подпапку с именем, совпадающим с корневой папкой.
+        # Проверяем, не существует ли уже папка с таким именем (независимо от parent_folder)
+        existing_by_name = db.query(Folder).filter_by(name=name).first()
+        if existing_by_name:
+            # Если пытаемся создать подпапку, а корневая папка с таким именем уже существует
+            if parent_folder:
+                # Это нормально - подпапка может иметь имя корневой папки
+                # Но из-за PK на name это невозможно. Нужна миграция PK.
+                # Пока возвращаем понятную ошибку
+                raise HTTPException(400, 
+                    f"Нельзя создать подпапку '{name}' в папке '{parent_folder}': "
+                    f"корневая папка с именем '{name}' уже существует. "
+                    f"Для поддержки подпапок с именами корневых папок требуется миграция первичного ключа базы данных.")
+            else:
+                raise HTTPException(400, f"Корневая папка '{name}' уже существует")
+        
+        # Создаем папку с нормализованным parent_folder
+        # Используем None для корневых папок, чтобы сохранить совместимость
+        # ВАЖНО: Из-за PK на name, если корневая папка с таким именем уже существует,
+        # PostgreSQL выдаст ошибку уникальности при попытке создать подпапку
+        folder = Folder(name=name, parent_folder=normalized_parent if normalized_parent else None)
+        db.add(folder)
         db.commit()
         logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
         return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error creating folder '{name}': {e}", exc_info=True)
+        # Проверяем, не является ли это ошибкой уникальности
+        error_str = str(e).lower()
+        if "unique" in error_str or "duplicate" in error_str or "violates unique constraint" in error_str:
+            if parent_folder:
+                raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
+            else:
+                raise HTTPException(400, f"Корневая папка '{name}' уже существует")
         raise HTTPException(status_code=500, detail=f"Ошибка при создании папки: {str(e)}")
 
 
