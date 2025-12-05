@@ -9,7 +9,7 @@ import {
   ExclamationCircleOutlined, CopyOutlined,
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
   SnippetsOutlined, BgColorsOutlined, DownloadOutlined,
-  DownOutlined, RightOutlined
+  DownOutlined, RightOutlined, SearchOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -437,6 +437,7 @@ export default function App() {
   const [folders, setFolders] = useState(["default"]);
   const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
   const [selectedFolder, setSelectedFolder] = useState("default");
+  const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
@@ -1606,11 +1607,27 @@ export default function App() {
                   <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
                     Перетаскивайте, чтобы упорядочить, или удаляйте ненужные.
                   </Typography.Paragraph>
+                  <Input
+                    placeholder="Поиск папки..."
+                    prefix={<SearchOutlined />}
+                    value={folderSearchQuery}
+                    onChange={(e) => setFolderSearchQuery(e.target.value)}
+                    style={{ marginBottom: 16 }}
+                    allowClear
+                  />
                   {(() => {
+                    // Фильтруем папки по поисковому запросу
+                    const filteredFoldersData = folderSearchQuery
+                      ? foldersData.filter(f => 
+                          f.name.toLowerCase().includes(folderSearchQuery.toLowerCase()) ||
+                          (f.parent_folder && f.parent_folder.toLowerCase().includes(folderSearchQuery.toLowerCase()))
+                        )
+                      : foldersData;
+                    
                     // Группируем папки по родителям
-                    const rootFolders = foldersData.filter(f => !f.parent_folder || f.name === "default");
+                    const rootFolders = filteredFoldersData.filter(f => !f.parent_folder || f.name === "default");
                     const foldersByParent = {};
-                    foldersData.forEach(f => {
+                    filteredFoldersData.forEach(f => {
                       if (f.parent_folder && f.name !== "default") {
                         if (!foldersByParent[f.parent_folder]) {
                           foldersByParent[f.parent_folder] = [];
