@@ -738,6 +738,9 @@ export default function App() {
   const [isDuplicateModalOpen, setDuplicateModalOpen] = useState(false);
   const [duplicateForm] = Form.useForm();
   const [folderToDuplicate, setFolderToDuplicate] = useState(null);
+  const [isRenameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameForm] = Form.useForm();
+  const [folderToRename, setFolderToRename] = useState(null);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("mockl-theme") || "light";
@@ -1800,6 +1803,55 @@ export default function App() {
     }
   };
 
+  const startRenameFolder = name => {
+    setFolderToRename(name);
+    // Извлекаем только имя папки для отображения в форме
+    const { name: folderName } = parseFolderKey(name);
+    renameForm.setFieldsValue({
+      new_name: folderName
+    });
+    setRenameModalOpen(true);
+  };
+
+  const renameFolder = async vals => {
+    const newName = (vals.new_name || "").trim();
+    if (!folderToRename || !newName) {
+      setRenameModalOpen(false);
+      return;
+    }
+    // Проверяем, не существует ли уже корневая папка с таким именем
+    const { name: oldName, parent_folder } = parseFolderKey(folderToRename);
+    if (oldName === newName) {
+      setRenameModalOpen(false);
+      return;
+    }
+    const existingFolder = foldersData.find(f => f.name === newName && !f.parent_folder);
+    if (existingFolder) {
+      return message.error("Корневая папка с таким именем уже существует");
+    }
+    try {
+      const res = await fetch(`${host}/api/folders/${encodeURIComponent(folderToRename)}/rename`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName })
+      });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Ошибка переименования");
+      }
+      message.success("Страница переименована");
+      setRenameModalOpen(false);
+      await fetchFolders();
+      // Обновляем выбранную папку на новое имя
+      // Сохраняем parent_folder, если он был
+      const newFolderKey = parent_folder ? `${newName}|${parent_folder}` : newName;
+      setSelectedFolder(newFolderKey);
+      await fetchMocks();
+    } catch (e) {
+      message.error(e.message || "Ошибка переименования страницы");
+    }
+  };
+
   const isDesktop = screens.md ?? false;
   const stickyTopOffset = isDesktop ? 88 : 64;
   const selectedFolderData = parseFolderKey(selectedFolder);
@@ -2400,6 +2452,13 @@ export default function App() {
                           <div style={{ display: "flex", gap: 8 }}>
                             <Button size="small" onClick={openFolderSettings}>
                               Настройки proxy
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={<EditOutlined />}
+                              onClick={() => startRenameFolder(selectedFolder)}
+                            >
+                              Переименовать
                             </Button>
                             <Button
                               size="small"
@@ -3172,6 +3231,29 @@ export default function App() {
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>
                   Продублировать
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Переименовать страницу"
+            open={isRenameModalOpen}
+            onCancel={() => setRenameModalOpen(false)}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={renameForm} onFinish={renameFolder} layout="vertical">
+              <Form.Item
+                label="Новое имя страницы"
+                name="new_name"
+                rules={[{ required: true, message: "Введите новое имя страницы" }]}
+              >
+                <Input placeholder="Введите новое имя" />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Переименовать
                 </Button>
               </Form.Item>
             </Form>

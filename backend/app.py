@@ -476,6 +476,13 @@ class FolderDuplicatePayload(BaseModel):
     new_name: str = Field(..., description="Имя новой папки‑копии")
 
 
+class FolderRenamePayload(BaseModel):
+    """Модель запроса для переименования папки."""
+
+
+    new_name: str = Field(..., description="Новое имя папки")
+
+
 
 class FolderSettings(BaseModel):
     """Настройки папки (прокси и пр.)."""
@@ -1162,6 +1169,125 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         logger.error(f"Error duplicating folder: {e}", exc_info=True)
         raise HTTPException(500, f"Ошибка при дублировании папки: {str(e)}")
 
+
+@app.patch(
+    "/api/folders/{name}/rename",
+    summary="Переименовать папку",
+    description=(
+        "Переименовывает папку или подпапку. При переименовании обновляются:\n"
+        "- Имя папки в таблице folders\n"
+        "- folder_name во всех моках, которые ссылаются на эту папку\n"
+        "- folder_name во всех записях истории вызовов (request_logs)\n"
+        "- parent_folder во всех подпапках (если переименовывается корневая папка)\n"
+        "- Метрики Prometheus очищаются для старого имени"
+    ),
+)
+def rename_folder(
+    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
+    payload: FolderRenamePayload = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Переименовывает папку и обновляет все связанные данные."""
+    if name == "default":
+        raise HTTPException(400, "Нельзя переименовать стандартную папку")
+    
+    new_name = payload.new_name.strip()
+    if not new_name:
+        raise HTTPException(400, "Новое имя папки не может быть пустым")
+    if new_name == "default":
+        raise HTTPException(400, "Нельзя использовать имя 'default'")
+    if name == new_name:
+        raise HTTPException(400, "Новое имя должно отличаться от текущего")
+    
+    try:
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = name.strip()
+        parent_folder = None
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+            parent_folder = parts[1] if parts[1] else None
+        
+        # Ищем папку по составному ключу
+        if parent_folder:
+            # Ищем подпапку
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == parent_folder
+            ).first()
+        else:
+            # Ищем корневую папку (parent_folder = '')
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == ''
+            ).first()
+        
+        if not folder:
+            raise HTTPException(404, f"Папка '{folder_name}' не найдена")
+        
+        # Проверяем, не существует ли уже папка с новым именем
+        if parent_folder:
+            # Для подпапок проверяем в той же родительской папке
+            existing = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder == parent_folder
+            ).first()
+        else:
+            # Для корневых папок проверяем только корневые
+            existing = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder == ''
+            ).first()
+        
+        if existing:
+            folder_type = "подпапка" if parent_folder else "папка"
+            raise HTTPException(400, f"{folder_type.capitalize()} с именем '{new_name}' уже существует")
+        
+        old_folder_name = folder.name
+        
+        # Очищаем метрики Prometheus для старого имени перед переименованием
+        _clear_prometheus_metrics_for_folder(old_folder_name, db)
+        
+        # Обновляем имя папки через прямой SQL, чтобы обойти ограничения первичного ключа
+        if parent_folder:
+            db.execute(text("UPDATE folders SET name = :new_name WHERE name = :old_name AND parent_folder = :parent_folder"), 
+                      {"new_name": new_name, "old_name": old_folder_name, "parent_folder": parent_folder})
+        else:
+            db.execute(text("UPDATE folders SET name = :new_name WHERE name = :old_name AND parent_folder = ''"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Обновляем folder_name во всех моках
+        db.execute(text("UPDATE mocks SET folder_name = :new_name WHERE folder_name = :old_name"), 
+                  {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Обновляем folder_name во всех request_logs
+        db.execute(text("UPDATE request_logs SET folder_name = :new_name WHERE folder_name = :old_name"), 
+                  {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Если это корневая папка, обновляем parent_folder во всех подпапках
+        if not parent_folder:
+            db.execute(text("UPDATE folders SET parent_folder = :new_name WHERE parent_folder = :old_name"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
+            db.flush()
+        
+        db.commit()
+        
+        folder_type = "подпапка" if parent_folder else "папка"
+        return {
+            "message": f"{folder_type.capitalize()} '{old_folder_name}' переименована в '{new_name}'",
+            "old_name": old_folder_name,
+            "new_name": new_name
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error renaming folder '{name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при переименовании папки: {str(e)}")
 
 
 def parse_curl_command(curl_str: str) -> Dict[str, Any]:
