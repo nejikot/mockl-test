@@ -1093,23 +1093,25 @@ def delete_folder(
         # ВАЖНО: Используем прямой SQL для удаления, чтобы обойти циклические зависимости SQLAlchemy
         visited_folders = set()
         
-        def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
-            # Ищем подпапки, у которых parent_folder == parent_name
-            # ВАЖНО: Мы ищем подпапки конкретной родительской папки по её имени
-            # parent_folder подпапки должен совпадать с name родительской папки
-            # Это правильно, так как parent_folder однозначно идентифицирует родительскую папку
-            # Но проблема: если есть две папки с одинаковым именем в разных местах,
-            # то при удалении одной мы можем случайно удалить подпапки другой
-            # 
-            # Решение: мы должны использовать составной ключ для идентификации родительской папки
-            # Но в текущей схеме parent_folder - это просто имя родительской папки, не полный путь
-            # Поэтому если есть две папки "test" (одна в корне, другая в подпапке "other"),
-            # то у обеих подпапки будут иметь parent_folder = "test"
-            # 
-            # Правильное решение: при поиске подпапок нужно учитывать не только parent_folder,
-            # но и проверять, что родительская папка действительно та, которую мы удаляем
-            # Для этого нужно проверить, что родительская папка существует с правильным parent_folder
+        def is_subfolder_in_branch(subfolder_name: str, subfolder_parent: str, target_parent_name: str, target_parent_parent: str) -> bool:
+            """
+            Проверяет, принадлежит ли подпапка правильной ветке иерархии.
+            Проверяет, что родительская папка подпапки существует с правильным parent_folder.
+            """
+            # Если parent_folder подпапки не совпадает с target_parent_name, то это не наша подпапка
+            if subfolder_parent != target_parent_name:
+                return False
             
+            # Проверяем, что родительская папка подпапки существует с правильным parent_folder
+            # Это гарантирует, что подпапка действительно принадлежит удаляемой папке
+            parent_exists = db.query(Folder).filter(
+                Folder.name == target_parent_name,
+                Folder.parent_folder == target_parent_parent
+            ).first()
+            
+            return parent_exists is not None
+        
+        def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
             # Сначала проверяем, что родительская папка существует (для безопасности)
             parent_folder_obj = db.query(Folder).filter(
                 Folder.name == parent_name,
@@ -1122,26 +1124,19 @@ def delete_folder(
                 return
             
             # Ищем подпапки, у которых parent_folder == parent_name
-            # Это правильно, так как parent_folder подпапки должен совпадать с name родительской папки
-            subfolders = db.query(Folder).filter(
+            all_subfolders = db.query(Folder).filter(
                 Folder.parent_folder == parent_name
             ).all()
             
-            # Дополнительная проверка: убеждаемся, что найденные подпапки действительно
-            # принадлежат удаляемой папке, проверяя их иерархию
-            # Если parent_parent_folder не пустой, это означает, что мы удаляем подпапку,
-            # и все её подпапки должны иметь правильную иерархию
-            # Но на самом деле, если parent_folder подпапки == parent_name, это уже правильно
-            # Проблема может возникнуть только если есть две папки с одинаковым именем
-            # в разных местах иерархии, и мы удаляем одну, но находим подпапки другой
-            # 
-            # Для решения этой проблемы нужно проверить, что найденные подпапки
-            # действительно принадлежат удаляемой папке. Но в текущей схеме мы не храним
-            # полный путь, поэтому можем полагаться только на parent_folder
-            # 
-            # ВАЖНО: Если есть две папки с одинаковым именем в разных местах,
-            # то при удалении одной мы можем случайно удалить подпапки другой
-            # Это ограничение текущей схемы БД
+            # Фильтруем подпапки: оставляем только те, которые действительно принадлежат удаляемой папке
+            # Для этого проверяем, что родительская папка подпапки существует с правильным parent_folder
+            subfolders = []
+            for subfolder in all_subfolders:
+                # Проверяем, что подпапка действительно принадлежит удаляемой папке
+                if is_subfolder_in_branch(subfolder.name, subfolder.parent_folder, parent_name, parent_parent_folder):
+                    subfolders.append(subfolder)
+                else:
+                    logger.debug(f"Skipping subfolder '{subfolder.name}' with parent_folder='{subfolder.parent_folder}' - does not belong to folder '{parent_name}' with parent_folder='{parent_parent_folder}'")
             
             for subfolder in subfolders:
                 # Создаем уникальный идентификатор подпапки для защиты от циклов
@@ -1156,6 +1151,11 @@ def delete_folder(
                 # Удаляем все моки подпапки (с учетом parent_folder)
                 # Для обратной совместимости также удаляем моки, где folder_parent может быть NULL
                 db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND (folder_parent = :parent_folder OR folder_parent IS NULL)"), 
+                          {"folder_name": subfolder.name, "parent_folder": subfolder.parent_folder})
+                db.flush()
+                
+                # Удаляем записи из request_logs для подпапки (с учетом parent_folder)
+                db.execute(text("DELETE FROM request_logs WHERE folder_name = :folder_name AND (folder_parent = :parent_folder OR folder_parent IS NULL)"), 
                           {"folder_name": subfolder.name, "parent_folder": subfolder.parent_folder})
                 db.flush()
                 
@@ -1179,6 +1179,16 @@ def delete_folder(
                       {"folder_name": folder_name})
         else:
             db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
+                      {"folder_name": folder_name, "parent_folder": parent_folder_value})
+        db.flush()
+        
+        # Удаляем записи из request_logs для этой папки (с учетом parent_folder)
+        # Это необходимо, так как есть внешний ключ на folders
+        if parent_folder_value == '':
+            db.execute(text("DELETE FROM request_logs WHERE folder_name = :folder_name AND (folder_parent = '' OR folder_parent IS NULL)"), 
+                      {"folder_name": folder_name})
+        else:
+            db.execute(text("DELETE FROM request_logs WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
                       {"folder_name": folder_name, "parent_folder": parent_folder_value})
         db.flush()
         
