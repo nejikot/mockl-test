@@ -2728,78 +2728,292 @@ export default function App() {
               <div style={{ textAlign: 'center', padding: '40px' }}>
                 <Typography.Text>Загрузка метрик...</Typography.Text>
               </div>
-            ) : (
-              <div style={{ 
-                background: theme === "dark" ? "#1f1f1f" : "#f5f5f5",
-                borderRadius: 8,
-                padding: 16,
-                maxHeight: '70vh',
-                overflow: 'auto'
-              }}>
-                <pre style={{
-                  margin: 0,
-                  padding: 0,
-                  fontFamily: 'Monaco, Menlo, "Ubuntu Mono", Consolas, "source-code-pro", monospace',
-                  fontSize: 12,
-                  lineHeight: 1.6,
-                  color: theme === "dark" ? "#e8e8e8" : "#333",
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word'
-                }}>
-                  {metricsData.split('\n').map((line, index) => {
-                    // Комментарии
-                    if (line.startsWith('#')) {
-                      const isHelp = line.startsWith('# HELP');
-                      const isType = line.startsWith('# TYPE');
-                      return (
-                        <div key={index} style={{ 
-                          color: theme === "dark" ? "#888" : "#999", 
-                          fontStyle: 'italic',
-                          marginBottom: 4,
-                          fontWeight: (isHelp || isType) ? 500 : 400
-                        }}>
-                          {line}
+            ) : (() => {
+              // Парсим метрики и извлекаем полезную информацию
+              const parseMetrics = (text) => {
+                const methodStats = {}; // {method: {total: 0, byOutcome: {}, byPath: {}}}
+                const pathStats = {}; // {path: {total: 0, byMethod: {}}}
+                let totalRequests = 0;
+                let totalResponseTime = 0;
+                let responseTimeCount = 0;
+                
+                const lines = text.split('\n');
+                for (const line of lines) {
+                  if (!line.trim() || line.startsWith('#')) continue;
+                  
+                  // Парсим mockl_requests_total{method="GET",path="/api",folder="test",outcome="mock_hit"} 123
+                  // Более гибкий парсер, который работает с любым порядком labels
+                  const requestsMatch = line.match(/^mockl_requests_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (requestsMatch) {
+                    const labelsStr = requestsMatch[1];
+                    const count = parseFloat(requestsMatch[2]);
+                    
+                    // Извлекаем labels
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
+                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch && outcomeMatch && folderMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const outcome = outcomeMatch[1];
+                      
+                      totalRequests += count;
+                      
+                      if (!methodStats[method]) {
+                        methodStats[method] = { total: 0, byOutcome: {}, byPath: {} };
+                      }
+                      methodStats[method].total += count;
+                      if (!methodStats[method].byOutcome[outcome]) {
+                        methodStats[method].byOutcome[outcome] = 0;
+                      }
+                      methodStats[method].byOutcome[outcome] += count;
+                      
+                      if (!methodStats[method].byPath[path]) {
+                        methodStats[method].byPath[path] = 0;
+                      }
+                      methodStats[method].byPath[path] += count;
+                      
+                      if (!pathStats[path]) {
+                        pathStats[path] = { total: 0, byMethod: {} };
+                      }
+                      pathStats[path].total += count;
+                      if (!pathStats[path].byMethod[method]) {
+                        pathStats[path].byMethod[method] = 0;
+                      }
+                      pathStats[path].byMethod[method] += count;
+                    }
+                  }
+                  
+                  // Парсим mockl_response_time_seconds_sum{folder="test"} 0.123
+                  const responseTimeSumMatch = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeSumMatch) {
+                    totalResponseTime += parseFloat(responseTimeSumMatch[1]);
+                  }
+                  
+                  // Парсим mockl_response_time_seconds_count{folder="test"} 10
+                  const responseTimeCountMatch = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeCountMatch) {
+                    responseTimeCount += parseFloat(responseTimeCountMatch[1]);
+                  }
+                }
+                
+                return { 
+                  methodStats, 
+                  pathStats, 
+                  totalRequests, 
+                  avgResponseTime: responseTimeCount > 0 ? totalResponseTime / responseTimeCount : 0 
+                };
+              };
+              
+              const parsed = parseMetrics(metricsData);
+              const methods = Object.keys(parsed.methodStats).sort();
+              
+              return (
+                <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
+                  {/* Общая статистика */}
+                  <div style={{ 
+                    background: theme === "dark" ? "#262626" : "#fff",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginBottom: 16,
+                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 12 }}>
+                      Общая статистика
+                    </Typography.Title>
+                    <Row gutter={16}>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Всего запросов
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {parsed.totalRequests}
+                          </Typography.Text>
                         </div>
-                      );
-                    }
-                    
-                    // Пустые строки
-                    if (!line.trim()) {
-                      return <div key={index} style={{ marginBottom: 2 }}>&nbsp;</div>;
-                    }
-                    
-                    // Метрики Prometheus: metric_name{labels} value
-                    // Формат: metric_name{label1="value1",label2="value2"} 123.45
-                    const metricMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]*\})?\s+([0-9.eE+-]+)$/);
-                    if (metricMatch) {
-                      const [, metricName, labelsPart, value] = metricMatch;
-                      return (
-                        <div key={index} style={{ marginBottom: 2, lineHeight: 1.8 }}>
-                          <span style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff", fontWeight: 600 }}>
-                            {metricName}
-                          </span>
-                          {labelsPart && (
-                            <span style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
-                              {labelsPart}
-                            </span>
-                          )}
-                          <span style={{ 
-                            color: theme === "dark" ? "#ffb74d" : "#fa8c16", 
-                            marginLeft: 8,
-                            fontWeight: 500
-                          }}>
-                            {value}
-                          </span>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Методов
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {methods.length}
+                          </Typography.Text>
                         </div>
-                      );
-                    }
-                    
-                    // Обычные строки (fallback)
-                    return <div key={index} style={{ marginBottom: 2 }}>{line}</div>;
-                  })}
-                </pre>
-              </div>
-            )}
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Среднее время ответа
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {parsed.avgResponseTime > 0 ? `${(parsed.avgResponseTime * 1000).toFixed(2)} мс` : '—'}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                    </Row>
+                  </div>
+                  
+                  {/* Статистика по методам */}
+                  <div style={{ 
+                    background: theme === "dark" ? "#262626" : "#fff",
+                    borderRadius: 8,
+                    padding: 16,
+                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Статистика по методам
+                    </Typography.Title>
+                    <Table
+                      dataSource={methods.map(method => ({
+                        key: method,
+                        method,
+                        ...parsed.methodStats[method]
+                      }))}
+                      pagination={false}
+                      size="small"
+                      columns={[
+                        {
+                          title: 'Метод',
+                          dataIndex: 'method',
+                          key: 'method',
+                          width: 100,
+                          render: (method) => (
+                            <Typography.Text strong style={{ 
+                              color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                            }}>
+                              {method}
+                            </Typography.Text>
+                          )
+                        },
+                        {
+                          title: 'Всего запросов',
+                          dataIndex: 'total',
+                          key: 'total',
+                          width: 120,
+                          align: 'right',
+                          render: (total) => (
+                            <Typography.Text style={{ fontWeight: 600 }}>
+                              {total}
+                            </Typography.Text>
+                          )
+                        },
+                        {
+                          title: 'Успешные (mock_hit)',
+                          key: 'mock_hit',
+                          width: 150,
+                          align: 'right',
+                          render: (_, record) => (
+                            <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                              {record.byOutcome.mock_hit || 0}
+                            </Typography.Text>
+                          )
+                        },
+                        {
+                          title: 'Проксированные',
+                          key: 'proxied',
+                          width: 130,
+                          align: 'right',
+                          render: (_, record) => (
+                            <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                              {record.byOutcome.proxied || 0}
+                            </Typography.Text>
+                          )
+                        },
+                        {
+                          title: 'Ошибки',
+                          key: 'errors',
+                          width: 100,
+                          align: 'right',
+                          render: (_, record) => {
+                            const errors = (record.byOutcome.not_found || 0) + 
+                                         (record.byOutcome.error_simulated || 0) +
+                                         (record.byOutcome.rate_limited || 0);
+                            return (
+                              <Typography.Text style={{ color: errors > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
+                                {errors}
+                              </Typography.Text>
+                            );
+                          }
+                        }
+                      ]}
+                    />
+                  </div>
+                  
+                  {/* Детальная информация по путям */}
+                  {Object.keys(parsed.pathStats).length > 0 && (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 16,
+                      marginTop: 16,
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                        Статистика по путям
+                      </Typography.Title>
+                      <Table
+                        dataSource={Object.entries(parsed.pathStats)
+                          .map(([path, stats]) => ({
+                            key: path,
+                            path,
+                            ...stats
+                          }))
+                          .sort((a, b) => b.total - a.total)}
+                        pagination={false}
+                        size="small"
+                        columns={[
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 12 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Всего запросов',
+                            dataIndex: 'total',
+                            key: 'total',
+                            width: 120,
+                            align: 'right',
+                            render: (total) => (
+                              <Typography.Text style={{ fontWeight: 600 }}>
+                                {total}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'По методам',
+                            key: 'byMethod',
+                            render: (_, record) => (
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                {Object.entries(record.byMethod).map(([method, count]) => (
+                                  <Typography.Text key={method} style={{ fontSize: 12 }}>
+                                    <Typography.Text strong style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff" }}>
+                                      {method}
+                                    </Typography.Text>
+                                    {' '}
+                                    <Typography.Text type="secondary">
+                                      {count}
+                                    </Typography.Text>
+                                  </Typography.Text>
+                                ))}
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </Modal>
         </Layout>
       </ConfigProvider>
