@@ -326,7 +326,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
         </div>
       </div>
       {isExpanded && (
-        <div style={{ marginLeft: 24, marginTop: 4 }}>
+        <div style={{ marginLeft: 24, marginTop: 4, width: "calc(100% - 24px)" }}>
           {subFolders.map((subFolder, subIndex) => (
             <DraggableFolder
               key={subFolder.name}
@@ -389,7 +389,7 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         justifyContent: "space-between",
         alignItems: "center",
         transition: "all 0.3s",
-        marginLeft: isSubfolder ? 24 : 0,
+        marginLeft: 0,
         borderLeft: isSubfolder ? `3px solid ${theme === "dark" ? "#1890ff" : "#1890ff"}` : "none",
         paddingLeft: isSubfolder ? 16 : 12,
         width: "100%",
