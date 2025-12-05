@@ -1408,7 +1408,7 @@ export default function App() {
 
       const entry = {
         id: vals.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
-        folder: vals.folder,
+        folder_id: selectedFolder || foldersData.find(f => f.name === "default")?.id,
         name: (vals.name || "").trim() || null,
         active: vals.active !== undefined ? vals.active !== false : true,
         request_condition: {

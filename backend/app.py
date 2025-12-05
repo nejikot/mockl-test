@@ -1349,12 +1349,12 @@ def rename_folder(
             raise HTTPException(400, "Новое имя должно отличаться от текущего")
         
         # Проверяем, не существует ли уже папка с новым именем в той же родительской папке
-        existing = db.query(Folder).filter(
+        existing_folder = db.query(Folder).filter(
             Folder.name == new_name,
             Folder.parent_folder_id == folder.parent_folder_id
         ).first()
         
-        if existing:
+        if existing_folder:
             folder_type = "подпапка" if folder.parent_folder_id else "папка"
             raise HTTPException(400, f"{folder_type.capitalize()} с именем '{new_name}' уже существует")
         
@@ -2495,34 +2495,28 @@ async def create_or_update_mock(
     summary="Получить список моков",
     description=(
         "Возвращает список всех моков.\n\n"
-        "Можно ограничить выборку конкретной папкой, передав параметр `folder`."
+        "Можно ограничить выборку конкретной папкой, передав параметр `folder_id`."
     ),
 )
 def list_mocks(
-    folder: Optional[str] = Query(
+    folder_id: Optional[str] = Query(
         default=None,
-        description="Имя папки (страницы), для которой нужно вернуть моки. Если не указано — возвращаются все моки.",
+        description="ID папки, для которой нужно вернуть моки. Если не указано — возвращаются все моки.",
     ),
     db: Session = Depends(get_db),
 ):
     try:
         # Логируем запрос для отладки
-        logger.debug(f"list_mocks called with folder='{folder}'")
+        logger.debug(f"list_mocks called with folder_id='{folder_id}'")
         q = db.query(Mock)
-        if folder:
-            # folder может быть ID или именем папки
-            folder = folder.strip()
-            # Сначала пытаемся найти по ID
-            folder_obj = db.query(Folder).filter(Folder.id == folder).first()
+        if folder_id:
+            # Проверяем, что папка существует
+            folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
             if not folder_obj:
-                # Если не найдено по ID, ищем по имени
-                folder_obj = db.query(Folder).filter(Folder.name == folder).first()
-            if folder_obj:
-                logger.debug(f"Filtering mocks by folder_id='{folder_obj.id}'")
-                q = q.filter_by(folder_id=folder_obj.id)
-            else:
-                # Если папка не найдена, возвращаем пустой список
+                logger.warning(f"list_mocks: folder with id '{folder_id}' not found")
                 return []
+            logger.debug(f"Filtering mocks by folder_id='{folder_id}'")
+            q = q.filter_by(folder_id=folder_id)
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
@@ -3045,7 +3039,7 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
             raise HTTPException(500, f"Ошибка при генерации моков из OpenAPI спецификации: {str(e)}")
         finally:
             db.close()
-        
+
         return {
             "message": "spec loaded",
             "name": name,
@@ -3754,11 +3748,7 @@ def clear_request_logs(
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
     if folder_id:
-        # Получаем имя папки для метрик
-        folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
-        folder_name = folder_obj.name if folder_obj else None
-        if folder_name:
-            _clear_prometheus_metrics_for_folder(folder_id, db)
+        _clear_prometheus_metrics_for_folder(folder_id, db)
     else:
         # Если папка не указана, очищаем метрики для всех папок
         # Получаем список всех уникальных папок из request_logs
@@ -4211,7 +4201,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     segments = [seg for seg in path.split("/") if seg]
 
     inner_path = path
-    folder_name = "default"
     # Ищем корневую папку default (parent_folder_id = NULL)
     folder = db.query(Folder).filter(
         Folder.name == "default",
@@ -4257,6 +4246,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     else:
         # Пустой путь - используем default (уже установлено выше)
         pass
+    
+    # Получаем имя папки для метрик
+    folder_name = folder.name if folder else "default"
+    folder_id = folder.id if folder else None
 
 
     query_suffix = f"?{request.url.query}" if request.url.query else ""
@@ -4270,9 +4263,22 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
     # Ищем подходящий мок только в выбранной папке
-    folder_id = folder.id if folder else None
-    mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).all() if folder_id else []
-    logger.info(f"Searching for mock: folder_id={folder_id}, folder_name={folder.name if folder else 'default'}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    if not folder_id:
+        logger.warning(f"Folder not found for path '{path}', using default")
+        # Пытаемся найти default папку
+        folder = db.query(Folder).filter(
+            Folder.name == "default",
+            Folder.parent_folder_id == None
+        ).first()
+        if folder:
+            folder_id = folder.id
+            folder_name = folder.name
+        else:
+            logger.error("Default folder not found in database!")
+            raise HTTPException(500, "Default folder not found")
+    
+    mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).all()
+    logger.info(f"Searching for mock: folder_id={folder_id}, folder_name={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
     request_headers_dict = {k: v for k, v in request.headers.items()}
@@ -4569,7 +4575,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     
     # Логируем не найденный запрос в БД
     try:
-        folder_id = folder.id if folder else None
         if folder_id:
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
