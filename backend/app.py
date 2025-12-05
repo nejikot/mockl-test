@@ -162,13 +162,14 @@ class Folder(Base):
     # Это позволяет иметь подпапки с именами, совпадающими с корневыми папками
     name = Column(String, primary_key=True)
     parent_folder = Column(String, primary_key=True, default='')
+    # Используем primaryjoin для связи по составному ключу
+    # foreign() аннотирует колонки как внешние ключи
     mocks = relationship(
         "Mock",
         back_populates="folder_obj",
         cascade="all, delete",
         order_by="Mock.order",
-        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)",
-        viewonly=False
+        primaryjoin="and_(foreign(Mock.folder_name) == Folder.name, foreign(Mock.parent_folder) == Folder.parent_folder)"
     )
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
@@ -235,7 +236,7 @@ class Mock(Base):
     folder_obj = relationship(
         "Folder",
         back_populates="mocks",
-        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
+        primaryjoin="and_(Mock.folder_name == foreign(Folder.name), Mock.parent_folder == foreign(Folder.parent_folder))"
     )
 
 
