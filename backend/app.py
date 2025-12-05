@@ -266,7 +266,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # Несовместимо с allow_origins=["*"], поэтому отключаем
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -877,7 +877,7 @@ def ensure_migrations():
                         pass
                     conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder CASCADE"))
                     logger.info("Dropped column folders.parent_folder")
-                except Exception as e:
+            except Exception as e:
                 logger.warning(f"Error dropping folders.parent_folder: {e}")
             
             # Проверяем существование колонок одним запросом для оптимизации
@@ -892,7 +892,7 @@ def ensure_migrations():
             
             # Если миграция на id выполнена, проверяем только дополнительные колонки
             if id_column_exists:
-            existing_columns = conn.execute(
+                existing_columns = conn.execute(
                 text("""
                     SELECT table_name, column_name 
                     FROM information_schema.columns 
@@ -1369,8 +1369,6 @@ def rename_folder(
         _clear_prometheus_metrics_for_folder(old_folder_id, db)
         
         # Обновляем имя папки
-        folder.name = new_name
-        db.commit()
         folder.name = new_name
         db.commit()
         db.refresh(folder)
@@ -2158,7 +2156,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_id: str, db: Session
                 id=str(uuid4()),
                 folder_id=folder_id,
                 name=mock_name,
-                    method=method_upper,
+                method=method_upper,
                 path=normalized_path,
                 headers=request_headers if request_headers else {},
                 body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
@@ -3757,7 +3755,7 @@ def clear_request_logs(
     summary="Очистить кэш",
     description="Очищает кэш ответов, опционально по ключу или папке.",
 )
-def clear_cache(
+def clear_cache_by_key(
     cache_key: Optional[str] = Query(None, description="Ключ кэша для удаления конкретной записи"),
     folder: Optional[str] = Query(None, description="Имя папки для удаления всех записей этой папки"),
 ):
