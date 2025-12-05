@@ -1719,6 +1719,8 @@ export default function App() {
       onOk: async () => {
         try {
           // Передаем составной ключ для правильной идентификации папки/подпапки
+          // Для корневых папок (parentFolder = null или '') передаем только name
+          // Для подпапок передаем формат "name|parentFolder"
           const folderParam = parentFolder ? `${name}|${parentFolder}` : name;
           const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(folderParam)}`, { method: "DELETE" });
           if (!res.ok) {
@@ -1727,8 +1729,10 @@ export default function App() {
           }
           message.success("Удалено");
           // Если удаляем выбранную папку, переключаемся на default
-          if (selectedFolder === folderKey) {
-            setSelectedFolder("default|");
+          // Проверяем оба формата: с getFolderKey и просто имя
+          const { name: selectedName, parent_folder: selectedParent } = parseFolderKey(selectedFolder);
+          if ((selectedName === name && (selectedParent || '') === (parentFolder || '')) || selectedFolder === name) {
+            setSelectedFolder("default");
           }
           fetchFolders();
           fetchMocks();
@@ -1755,8 +1759,10 @@ export default function App() {
 
   const startDuplicateFolder = name => {
     setFolderToDuplicate(name);
+    // Извлекаем только имя папки (без parent_folder, если есть формат "name|parent_folder")
+    const { name: folderName } = parseFolderKey(name);
     duplicateForm.setFieldsValue({
-      new_name: `${name}-copy`
+      new_name: `${folderName}-copy`
     });
     setDuplicateModalOpen(true);
   };
