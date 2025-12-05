@@ -292,7 +292,16 @@ const DraggableMockRow = (props) => {
 
 // Компонент для папки с подпапками
 const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, foldersData }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  // Восстанавливаем состояние раскрытия из localStorage
+  const [isExpanded, setIsExpanded] = useState(() => {
+    const saved = localStorage.getItem(`mockl-folder-expanded-${rootFolder.name}`);
+    return saved === "true";
+  });
+  
+  // Сохраняем состояние раскрытия в localStorage при изменении
+  useEffect(() => {
+    localStorage.setItem(`mockl-folder-expanded-${rootFolder.name}`, String(isExpanded));
+  }, [isExpanded, rootFolder.name]);
   
   return (
     <div style={{ marginBottom: 8, width: "100%" }}>
@@ -437,7 +446,18 @@ export default function App() {
   const [renameForm] = Form.useForm();
   const [folders, setFolders] = useState(["default"]);
   const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
-  const [selectedFolder, setSelectedFolder] = useState("default");
+  // Восстанавливаем выбранную папку из localStorage
+  const [selectedFolder, setSelectedFolder] = useState(() => {
+    const saved = localStorage.getItem("mockl-selected-folder");
+    return saved || "default";
+  });
+  
+  // Сохраняем выбранную папку в localStorage при изменении
+  useEffect(() => {
+    if (selectedFolder) {
+      localStorage.setItem("mockl-selected-folder", selectedFolder);
+    }
+  }, [selectedFolder]);
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [mockSearchQuery, setMockSearchQuery] = useState("");
   const [mocks, setMocks] = useState([]);
@@ -445,9 +465,11 @@ export default function App() {
   const [metricsData, setMetricsData] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
   
-  // Функция для загрузки метрик
-  const loadMetrics = async () => {
-    setMetricsLoading(true);
+  // Функция для загрузки метрик (с индикатором загрузки)
+  const loadMetrics = async (showLoading = true) => {
+    if (showLoading) {
+      setMetricsLoading(true);
+    }
     try {
       const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
       const response = await fetch(metricsUrl);
@@ -456,20 +478,22 @@ export default function App() {
     } catch (error) {
       setMetricsData(`Ошибка загрузки метрик: ${error.message}`);
     } finally {
-      setMetricsLoading(false);
+      if (showLoading) {
+        setMetricsLoading(false);
+      }
     }
   };
   
-  // Автоматическое обновление метрик каждые 5 секунд, когда модальное окно открыто
+  // Автоматическое обновление метрик каждые 5 секунд, когда модальное окно открыто (фоново, без мигания)
   useEffect(() => {
     if (!isMetricsModalOpen) return;
     
-    // Загружаем метрики сразу при открытии
-    loadMetrics();
+    // Загружаем метрики сразу при открытии (с индикатором)
+    loadMetrics(true);
     
-    // Устанавливаем интервал для автоматического обновления
+    // Устанавливаем интервал для автоматического обновления (без индикатора)
     const interval = setInterval(() => {
-      loadMetrics();
+      loadMetrics(false);
     }, 5000);
     
     return () => clearInterval(interval);
@@ -644,7 +668,15 @@ export default function App() {
       setFolders(sorted);
       // Сохраняем полные данные папок для использования в форме
       setFoldersData(foldersData);
-      if (!sorted.includes(selectedFolder)) setSelectedFolder(sorted[0]);
+      // Проверяем, существует ли сохраненная папка в списке
+      const savedFolder = localStorage.getItem("mockl-selected-folder");
+      if (savedFolder && sorted.includes(savedFolder)) {
+        // Восстанавливаем сохраненную папку, если она существует
+        setSelectedFolder(savedFolder);
+      } else if (!sorted.includes(selectedFolder)) {
+        // Если текущая папка не существует, выбираем первую доступную
+        setSelectedFolder(sorted[0]);
+      }
     } catch {
       setFolders(["default"]);
       setFoldersData([{ name: "default", parent_folder: null, order: 0 }]);
@@ -2725,7 +2757,7 @@ export default function App() {
             onCancel={() => setIsMetricsModalOpen(false)}
             width={900}
             footer={[
-              <Button key="refresh" icon={<ReloadOutlined />} onClick={loadMetrics} loading={metricsLoading}>
+              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => loadMetrics(true)} loading={metricsLoading}>
                 Обновить
               </Button>,
               <Button key="download" icon={<DownloadOutlined />} onClick={() => {
