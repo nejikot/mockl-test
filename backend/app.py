@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -157,18 +157,30 @@ Base = declarative_base()
 
 class Folder(Base):
     __tablename__ = "folders"
+    # Составной первичный ключ: (name, parent_folder)
+    # Для корневых папок parent_folder = '', для подпапок - имя родительской папки
+    # Это позволяет иметь подпапки с именами, совпадающими с корневыми папками
     name = Column(String, primary_key=True)
-    mocks = relationship(
-        "Mock",
-        back_populates="folder_obj",
-        cascade="all, delete",
-        order_by="Mock.order"
-    )
+    parent_folder = Column(String, primary_key=True, default='')
+    mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
     proxy_base_url = Column(String, nullable=True)
     # Порядок отображения папки
     order = Column(Integer, default=0, index=True)
+    # Вложенные папки - используем primaryjoin для правильной связи
+    # parent_folder подпапки должен совпадать с name родительской папки
+    # Для корневых папок parent_folder = '', для подпапок - имя родительской папки
+    # Используем строковый primaryjoin для self-referential relationship
+    # ВАЖНО: remote_side указывает на name, так как это часть составного PK
+    subfolders = relationship(
+        "Folder",
+        backref="parent",
+        primaryjoin="and_(Folder.parent_folder == Folder.name, Folder.parent_folder != '')",
+        foreign_keys="[Folder.parent_folder]",
+        remote_side=[name],
+        cascade="all, delete"
+    )
 
 
 
@@ -210,7 +222,6 @@ class Mock(Base):
     error_simulation_body = Column(SAJSON, nullable=True)
     error_simulation_delay_ms = Column(Integer, nullable=True)
 
-    # Many-to-one relationship к Folder
     folder_obj = relationship("Folder", back_populates="mocks")
 
 
@@ -220,9 +231,7 @@ class RequestLog(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     timestamp = Column(String, nullable=False, index=True)  # ISO format timestamp
-    # Убрали ForeignKey, так как теперь folders имеет составной PK (name, parent_folder)
-    # Связь определяется через primaryjoin в relationship
-    folder_name = Column(String, nullable=False, index=True)
+    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
     method = Column(String, nullable=False, index=True)
     path = Column(String, nullable=False, index=True)
     is_proxied = Column(Boolean, default=False, index=True)
@@ -438,7 +447,7 @@ class MockEntry(BaseModel):
 
 
     class Config:
-        json_schema_extra = {
+        schema_extra = {
             "example": {
                 "id": "d7f9f6b4-6c86-4d3b-a8d2-0b8c2e1e1234",
                 "folder": "auth",
@@ -465,6 +474,14 @@ class FolderDuplicatePayload(BaseModel):
 
     old_name: str = Field(..., description="Имя папки, которую нужно продублировать")
     new_name: str = Field(..., description="Имя новой папки‑копии")
+
+
+class FolderRenamePayload(BaseModel):
+    """Модель запроса для переименования папки."""
+
+
+    new_name: str = Field(..., description="Новое имя папки")
+
 
 
 class FolderSettings(BaseModel):
@@ -579,21 +596,6 @@ def ensure_migrations():
             ).fetchall()
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
-            
-            # Добавляем parent_folder в mocks, если его нет
-            if ('mocks', 'parent_folder') not in existing_set:
-                try:
-                    # Сначала добавляем колонку как NULL (для безопасности)
-                    conn.execute(text("ALTER TABLE mocks ADD COLUMN parent_folder VARCHAR NULL"))
-                    logger.info("Added column mocks.parent_folder (nullable)")
-                    # Обновляем существующие записи: устанавливаем parent_folder = '' для всех существующих моков
-                    conn.execute(text("UPDATE mocks SET parent_folder = '' WHERE parent_folder IS NULL"))
-                    # Теперь делаем колонку NOT NULL с DEFAULT
-                    conn.execute(text("ALTER TABLE mocks ALTER COLUMN parent_folder SET NOT NULL"))
-                    conn.execute(text("ALTER TABLE mocks ALTER COLUMN parent_folder SET DEFAULT ''"))
-                    logger.info("Set mocks.parent_folder to NOT NULL with default ''")
-                except Exception as e:
-                    logger.warning(f"Error adding mocks.parent_folder: {e}")
             
         # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
@@ -970,9 +972,11 @@ def delete_folder(
                     continue
                 visited_folders.add(subfolder_key)
                 
-                # Сначала удаляем моки подпапки через прямой SQL, учитывая parent_folder
-                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND parent_folder = :parent_folder"), 
-                          {"folder_name": subfolder.name, "parent_folder": subfolder.parent_folder})
+                # Сначала удаляем моки подпапки через прямой SQL, чтобы разорвать связи
+                # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
+                # Это ограничение текущей схемы БД - моки не хранят parent_folder
+                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
+                          {"folder_name": subfolder.name})
                 db.flush()
                 
                 # Рекурсивно удаляем подпапки подпапки
@@ -987,10 +991,13 @@ def delete_folder(
         # Используем folder_name как parent_folder для поиска подпапок
         delete_subfolders_recursive(folder_name, parent_folder if parent_folder else '')
         
-        # Удаляем моки самой папки через прямой SQL, учитывая parent_folder
-        normalized_parent = parent_folder if parent_folder else ''
-        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND parent_folder = :parent_folder"), 
-                  {"folder_name": folder_name, "parent_folder": normalized_parent})
+        # Удаляем моки самой папки через прямой SQL
+        # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
+        # Это может удалить моки из других папок с таким же именем, если они существуют
+        # Это ограничение текущей схемы БД - моки не хранят parent_folder
+        # В будущем можно добавить parent_folder в Mock для точной идентификации
+        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
+                  {"folder_name": folder_name})
         db.flush()
         
         # Удаляем саму папку через прямой SQL
@@ -1082,19 +1089,17 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
             # Сохраняем маппинг
             folder_mapping[(src_f.name, src_f.parent_folder)] = (dst_name, dst_parent)
             
-            # Копируем все моки из исходной папки с учетом parent_folder
-            src_mocks = db.query(Mock).filter(
-                Mock.folder_name == src_f.name,
-                Mock.parent_folder == src_f.parent_folder
-            ).all()
+            # Копируем все моки из исходной папки
+            # ВАЖНО: Mock хранит только folder_name, поэтому копируем все моки с таким именем
+            # Это ограничение текущей схемы БД - моки не хранят parent_folder
+            src_mocks = db.query(Mock).filter_by(folder_name=src_f.name).all()
             copied_ids = []
             for m in src_mocks:
                 new_id = str(uuid4())
-                # Копируем все поля мока, включая parent_folder
+                # Копируем все поля мока
                 copied = Mock(
                     id=new_id,
                     folder_name=dst_name,
-                    parent_folder=dst_parent,
                     name=m.name,
                     method=m.method,
                     path=m.path,
@@ -1163,6 +1168,126 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         db.rollback()
         logger.error(f"Error duplicating folder: {e}", exc_info=True)
         raise HTTPException(500, f"Ошибка при дублировании папки: {str(e)}")
+
+
+@app.patch(
+    "/api/folders/{name}/rename",
+    summary="Переименовать папку",
+    description=(
+        "Переименовывает папку или подпапку. При переименовании обновляются:\n"
+        "- Имя папки в таблице folders\n"
+        "- folder_name во всех моках, которые ссылаются на эту папку\n"
+        "- folder_name во всех записях истории вызовов (request_logs)\n"
+        "- parent_folder во всех подпапках (если переименовывается корневая папка)\n"
+        "- Метрики Prometheus очищаются для старого имени"
+    ),
+)
+def rename_folder(
+    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
+    payload: FolderRenamePayload = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Переименовывает папку и обновляет все связанные данные."""
+    if name == "default":
+        raise HTTPException(400, "Нельзя переименовать стандартную папку")
+    
+    new_name = payload.new_name.strip()
+    if not new_name:
+        raise HTTPException(400, "Новое имя папки не может быть пустым")
+    if new_name == "default":
+        raise HTTPException(400, "Нельзя использовать имя 'default'")
+    if name == new_name:
+        raise HTTPException(400, "Новое имя должно отличаться от текущего")
+    
+    try:
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = name.strip()
+        parent_folder = None
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+            parent_folder = parts[1] if parts[1] else None
+        
+        # Ищем папку по составному ключу
+        if parent_folder:
+            # Ищем подпапку
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == parent_folder
+            ).first()
+        else:
+            # Ищем корневую папку (parent_folder = '')
+            folder = db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == ''
+            ).first()
+        
+        if not folder:
+            raise HTTPException(404, f"Папка '{folder_name}' не найдена")
+        
+        # Проверяем, не существует ли уже папка с новым именем
+        if parent_folder:
+            # Для подпапок проверяем в той же родительской папке
+            existing = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder == parent_folder
+            ).first()
+        else:
+            # Для корневых папок проверяем только корневые
+            existing = db.query(Folder).filter(
+                Folder.name == new_name,
+                Folder.parent_folder == ''
+            ).first()
+        
+        if existing:
+            folder_type = "подпапка" if parent_folder else "папка"
+            raise HTTPException(400, f"{folder_type.capitalize()} с именем '{new_name}' уже существует")
+        
+        old_folder_name = folder.name
+        
+        # Очищаем метрики Prometheus для старого имени перед переименованием
+        _clear_prometheus_metrics_for_folder(old_folder_name, db)
+        
+        # Обновляем имя папки через прямой SQL, чтобы обойти ограничения первичного ключа
+        if parent_folder:
+            db.execute(text("UPDATE folders SET name = :new_name WHERE name = :old_name AND parent_folder = :parent_folder"), 
+                      {"new_name": new_name, "old_name": old_folder_name, "parent_folder": parent_folder})
+        else:
+            db.execute(text("UPDATE folders SET name = :new_name WHERE name = :old_name AND parent_folder = ''"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Обновляем folder_name во всех моках
+        db.execute(text("UPDATE mocks SET folder_name = :new_name WHERE folder_name = :old_name"), 
+                  {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Обновляем folder_name во всех request_logs
+        db.execute(text("UPDATE request_logs SET folder_name = :new_name WHERE folder_name = :old_name"), 
+                  {"new_name": new_name, "old_name": old_folder_name})
+        db.flush()
+        
+        # Если это корневая папка, обновляем parent_folder во всех подпапках
+        if not parent_folder:
+            db.execute(text("UPDATE folders SET parent_folder = :new_name WHERE parent_folder = :old_name"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
+            db.flush()
+        
+        db.commit()
+        
+        folder_type = "подпапка" if parent_folder else "папка"
+        return {
+            "message": f"{folder_type.capitalize()} '{old_folder_name}' переименована в '{new_name}'",
+            "old_name": old_folder_name,
+            "new_name": new_name
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error renaming folder '{name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при переименовании папки: {str(e)}")
 
 
 def parse_curl_command(curl_str: str) -> Dict[str, Any]:
@@ -1420,20 +1545,13 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         mock = Mock(id=entry.id)
         db.add(mock)
         # Для нового мока устанавливаем порядок в конец списка
-        # Фильтруем по folder_name И parent_folder для правильного подсчета
-        normalized_parent = parent_folder if parent_folder else ''
-        max_order_result = db.query(Mock).filter(
-            Mock.folder_name == folder_name,
-            Mock.parent_folder == normalized_parent
-        ).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+        max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
         mock.order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     # При обновлении существующего мока не меняем порядок, если он не указан явно
     elif hasattr(entry, 'order') and entry.order is not None:
         mock.order = entry.order
 
     mock.folder_name = folder_name
-    # Сохраняем parent_folder для различения подпапок с одинаковыми именами
-    mock.parent_folder = parent_folder if parent_folder else ''
     mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
     normalized_path = _normalize_path_for_storage(entry.request_condition.path)
@@ -1676,26 +1794,13 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
 
     allowed_methods = {"get", "post", "put", "delete", "patch", "options", "head"}
     
-    # Получаем папку для определения parent_folder (OpenAPI моки всегда создаются в корневых папках)
-    folder_obj = db.query(Folder).filter(
-        Folder.name == folder_name,
-        Folder.parent_folder == ''
-    ).first()
-    parent_folder_for_mocks = folder_obj.parent_folder if folder_obj else ''
-    
-    # ОПТИМИЗАЦИЯ: Загружаем все существующие моки для папки одним запросом с учетом parent_folder
-    existing_mocks = db.query(Mock).filter(
-        Mock.folder_name == folder_name,
-        Mock.parent_folder == parent_folder_for_mocks
-    ).all()
+    # ОПТИМИЗАЦИЯ: Загружаем все существующие моки для папки одним запросом
+    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name).all()
     # Используем нормализованные пути для сравнения
     existing_keys = {(m.method, m.path) for m in existing_mocks}
     
-    # ОПТИМИЗАЦИЯ: Получаем максимальный order один раз с учетом parent_folder
-    max_order_result = db.query(Mock).filter(
-        Mock.folder_name == folder_name,
-        Mock.parent_folder == parent_folder_for_mocks
-    ).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+    # ОПТИМИЗАЦИЯ: Получаем максимальный order один раз
+    max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
     next_order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     
     # ОПТИМИЗАЦИЯ: Собираем все новые моки в список для bulk insert
@@ -1961,11 +2066,9 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                             continue
 
             # Создаём объект Mock напрямую для bulk insert (normalized_path уже вычислен выше)
-            # OpenAPI моки всегда создаются в корневых папках, поэтому parent_folder = ''
             mock = Mock(
                 id=str(uuid4()),
                 folder_name=folder_name,
-                parent_folder=parent_folder_for_mocks,
                 name=mock_name,
                     method=method_upper,
                 path=normalized_path,
@@ -2359,15 +2462,13 @@ def list_mocks(
             # Поддерживаем формат "name|parent_folder" для подпапок
             folder = folder.strip()
             folder_name = folder
-            parent_folder = None
             if '|' in folder:
                 parts = folder.split('|', 1)
                 folder_name = parts[0]
-                parent_folder = parts[1] if parts[1] else None
-            # Фильтруем по folder_name И parent_folder для правильного различения подпапок
-            normalized_parent = parent_folder if parent_folder else ''
-            logger.debug(f"Filtering mocks by folder_name='{folder_name}', parent_folder='{normalized_parent}'")
-            q = q.filter(Mock.folder_name == folder_name, Mock.parent_folder == normalized_parent)
+                # parent_folder игнорируем, так как моки хранят только folder_name
+                # и бэкенд должен найти папку по составному ключу если нужно
+            logger.debug(f"Filtering mocks by folder_name='{folder_name}'")
+            q = q.filter_by(folder_name=folder_name)
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
@@ -4098,30 +4199,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         full_inner = full_inner.rstrip("/") or "/"
 
 
-    # Определяем parent_folder для поиска моков
-    # Если folder не найден, используем default
-    if not folder:
-        folder_name = "default"
-        folder = db.query(Folder).filter(
-            Folder.name == "default",
-            Folder.parent_folder == ''
-        ).first()
-    
-    parent_folder_for_mocks = folder.parent_folder if folder else ''
-    
-    # Ищем подходящий мок только в выбранной папке с учетом parent_folder
-    # Учитываем, что старые моки могут иметь parent_folder = NULL (до миграции)
-    from sqlalchemy import or_
-    mocks = db.query(Mock).filter(
-        Mock.folder_name == folder_name,
-        or_(
-            Mock.parent_folder == parent_folder_for_mocks,
-            Mock.parent_folder == None,  # Для старых моков без parent_folder (до миграции)
-            Mock.parent_folder == ''  # Для совместимости
-        ),
-        Mock.active == True
-    ).all()
-    logger.info(f"Searching for mock: folder={folder_name}, parent_folder={parent_folder_for_mocks}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    # Ищем подходящий мок только в выбранной папке
+    mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name).all()
+    logger.info(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
     request_headers_dict = {k: v for k, v in request.headers.items()}
