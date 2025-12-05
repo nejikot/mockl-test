@@ -514,13 +514,14 @@ def ensure_migrations():
                     AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
                                         'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
                                         'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
-                                        'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms')
+                                        'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms',
+                                        'parent_folder')
                 """)
             ).fetchall()
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
             
-        # Новые поля в folders
+            # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
@@ -553,7 +554,7 @@ def ensure_migrations():
                 except Exception as e:
                     logger.warning(f"Error adding folders.parent_folder: {e}")
             
-        # Новые поля в mocks
+            # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
@@ -596,9 +597,19 @@ def ensure_migrations():
                         conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
                         logger.info(f"Added column mocks.{col_name}")
                     except Exception as e:
-                        logger.warning(f"Error adding mocks.{col_name}: {e}")
+                        # Если колонка уже существует (возможно, была добавлена вручную), это не критично
+                        if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                            logger.info(f"Column mocks.{col_name} already exists, skipping")
+                        else:
+                            logger.warning(f"Error adding mocks.{col_name}: {e}")
+                else:
+                    logger.debug(f"Column mocks.{col_name} already exists, skipping")
+        
+        logger.info("Migrations completed successfully")
     except Exception as e:
         logger.error(f"Error during migrations: {e}", exc_info=True)
+        # Не прерываем запуск приложения, но логируем ошибку
+        raise
 
 
 
