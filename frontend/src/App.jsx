@@ -2457,7 +2457,7 @@ export default function App() {
             open={modalOpen}
             onCancel={() => setModalOpen(false)}
             onOk={() => form.submit()}
-            width={1200}
+            width={1600}
             bodyStyle={{ maxHeight: "80vh", overflowY: "auto", padding: "24px" }}
             destroyOnClose
           >
@@ -2510,7 +2510,7 @@ export default function App() {
               <Divider style={{ margin: "16px 0" }} />
 
               <Row gutter={24}>
-                <Col span={12}>
+                <Col span={8}>
                   <div style={{ 
                     padding: "16px", 
                     background: theme === "light" ? "#fafafa" : "#1f1f1f",
@@ -2761,7 +2761,7 @@ export default function App() {
                   </div>
                 </Col>
 
-                <Col span={12}>
+                <Col span={8}>
                   <div style={{ 
                     padding: "16px", 
                     background: theme === "light" ? "#fafafa" : "#1f1f1f",
@@ -2813,7 +2813,73 @@ export default function App() {
                       )}
                     </Form.List>
 
-                    <Divider>Настройки задержки, кэша и имитации ошибок</Divider>
+                    <Form.Item label="Тип ответа" name="response_type" style={{ marginTop: 16 }}>
+                      <Select
+                        options={[
+                          { label: "JSON", value: "json" },
+                          { label: "Файл (изображение, CSV, XML, JSON и т.п.)", value: "file" }
+                        ]}
+                      />
+                    </Form.Item>
+
+                    <Form.Item label="Тело ответа" required style={{ marginTop: 16 }}>
+                      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.response_type !== cur.response_type}>
+                        {({ getFieldValue }) => {
+                          const type = getFieldValue("response_type") || "json";
+
+                          return (
+                            <>
+                              <Form.Item
+                                name="response_body"
+                                style={{ marginBottom: 8 }}
+                                rules={[{ required: true, message: "Укажите тело ответа" }]}
+                              >
+                                <TextArea
+                                  rows={6}
+                                  placeholder={
+                                    type === "json"
+                                      ? '{{"message":"ok"}}'
+                                      : '{{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}}'
+                                  }
+                                />
+                              </Form.Item>
+                              {type === "file" && (
+                                <>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => responseFileInputRef.current?.click()}
+                                  >
+                                    Загрузить файл для ответа
+                                  </Button>
+                                  <input
+                                    type="file"
+                                    ref={responseFileInputRef}
+                                    style={{ display: "none" }}
+                                    onChange={handleResponseFileUpload}
+                                  />
+                                </>
+                              )}
+                            </>
+                          );
+                        }}
+                      </Form.Item>
+                    </Form.Item>
+                  </div>
+                </Col>
+
+                <Col span={8}>
+                  <div style={{ 
+                    padding: "16px", 
+                    background: theme === "light" ? "#fafafa" : "#1f1f1f",
+                    borderRadius: 8,
+                    border: `1px solid ${theme === "light" ? "#d9d9d9" : "#434343"}`,
+                    height: "100%"
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Дополнительные параметры
+                    </Typography.Title>
+
+                    <Divider style={{ marginTop: 0, marginBottom: 16 }}>Задержки</Divider>
 
                     <Form.Item label="Задержка ответа (мс)" name="delay_ms" style={{ marginTop: 16 }}>
                       <Input type="number" min={0} placeholder="Фиксированная задержка, например 500" />
@@ -2887,58 +2953,6 @@ export default function App() {
                       name="error_simulation_delay_ms"
                     >
                       <Input type="number" min={0} placeholder="Например 1000" />
-                    </Form.Item>
-
-                    <Form.Item label="Тип ответа" name="response_type" style={{ marginTop: 16 }}>
-                      <Select
-                        options={[
-                          { label: "JSON", value: "json" },
-                          { label: "Файл (изображение, CSV, XML, JSON и т.п.)", value: "file" }
-                        ]}
-                      />
-                    </Form.Item>
-
-                    <Form.Item label="Тело ответа" required style={{ marginTop: 16 }}>
-                      <Form.Item noStyle shouldUpdate={(prev, cur) => prev.response_type !== cur.response_type}>
-                        {({ getFieldValue }) => {
-                          const type = getFieldValue("response_type") || "json";
-
-                          return (
-                            <>
-                              <Form.Item
-                                name="response_body"
-                                style={{ marginBottom: 8 }}
-                                rules={[{ required: true, message: "Укажите тело ответа" }]}
-                              >
-                                <TextArea
-                                  rows={6}
-                                  placeholder={
-                                    type === "json"
-                                      ? '{{"message":"ok"}}'
-                                      : '{{"__file__":true,"filename":"file.png","mime_type":"image/png","data_base64":"..."}}'
-                                  }
-                                />
-                              </Form.Item>
-                              {type === "file" && (
-                                <>
-                                  <Button
-                                    type="dashed"
-                                    onClick={() => responseFileInputRef.current?.click()}
-                                  >
-                                    Загрузить файл для ответа
-                                  </Button>
-                                  <input
-                                    type="file"
-                                    ref={responseFileInputRef}
-                                    style={{ display: "none" }}
-                                    onChange={handleResponseFileUpload}
-                                  />
-                                </>
-                              )}
-                            </>
-                          );
-                        }}
-                      </Form.Item>
                     </Form.Item>
                   </div>
                 </Col>
