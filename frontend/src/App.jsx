@@ -2002,7 +2002,7 @@ export default function App() {
                               size="small"
                               icon={<BarChartOutlined />}
                               onClick={() => {
-                                const metricsUrl = `${host}/metrics`;
+                                const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
                                 window.open(metricsUrl, '_blank');
                               }}
                             >

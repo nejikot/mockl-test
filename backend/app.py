@@ -23,7 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry, REGISTRY
 
 
 
@@ -2383,9 +2383,52 @@ async def clear_cache(
 
 
 @app.get("/metrics")
-async def metrics():
-    """Экспорт метрик в формате Prometheus."""
-    data = generate_latest()
+async def metrics(folder: Optional[str] = Query(None, description="Фильтр метрик по папке")):
+    """Экспорт метрик в формате Prometheus. Можно фильтровать по папке."""
+    if folder:
+        # Генерируем все метрики
+        all_metrics = generate_latest()
+        # Фильтруем метрики по label "folder"
+        filtered_lines = []
+        current_metric = []
+        in_metric = False
+        
+        for line in all_metrics.decode('utf-8').split('\n'):
+            # Пропускаем комментарии и пустые строки
+            if not line.strip() or line.startswith('#'):
+                if line.strip():
+                    filtered_lines.append(line)
+                continue
+            
+            # Проверяем, является ли строка метрикой
+            if '{' in line and 'folder=' in line:
+                # Проверяем, соответствует ли folder нашему фильтру
+                if f'folder="{folder}"' in line or f"folder='{folder}'" in line:
+                    # Добавляем метрику
+                    if current_metric:
+                        filtered_lines.extend(current_metric)
+                    current_metric = [line]
+                    in_metric = True
+                else:
+                    # Не соответствует фильтру, пропускаем
+                    current_metric = []
+                    in_metric = False
+            elif in_metric:
+                # Продолжение текущей метрики (например, для histogram buckets)
+                current_metric.append(line)
+            elif not '{' in line and 'folder=' not in line:
+                # Метрика без labels (например, RATE_LIMITED без folder)
+                # Пропускаем такие метрики при фильтрации
+                pass
+        
+        # Добавляем последнюю метрику, если она есть
+        if current_metric:
+            filtered_lines.extend(current_metric)
+        
+        data = '\n'.join(filtered_lines).encode('utf-8')
+    else:
+        data = generate_latest()
+    
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
