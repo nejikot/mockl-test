@@ -342,7 +342,7 @@ class MockRequestCondition(BaseModel):
     )
     body_contains_required: Optional[bool] = Field(
         default=True,
-        description="Обязательно ли проверять body_contains. Если False, то условие body_contains игнорируется при матчинге.",
+        description="Обязательно ли проверять тело запроса. Если True, то мок сработает только если: тело запроса не пустое И (если указан body_contains) тело содержит указанную строку. Если False, то проверка тела необязательна (мок сработает независимо от тела).",
     )
     
     @field_validator('headers', mode='before')
@@ -3674,45 +3674,55 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
         logger.debug(f"No headers to check for mock {m.id} (headers={m.headers})")
     
     # Проверка содержимого тела
-    # Проверяем body_contains только если оно указано И требуется (body_contains_required = True)
-    # Если body_contains_required = False, то условие игнорируется (мок сработает независимо от тела)
+    # Если body_contains_required = True, то обязательно проверяем body:
+    # - Если body пустой -> мок не срабатывает
+    # - Если body_contains указан И body не содержит body_contains -> мок не срабатывает
+    # - Если body_contains указан И body содержит body_contains -> мок срабатывает
+    # - Если body_contains не указан, но body не пустой -> мок срабатывает (проверяем только наличие body)
+    # Если body_contains_required = False, то проверка body необязательна (мок сработает независимо от тела)
     body_contains_required = getattr(m, 'body_contains_required', True)  # По умолчанию True для обратной совместимости
-    if m.body_contains and body_contains_required:
+    
+    if body_contains_required:
+        # Обязательная проверка body - применяется ко всем форматам (raw, form-data, файл и т.д.)
         try:
-            # Для GET/HEAD/OPTIONS запросов тело обычно пустое
-            # Если в моке указано body_contains для GET запроса, это условие игнорируется
-            # (так как GET запросы по стандарту не должны иметь тела)
             # Используем переданное тело запроса, если оно есть, иначе читаем заново
             if body_bytes is None:
                 body_bytes = await req.body()
             
-            if req.method.upper() in ("GET", "HEAD", "OPTIONS"):
-                # Для GET/HEAD/OPTIONS проверяем тело только если оно действительно есть в запросе
-                # Если тело пустое, условие body_contains игнорируется (мок может сработать)
-                if body_bytes:
-                    # Если тело есть (нестандартно для GET, но возможно), проверяем его
-                    body = body_bytes.decode("utf-8")
+            # Проверяем наличие body
+            if not body_bytes or len(body_bytes) == 0:
+                logger.info(f"Body required for mock {m.id} but request body is empty (body_contains_required=True)")
+                return False
+            
+            # Если body_contains указан, проверяем соответствие
+            if m.body_contains:
+                try:
+                    # Декодируем body в строку для проверки
+                    # Для всех форматов (raw JSON, form-data, файл и т.д.) body_bytes содержит данные
+                    body = body_bytes.decode("utf-8", errors='replace')  # Используем errors='replace' для обработки бинарных данных
                     # Нормализуем оба значения для сравнения
                     normalized_body = _normalize_json_string(body)
                     normalized_contains = _normalize_json_string(m.body_contains)
                     if normalized_contains not in normalized_body:
-                        logger.info(f"Body mismatch for mock {m.id} (GET with body): body_contains='{normalized_contains[:100]}...' not in request body. Request body: '{body[:200]}...'")
+                        logger.info(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:100]}...' not in request body. Request body length: {len(body_bytes)} bytes, normalized_contains='{normalized_contains[:100]}...', normalized_body preview='{normalized_body[:200]}...'")
                         return False
-                else:
-                    # Если тело пустое, игнорируем условие body_contains для GET запросов
-                    logger.debug(f"Ignoring body_contains for mock {m.id} (GET request with empty body)")
-            else:
-                # Для POST, PUT, PATCH, DELETE проверяем тело
-                if not body_bytes:
-                    logger.info(f"Body required for mock {m.id} but request body is empty")
+                except UnicodeDecodeError:
+                    # Если body не может быть декодирован как UTF-8 (например, бинарный файл),
+                    # проверяем наличие body_contains в байтовом представлении
+                    try:
+                        contains_bytes = m.body_contains.encode("utf-8")
+                        if contains_bytes not in body_bytes:
+                            logger.info(f"Body mismatch for mock {m.id}: body_contains (as bytes) not found in binary request body (body_contains_required=True)")
+                            return False
+                    except Exception as e:
+                        logger.debug(f"Error checking binary body for mock {m.id}: {e}")
+                        return False
+                except Exception as e:
+                    logger.debug(f"Error checking body for mock {m.id}: {e}")
                     return False
-                body = body_bytes.decode("utf-8")
-                # Нормализуем оба значения для сравнения
-                normalized_body = _normalize_json_string(body)
-                normalized_contains = _normalize_json_string(m.body_contains)
-                if normalized_contains not in normalized_body:
-                    logger.info(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:100]}...' not in request body. Request body: '{body[:200]}...', normalized_contains='{normalized_contains[:100]}...', normalized_body='{normalized_body[:200]}...'")
-                    return False
+            # Если body_contains не указан, но body_contains_required = True,
+            # проверяем только наличие body (уже проверили выше)
+            logger.debug(f"Body check passed for mock {m.id}: body present, body_contains_required=True")
         except Exception as e:
             logger.debug(f"Error checking body for mock {m.id}: {e}")
             return False

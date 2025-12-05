@@ -2838,7 +2838,7 @@ export default function App() {
                                 style={{ marginTop: 8 }}
                               >
                                 <Checkbox>
-                                  Обязательно проверять тело запроса
+                                  Обязательно проверять запрос
                                 </Checkbox>
                               </Form.Item>
                             </>
