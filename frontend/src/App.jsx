@@ -1180,6 +1180,7 @@ export default function App() {
       requestHeaders: [{ key: "", value: "", optional: false }],
       request_body_mode: "none",
       request_body_contains: "",
+      body_contains_required: true,
       request_body_params: [{ key: "", value: "" }],
       request_body_formdata: [{ key: "", value: "" }],
       responseHeaders: [{ key: "", value: "" }],
@@ -1269,6 +1270,7 @@ export default function App() {
       requestHeaders: requestHeadersList,
       request_body_mode,
       request_body_raw,
+      body_contains_required: m.request_condition.body_contains_required !== undefined ? m.request_condition.body_contains_required : true,
       request_body_params,
       request_body_formdata,
       status_code: m.response_config.status_code,
@@ -1409,7 +1411,8 @@ export default function App() {
           method: vals.method,
           path: vals.path,
           headers: Object.keys(requestHeadersObj).length ? requestHeadersObj : {},
-          body_contains: bodyContains || null
+          body_contains: bodyContains || null,
+          body_contains_required: vals.body_contains_required !== undefined ? vals.body_contains_required : true
         },
         response_config: {
           status_code: Number(vals.status_code),
@@ -2815,12 +2818,23 @@ export default function App() {
                           }
                           
                           return (
-                            <Form.Item
-                              name="request_body_raw"
-                              tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                            >
-                              <TextArea rows={3} placeholder='Например {{"user":"123"}}' />
-                            </Form.Item>
+                            <>
+                              <Form.Item
+                                name="request_body_raw"
+                                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                              >
+                                <TextArea rows={3} placeholder='Например {{"user":"123"}}' />
+                              </Form.Item>
+                              <Form.Item
+                                name="body_contains_required"
+                                valuePropName="checked"
+                                style={{ marginTop: 8 }}
+                              >
+                                <Checkbox>
+                                  Обязательно проверять тело запроса
+                                </Checkbox>
+                              </Form.Item>
+                            </>
                           );
                         }}
                       </Form.Item>

@@ -197,6 +197,7 @@ class Mock(Base):
     path = Column(String, nullable=False)
     headers = Column(SAJSON, default={})
     body_contains = Column(String, nullable=True)
+    body_contains_required = Column(Boolean, default=True, nullable=False)
 
 
     # Конфиг ответа
@@ -338,6 +339,10 @@ class MockRequestCondition(BaseModel):
     body_contains: Optional[str] = Field(
         default=None,
         description="Произвольный фрагмент текста, который должен содержаться в теле запроса",
+    )
+    body_contains_required: Optional[bool] = Field(
+        default=True,
+        description="Обязательно ли проверять body_contains. Если False, то условие body_contains игнорируется при матчинге.",
     )
     
     @field_validator('headers', mode='before')
@@ -742,6 +747,7 @@ def ensure_migrations():
                 ('error_simulation_status_code', 'INTEGER NULL'),
                 ('error_simulation_body', 'JSON NULL'),
                 ('error_simulation_delay_ms', 'INTEGER NULL'),
+                ('body_contains_required', 'BOOLEAN DEFAULT TRUE NOT NULL'),
             ]
             
             for col_name, col_def in new_mock_columns:
@@ -1047,6 +1053,7 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
                 path=m.path,
                 headers=m.headers if m.headers else {},
                 body_contains=m.body_contains,
+                body_contains_required=getattr(m, 'body_contains_required', True),
                 status_code=m.status_code,
                 response_headers=m.response_headers if m.response_headers else {},
                 response_body=m.response_body,
@@ -1353,6 +1360,7 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         logger.debug(f"_save_mock_entry: saving headers: {headers_to_save}")
     # Нормализуем body_contains при сохранении (убираем лишние пробелы из JSON)
     mock.body_contains = _normalize_json_string(entry.request_condition.body_contains) if entry.request_condition.body_contains else None
+    mock.body_contains_required = entry.request_condition.body_contains_required if entry.request_condition.body_contains_required is not None else True
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
     # Очищаем служебные поля из тела ответа перед сохранением
@@ -1856,6 +1864,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 path=normalized_path,
                 headers=request_headers if request_headers else {},
                 body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
+                body_contains_required=True,  # По умолчанию обязательное для моков из OpenAPI
                 status_code=response_status,
                 response_headers=response_headers if response_headers else {},
                 response_body=response_body,
@@ -2239,6 +2248,7 @@ def list_mocks(
                             path=m.path,
                             headers=m.headers if m.headers else None,
                             body_contains=m.body_contains,
+                            body_contains_required=getattr(m, 'body_contains_required', True),
                         ),
                         response_config=MockResponseConfig(
                             status_code=m.status_code,
@@ -3558,7 +3568,10 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
         logger.debug(f"No headers to check for mock {m.id} (headers={m.headers})")
     
     # Проверка содержимого тела
-    if m.body_contains:
+    # Проверяем body_contains только если оно указано И требуется (body_contains_required = True)
+    # Если body_contains_required = False, то условие игнорируется (мок сработает независимо от тела)
+    body_contains_required = getattr(m, 'body_contains_required', True)  # По умолчанию True для обратной совместимости
+    if m.body_contains and body_contains_required:
         try:
             # Для GET/HEAD/OPTIONS запросов тело обычно пустое
             # Если в моке указано body_contains для GET запроса, это условие игнорируется
@@ -3597,6 +3610,9 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
         except Exception as e:
             logger.debug(f"Error checking body for mock {m.id}: {e}")
             return False
+    elif m.body_contains and not body_contains_required:
+        # body_contains указан, но необязателен - игнорируем проверку
+        logger.debug(f"Body contains check skipped for mock {m.id} (body_contains_required=False)")
     
     return True
 
