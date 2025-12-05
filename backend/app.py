@@ -660,26 +660,34 @@ def create_folder(
     if not name:
         raise HTTPException(400, "Некорректное имя папки")
     
+    logger.debug(f"create_folder: name='{name}', parent_folder='{payload.parent_folder}'")
+    
     # Проверяем родительскую папку, если указана
     parent_folder = None
     if payload.parent_folder:
         parent_folder_obj = db.query(Folder).filter_by(name=payload.parent_folder).first()
         if not parent_folder_obj:
+            logger.warning(f"create_folder: parent folder '{payload.parent_folder}' not found")
             raise HTTPException(404, f"Родительская папка '{payload.parent_folder}' не найдена")
         parent_folder = payload.parent_folder
         # Для подпапок разрешаем дубликаты имен (даже если есть корневая папка с таким же именем)
         # Проверяем только, что в этой родительской папке нет подпапки с таким же именем
         existing_subfolder = db.query(Folder).filter_by(name=name, parent_folder=parent_folder).first()
         if existing_subfolder:
+            logger.warning(f"create_folder: subfolder '{name}' already exists in parent '{parent_folder}'")
             raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
+        logger.debug(f"create_folder: creating subfolder '{name}' in parent '{parent_folder}'")
     else:
         # Для корневых папок проверяем уникальность имени (не должно быть корневой папки с таким именем)
         existing_folder = db.query(Folder).filter_by(name=name, parent_folder=None).first()
         if existing_folder:
+            logger.warning(f"create_folder: root folder '{name}' already exists")
             raise HTTPException(400, f"Корневая папка '{name}' уже существует")
+        logger.debug(f"create_folder: creating root folder '{name}'")
     
     db.add(Folder(name=name, parent_folder=parent_folder))
     db.commit()
+    logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
     return {"message": "Папка добавлена", "name": name, "parent_folder": parent_folder}
 
 
@@ -730,15 +738,25 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         # Проверяем уникальность имени с учетом родительской папки
         # Для корневых папок проверяем, что нет другой корневой папки с таким именем
         # Для подпапок проверяем, что в той же родительской папке нет подпапки с таким именем
+        # ВАЖНО: исключаем текущую папку из проверки (она может иметь такое же имя, если переименовываем в то же имя)
         parent_folder = folder.parent_folder
         if parent_folder is None:
             # Это корневая папка - проверяем, что нет другой корневой папки с таким именем
-            existing_root = db.query(Folder).filter_by(name=new, parent_folder=None).first()
+            existing_root = db.query(Folder).filter(
+                Folder.name == new,
+                Folder.parent_folder.is_(None),
+                Folder.name != old  # Исключаем текущую папку
+            ).first()
             if existing_root:
                 raise HTTPException(400, f"Корневая папка '{new}' уже существует")
         else:
             # Это подпапка - проверяем, что в той же родительской папке нет подпапки с таким именем
-            existing_subfolder = db.query(Folder).filter_by(name=new, parent_folder=parent_folder).first()
+            # ВАЖНО: подпапка может иметь имя, совпадающее с корневой папкой - это разрешено
+            existing_subfolder = db.query(Folder).filter(
+                Folder.name == new,
+                Folder.parent_folder == parent_folder,
+                Folder.name != old  # Исключаем текущую папку
+            ).first()
             if existing_subfolder:
                 raise HTTPException(400, f"Подпапка '{new}' уже существует в папке '{parent_folder}'")
 
@@ -1061,6 +1079,8 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
 
     folder = db.query(Folder).filter_by(name=entry.folder).first()
     if not folder:
+        # Автоматически создаем папку, если её нет
+        # Это нужно для обратной совместимости
         folder = Folder(name=entry.folder)
         db.add(folder)
         db.flush()
@@ -1929,8 +1949,13 @@ def list_mocks(
     ),
     db: Session = Depends(get_db),
 ):
+    # Логируем запрос для отладки
+    logger.debug(f"list_mocks called with folder='{folder}'")
     q = db.query(Mock)
     if folder:
+        # Декодируем имя папки на случай URL-кодирования
+        folder = folder.strip()
+        logger.debug(f"Filtering mocks by folder_name='{folder}'")
         q = q.filter_by(folder_name=folder)
     
     # Сортируем по order, затем по id для стабильности
