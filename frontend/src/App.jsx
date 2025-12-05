@@ -1735,45 +1735,6 @@ export default function App() {
                         <li><b>Умные заголовки</b> — при настройке заголовков запроса можно указать, является ли заголовок обязательным
                             или необязательным. Для необязательных заголовков (переключатель «Авто») проверяется только наличие заголовка,
                             а его значение игнорируется. Это удобно для заголовков, которые автоматически заполняются клиентом или сервером.</li>
-                        <li><b>Подстановки в ответах и заголовках</b> — система поддерживает динамические плейсхолдеры, которые автоматически
-                            заменяются значениями из входящего запроса. Плейсхолдеры работают в теле ответа (JSON) и в заголовках ответа.
-                            <br/><br/>
-                            <b>Доступные плейсхолдеры:</b>
-                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
-                              <li><code>{'{'}'method'{'}'}</code> — HTTP метод запроса (GET, POST, PUT, DELETE и т.д.)</li>
-                              <li><code>{'{'}'path'{'}'}</code> — путь запроса без query параметров (например: <code>/api/users</code>)</li>
-                              <li><code>{'{'}'full_path'{'}'}</code> — полный путь с query параметрами (например: <code>/api/users?page=1</code>)</li>
-                              <li><code>{'{'}'query'{'}'}</code> — строка query параметров целиком (например: <code>page=1&limit=10</code>)</li>
-                              <li><code>{'{'}'query_параметр'{'}'}</code> — значение конкретного query параметра (например: <code>{'{'}'query_page'{'}'}</code> для <code>?page=1</code>)</li>
-                              <li><code>{'{'}'header_ИмяЗаголовка'{'}'}</code> — значение заголовка запроса. Дефисы в имени заголовка заменяются на подчёркивания
-                                  (например: <code>{'{'}'header_Authorization'{'}'}</code> для заголовка <code>Authorization</code>,
-                                  <code>{'{'}'header_X_Custom_Header'{'}'}</code> для <code>X-Custom-Header</code>)</li>
-                            </ul>
-                            <br/>
-                            <b>Пример использования в теле ответа:</b>
-                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
-{`{
-  "request_method": "` + "{method}" + `",
-  "request_path": "` + "{path}" + `",
-  "user_id": "` + "{query_user_id}" + `",
-  "auth_token": "` + "{header_Authorization}" + `",
-  "message": "Запрос ` + "{method}" + ` на путь ` + "{path}" + ` обработан"
-}`}
-                            </pre>
-                            <b>Пример запроса:</b> <code>GET /api/users?user_id=123</code> с заголовком <code>Authorization: Bearer token123</code><br/>
-                            <b>Результат:</b>
-                            <pre style={{ background: theme === "light" ? "#f5f5f5" : "#1f1f1f", padding: "12px", borderRadius: "4px", overflow: "auto", fontSize: "12px" }}>
-{`{
-  "request_method": "GET",
-  "request_path": "/api/users",
-  "user_id": "123",
-  "auth_token": "Bearer token123",
-  "message": "Запрос GET на путь /api/users обработан"
-}`}
-                            </pre>
-                            <b>Использование в заголовках ответа:</b> плейсхолдеры также работают в заголовках ответа. Например, заголовок
-                            <code>X-Request-ID: {'{'}header_X_Request_ID{'}'}</code> скопирует значение заголовка <code>X-Request-ID</code> из запроса в ответ.
-                        </li>
                         <li><b>Автоматическая нормализация JSON</b> — система автоматически нормализует JSON в запросах и ответах,
                             убирая лишние пробелы и форматирование. Это гарантирует корректное сопоставление моков даже при различиях
                             в форматировании JSON.</li>
