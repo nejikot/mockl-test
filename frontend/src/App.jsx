@@ -1952,16 +1952,18 @@ export default function App() {
             onChange={handleFileChange}
           />
         </div>
-        <Button
-          danger
-          icon={<PoweroffOutlined />}
-          onClick={() => deactivateAllMocks(selectedFolder)}
-          disabled={!mocks.length}
-          style={{ ...primaryButtonStyle, justifySelf: "flex-end" }}
-          title="Отключить все моки в текущей папке"
-        >
-          Отключить все в папке
-        </Button>
+        {!isDefaultFolder && (
+          <Button
+            danger
+            icon={<PoweroffOutlined />}
+            onClick={() => deactivateAllMocks(selectedFolder)}
+            disabled={!mocks.length}
+            style={{ ...primaryButtonStyle, justifySelf: "flex-end" }}
+            title="Отключить все моки в текущей папке"
+          >
+            Отключить все в папке
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -2426,61 +2428,61 @@ export default function App() {
                   </div>
                 )}
 
-                <div style={{
-                  background: theme === "light" ? "#fff" : "#1f1f1f",
-                  borderRadius: 12,
-                  padding: isDesktop ? 24 : 16,
-                  boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
-                }}>
+                {!isDefaultFolder && (
                   <div style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: 16
+                    background: theme === "light" ? "#fff" : "#1f1f1f",
+                    borderRadius: 12,
+                    padding: isDesktop ? 24 : 16,
+                    boxShadow: "0 12px 30px rgba(15,23,42,0.05)"
                   }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-                    <Typography.Title level={4} style={{ margin: 0 }}>
-                      {folderTitle}
-                    </Typography.Title>
-                      <Input
-                        placeholder="Поиск мока по наименованию..."
-                        prefix={<SearchOutlined />}
-                        value={mockSearchQuery}
-                        onChange={(e) => setMockSearchQuery(e.target.value)}
-                        style={{ width: 300 }}
-                        allowClear
-                      />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                      <Typography.Text type="secondary">
-                        {(() => {
-                          const filteredMocks = mockSearchQuery
-                            ? mocks.filter(m => 
-                                (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
-                              )
-                            : mocks;
-                          return filteredMocks.length ? `${filteredMocks.length} мок(ов)` : "Пока нет моков";
-                        })()}
-                      </Typography.Text>
+                    <div style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 8,
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 16
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+                      <Typography.Title level={4} style={{ margin: 0 }}>
+                        {folderTitle}
+                      </Typography.Title>
+                        <Input
+                          placeholder="Поиск мока по наименованию..."
+                          prefix={<SearchOutlined />}
+                          value={mockSearchQuery}
+                          onChange={(e) => setMockSearchQuery(e.target.value)}
+                          style={{ width: 300 }}
+                          allowClear
+                        />
+                      </div>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            Базовый URL этой страницы: {baseFolderUrl || "—"}
-                          </Typography.Text>
-                          {baseFolderUrl && (
-                            <Tooltip title="Копировать базовый URL">
-                              <Button
-                                size="small"
-                                icon={<CopyOutlined />}
-                                type="text"
-                                onClick={() => copyToClipboard(baseFolderUrl)}
-                              />
-                            </Tooltip>
-                          )}
-                        </div>
-                        {!isDefaultFolder && (
+                        <Typography.Text type="secondary">
+                          {(() => {
+                            const filteredMocks = mockSearchQuery
+                              ? mocks.filter(m => 
+                                  (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
+                                )
+                              : mocks;
+                            return filteredMocks.length ? `${filteredMocks.length} мок(ов)` : "Пока нет моков";
+                          })()}
+                        </Typography.Text>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              Базовый URL этой страницы: {baseFolderUrl || "—"}
+                            </Typography.Text>
+                            {baseFolderUrl && (
+                              <Tooltip title="Копировать базовый URL">
+                                <Button
+                                  size="small"
+                                  icon={<CopyOutlined />}
+                                  type="text"
+                                  onClick={() => copyToClipboard(baseFolderUrl)}
+                                />
+                              </Tooltip>
+                            )}
+                          </div>
                           <div style={{ display: "flex", gap: 8 }}>
                             <Button size="small" onClick={openFolderSettings}>
                               Настройки proxy
@@ -2509,130 +2511,130 @@ export default function App() {
                               Получить метрики
                             </Button>
                           </div>
-                        )}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <Table
-                    dataSource={mockSearchQuery
-                      ? mocks.filter(m => 
-                          (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
-                        )
-                      : mocks}
-                    rowKey="id"
-                    size="middle"
-                    pagination={false}
-                    components={{
-                      body: {
-                        row: (props) => {
-                          const index = mocks.findIndex(m => m.id === props['data-row-key']);
-                          return <DraggableMockRow {...props} index={index} moveMock={moveMock} />;
+                    <Table
+                      dataSource={mockSearchQuery
+                        ? mocks.filter(m => 
+                            (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
+                          )
+                        : mocks}
+                      rowKey="id"
+                      size="middle"
+                      pagination={false}
+                      components={{
+                        body: {
+                          row: (props) => {
+                            const index = mocks.findIndex(m => m.id === props['data-row-key']);
+                            return <DraggableMockRow {...props} index={index} moveMock={moveMock} />;
+                          }
                         }
-                      }
-                    }}
-                    columns={[
-                      {
-                        title: "",
-                        width: 40,
-                        render: () => <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
-                      },
-                      {
-                        title: "№",
-                        width: 60,
-                        render: (_, __, index) => index + 1
-                      },
-                      {
-                        title: "Активно",
-                        dataIndex: "active",
-                        width: 90,
-                        render: (a, r) => (
-                          <Switch
-                            checked={a !== false}
-                            onChange={ch => toggleMockActive(r.id, ch)}
-                          />
-                        )
-                      },
-                      { title: "Наименование", dataIndex: "name", ellipsis: true },
-                      { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
-                      { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
-                      { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
-                      {
-                        title: "Настройки",
-                        width: 300,
-                        render: (_, r) => {
-                          const delayInfo = r.delay_range_min_ms != null && r.delay_range_max_ms != null 
-                            ? `${r.delay_range_min_ms}-${r.delay_range_max_ms} мс`
-                            : r.delay_ms ? `${r.delay_ms} мс` : '—';
-                          const cacheInfo = r.cache_enabled && r.cache_ttl_seconds 
-                            ? `Кэш: ${r.cache_ttl_seconds}с`
-                            : '—';
-                          const errorInfo = r.error_simulation_enabled && r.error_simulation_probability != null
-                            ? `Ошибка: ${(Number(r.error_simulation_probability) * 100).toFixed(0)}%`
-                            : '—';
-                          return (
-                            <div style={{ fontSize: 11, lineHeight: 1.6 }}>
-                              <div><strong>Задержка:</strong> {delayInfo}</div>
-                              <div><strong>Кэш:</strong> {cacheInfo}</div>
-                              <div><strong>Ошибки:</strong> {errorInfo}</div>
+                      }}
+                      columns={[
+                        {
+                          title: "",
+                          width: 40,
+                          render: () => <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
+                        },
+                        {
+                          title: "№",
+                          width: 60,
+                          render: (_, __, index) => index + 1
+                        },
+                        {
+                          title: "Активно",
+                          dataIndex: "active",
+                          width: 90,
+                          render: (a, r) => (
+                            <Switch
+                              checked={a !== false}
+                              onChange={ch => toggleMockActive(r.id, ch)}
+                            />
+                          )
+                        },
+                        { title: "Наименование", dataIndex: "name", ellipsis: true },
+                        { title: "Метод", dataIndex: ["request_condition", "method"], width: 90 },
+                        { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
+                        { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
+                        {
+                          title: "Настройки",
+                          width: 300,
+                          render: (_, r) => {
+                            const delayInfo = r.delay_range_min_ms != null && r.delay_range_max_ms != null 
+                              ? `${r.delay_range_min_ms}-${r.delay_range_max_ms} мс`
+                              : r.delay_ms ? `${r.delay_ms} мс` : '—';
+                            const cacheInfo = r.cache_enabled && r.cache_ttl_seconds 
+                              ? `Кэш: ${r.cache_ttl_seconds}с`
+                              : '—';
+                            const errorInfo = r.error_simulation_enabled && r.error_simulation_probability != null
+                              ? `Ошибка: ${(Number(r.error_simulation_probability) * 100).toFixed(0)}%`
+                              : '—';
+                            return (
+                              <div style={{ fontSize: 11, lineHeight: 1.6 }}>
+                                <div><strong>Задержка:</strong> {delayInfo}</div>
+                                <div><strong>Кэш:</strong> {cacheInfo}</div>
+                                <div><strong>Ошибки:</strong> {errorInfo}</div>
+                              </div>
+                            );
+                          }
+                        },
+                        {
+                          title: "Действия",
+                          width: 200,
+                          render: (_, r) => (
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              <Tooltip title="Редактировать">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  icon={<EditOutlined />}
+                                  onClick={() => openEditMock(r)}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Дублировать">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  icon={<CopyOutlined />}
+                                  onClick={() => duplicateMock(r)}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Скопировать curl">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  icon={<SnippetsOutlined />}
+                                  onClick={() => copyToClipboard(buildCurlForMock(r))}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Очистить кэш для этого пути">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  onClick={() => clearCacheForMock(r)}
+                                >
+                                  Кэш
+                                </Button>
+                              </Tooltip>
+                              <Tooltip title="Удалить">
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  onClick={() => deleteMock(r.id)}
+                                />
+                              </Tooltip>
                             </div>
-                          );
+                          )
                         }
-                      },
-                      {
-                        title: "Действия",
-                        width: 200,
-                        render: (_, r) => (
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                            <Tooltip title="Редактировать">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<EditOutlined />}
-                                onClick={() => openEditMock(r)}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Дублировать">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<CopyOutlined />}
-                                onClick={() => duplicateMock(r)}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Скопировать curl">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<SnippetsOutlined />}
-                                onClick={() => copyToClipboard(buildCurlForMock(r))}
-                              />
-                            </Tooltip>
-                            <Tooltip title="Очистить кэш для этого пути">
-                              <Button
-                                size="small"
-                                type="text"
-                                onClick={() => clearCacheForMock(r)}
-                              >
-                                Кэш
-                              </Button>
-                            </Tooltip>
-                            <Tooltip title="Удалить">
-                              <Button
-                                size="small"
-                                type="text"
-                                danger
-                                icon={<DeleteOutlined />}
-                                onClick={() => deleteMock(r.id)}
-                              />
-                            </Tooltip>
-                          </div>
-                        )
-                      }
-                    ]}
-                    scroll={{ x: 700 }}
-                  />
-                </div>
+                      ]}
+                      scroll={{ x: 700 }}
+                    />
+                  </div>
+                )}
               </Content>
             </Layout>
           </Content>
