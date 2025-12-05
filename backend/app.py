@@ -4535,14 +4535,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     # если folder_parent = '' (корневая папка)
     if folder_parent == '':
         # Ищем моки с folder_parent = '' или NULL (для обратной совместимости)
+        # ВАЖНО: для папки "default" нужно искать моки с folder_parent = '' или NULL
+        # Используем or_ для более надежного поиска (уже импортирован в начале файла)
         mocks = db.query(Mock).filter(
             Mock.active == True,
             Mock.folder_name == folder_name,
-            (Mock.folder_parent == '') | (Mock.folder_parent.is_(None))
+            or_(Mock.folder_parent == '', Mock.folder_parent.is_(None))
         ).all()
         # Если не нашли, попробуем найти все моки с таким folder_name (на случай проблем с миграцией)
         if not mocks:
-            logger.warning(f"No mocks found with folder_parent='' or NULL, trying to find all mocks with folder_name='{folder_name}'")
+            logger.warning(f"No mocks found with folder_parent='' or NULL for folder '{folder_name}', trying to find all mocks with folder_name='{folder_name}'")
             all_mocks = db.query(Mock).filter(
                 Mock.active == True,
                 Mock.folder_name == folder_name
@@ -4550,6 +4552,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             logger.warning(f"Found {len(all_mocks)} total mocks with folder_name='{folder_name}' (ignoring folder_parent)")
             if all_mocks:
                 logger.warning(f"These mocks have folder_parent values: {[m.folder_parent for m in all_mocks]}")
+                # Используем все найденные моки, если они есть
+                mocks = all_mocks
     else:
         mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name, folder_parent=folder_parent).all()
     logger.info(f"Searching for mock: folder={folder_name}, folder_parent={folder_parent}, path={full_inner}, method={request.method}, original_path={request.url.path}, found {len(mocks)} active mocks")
