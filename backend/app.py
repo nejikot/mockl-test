@@ -624,25 +624,25 @@ def ensure_migrations():
                     
                     # Шаг 6: Создаем новый первичный ключ на id
                     # Проверяем, может быть PK уже создан
-            pk_check = conn.execute(
-                text("""
-                            SELECT constraint_name
-                    FROM information_schema.table_constraints
-                    WHERE table_name = 'folders'
-                            AND constraint_type = 'PRIMARY KEY'
-                            AND constraint_name = 'folders_pkey'
-                        """)
-                    ).fetchone()
-                    
-                    if not pk_check:
-                        try:
+                    try:
+                        pk_check = conn.execute(
+                            text("""
+                                SELECT constraint_name
+                                FROM information_schema.table_constraints
+                                WHERE table_name = 'folders'
+                                AND constraint_type = 'PRIMARY KEY'
+                                AND constraint_name = 'folders_pkey'
+                            """)
+                        ).fetchone()
+                        
+                        if not pk_check:
                             conn.execute(text("ALTER TABLE folders ADD CONSTRAINT folders_pkey PRIMARY KEY (id)"))
                             logger.info("Created new primary key on folders.id")
-                        except Exception as e:
-                            logger.error(f"Error creating new primary key: {e}")
-                            raise
-                    else:
-                        logger.info("Primary key folders_pkey already exists")
+                        else:
+                            logger.info("Primary key folders_pkey already exists")
+                    except Exception as e:
+                        logger.error(f"Error creating new primary key: {e}")
+                        raise
                     
                     # Шаг 7: Добавляем parent_folder_id и обновляем данные
                     parent_folder_id_exists = conn.execute(
@@ -1128,6 +1128,10 @@ def delete_folder(
         if folder.name == "default":
             raise HTTPException(400, "Нельзя удалить стандартную папку")
         
+        # Сохраняем данные папки до удаления
+        folder_name = folder.name
+        folder_parent_id = folder.parent_folder_id
+        
         # Удаляем все подпапки рекурсивно перед удалением самой папки
         # Добавляем защиту от бесконечной рекурсии через множество посещенных папок
         visited_folder_ids = set()
@@ -1176,8 +1180,8 @@ def delete_folder(
                   {"id": folder_id})
         db.commit()
     
-        folder_type = "подпапка" if folder.parent_folder_id else "папка"
-        return {"message": f"{folder_type.capitalize()} '{folder.name}' и все её моки удалены"}
+        folder_type = "подпапка" if folder_parent_id else "папка"
+        return {"message": f"{folder_type.capitalize()} '{folder_name}' и все её моки удалены"}
     except HTTPException:
         db.rollback()
         raise
@@ -4261,12 +4265,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     # Ищем моки в выбранной папке
     mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).all()
     logger.info(f"Searching for mock: folder_id={folder_id}, folder_name={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
-    
-    # Если моки не найдены в определенной папке и путь пустой, ищем во всех папках
-    if not mocks and inner_path == "/":
-        logger.info(f"No mocks found in folder {folder_name}, searching in all folders for path '{inner_path}'")
-        mocks = db.query(Mock).filter_by(active=True).all()
-        logger.info(f"Found {len(mocks)} active mocks in all folders")
     
     # Логируем все заголовки запроса для отладки
     request_headers_dict = {k: v for k, v in request.headers.items()}
