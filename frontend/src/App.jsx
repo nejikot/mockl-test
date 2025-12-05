@@ -315,15 +315,20 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: 12,
-          borderRadius: 8,
-          background: theme === "dark" ? "#262626" : "#fafafa",
-          cursor: "pointer",
           width: "100%",
         }}
-        onClick={() => setIsExpanded(!isExpanded)}
       >
-        {isExpanded ? <DownOutlined /> : <RightOutlined />}
+        <div
+          onClick={() => setIsExpanded(!isExpanded)}
+          style={{
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            padding: "4px",
+          }}
+        >
+          {isExpanded ? <DownOutlined /> : <RightOutlined />}
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <DraggableFolder
             folder={rootFolder.name}
@@ -366,17 +371,20 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
 const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true, getFolderKey }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
-    item: { index, folder },
-    collect: monitor => ({ isDragging: monitor.isDragging() })
+    item: { index, folder, parentFolder },
+    collect: monitor => ({ isDragging: monitor.isDragging() }),
+    canDrag: () => folder !== "default" // Нельзя перетаскивать default
   });
   const [, drop] = useDrop({
     accept: 'folder',
-    hover: item => {
-      if (item.index !== index) {
+    hover: (item, monitor) => {
+      if (!monitor.isOver({ shallow: true })) return;
+      if (item.index !== index && item.folder !== "default") {
         moveFolder(item.index, index);
         item.index = index;
       }
-    }
+    },
+    canDrop: () => folder !== "default" // Нельзя бросать на default
   });
   
   const folderKey = getFolderKey ? getFolderKey(folder, parentFolder) : folder;
@@ -823,12 +831,45 @@ export default function App() {
   };
 
   const moveFolder = (from, to) => {
-    const arr = [...folders];
-    const [m] = arr.splice(from, 1);
-    arr.splice(to, 0, m);
-    const defIdx = arr.indexOf("default");
-    if (defIdx > 0) arr.unshift(arr.splice(defIdx, 1)[0]);
-    setFolders(arr);
+    // Работаем только с корневыми папками (без подпапок)
+    // Сортируем по order для согласованности с рендерингом
+    const rootFolders = foldersData
+      .filter(f => (!f.parent_folder || f.parent_folder === '') && f.name !== "default")
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    const defaultFolder = foldersData.find(f => f.name === "default");
+    
+    // Исключаем default из перетаскивания (индекс 0)
+    if (from === 0 || to === 0) return;
+    
+    // Корректируем индексы, так как default не участвует в перетаскивании
+    const adjustedFrom = from - 1;
+    const adjustedTo = to - 1;
+    
+    if (adjustedFrom < 0 || adjustedTo < 0 || adjustedFrom >= rootFolders.length || adjustedTo >= rootFolders.length) {
+      return;
+    }
+    
+    // Перемещаем папку
+    const [m] = rootFolders.splice(adjustedFrom, 1);
+    rootFolders.splice(adjustedTo, 0, m);
+    
+    // Обновляем order для всех корневых папок
+    const updatedFoldersData = foldersData.map(f => {
+      // Обновляем order только для корневых папок (не подпапок)
+      if ((!f.parent_folder || f.parent_folder === '') && f.name !== "default") {
+        const newIndex = rootFolders.findIndex(rf => rf.name === f.name);
+        if (newIndex !== -1) {
+          return { ...f, order: newIndex + 1 }; // +1 потому что default имеет order 0
+        }
+      }
+      return f;
+    });
+    
+    setFoldersData(updatedFoldersData);
+    
+    // Обновляем массив folders для обратной совместимости
+    const newFolders = defaultFolder ? [defaultFolder.name, ...rootFolders.map(f => f.name)] : rootFolders.map(f => f.name);
+    setFolders(newFolders);
   };
 
   const moveMock = async (from, to) => {
@@ -1943,7 +1984,15 @@ export default function App() {
                       : foldersData;
                     
                     // Группируем папки по родителям
-                    const rootFolders = filteredFoldersData.filter(f => !f.parent_folder || f.name === "default");
+                    // Сортируем по order для согласованности с moveFolder
+                    const rootFolders = filteredFoldersData
+                      .filter(f => (!f.parent_folder || f.parent_folder === '') || f.name === "default")
+                      .sort((a, b) => {
+                        // default всегда первый
+                        if (a.name === "default") return -1;
+                        if (b.name === "default") return 1;
+                        return (a.order || 0) - (b.order || 0);
+                      });
                     const foldersByParent = {};
                     filteredFoldersData.forEach(f => {
                       if (f.parent_folder && f.name !== "default") {
