@@ -474,12 +474,15 @@ export default function App() {
       setMetricsLoading(true);
     }
     try {
-      const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
+      const metricsUrl = `${host}/api/metrics/folder/${encodeURIComponent(selectedFolder)}`;
       const response = await fetch(metricsUrl);
-      const text = await response.text();
-      setMetricsData(text);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      setMetricsData(data);
     } catch (error) {
-      setMetricsData(`Ошибка загрузки метрик: ${error.message}`);
+      setMetricsData({ error: `Ошибка загрузки метрик: ${error.message}` });
     } finally {
       if (showLoading) {
         setMetricsLoading(false);
@@ -493,12 +496,15 @@ export default function App() {
       setGlobalMetricsLoading(true);
     }
     try {
-      const metricsUrl = `${host}/metrics`;
+      const metricsUrl = `${host}/api/metrics/global`;
       const response = await fetch(metricsUrl);
-      const text = await response.text();
-      setGlobalMetricsData(text);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      setGlobalMetricsData(data);
     } catch (error) {
-      setGlobalMetricsData(`Ошибка загрузки метрик: ${error.message}`);
+      setGlobalMetricsData({ error: `Ошибка загрузки метрик: ${error.message}` });
     } finally {
       if (showLoading) {
         setGlobalMetricsLoading(false);
@@ -2805,11 +2811,11 @@ export default function App() {
                 Обновить
               </Button>,
               <Button key="download" icon={<DownloadOutlined />} onClick={() => {
-                const blob = new Blob([metricsData], { type: 'text/plain' });
+                const blob = new Blob([JSON.stringify(metricsData, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `metrics-${selectedFolder}-${new Date().toISOString().split('T')[0]}.txt`;
+                link.download = `metrics-${selectedFolder}-${new Date().toISOString().split('T')[0]}.json`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -2828,173 +2834,28 @@ export default function App() {
                 <Typography.Text>Загрузка метрик...</Typography.Text>
               </div>
             ) : (() => {
-              // Парсим метрики и извлекаем полезную информацию
-              const parseMetrics = (text) => {
-                // Детальная статистика по методам и путям
-                const detailedStats = {}; // {method_path: {method, path, mock_hits, proxied, errors, responseTimes: [], statusCodes: {}}}
-                let totalRequests = 0;
-                let totalResponseTime = 0;
-                let responseTimeCount = 0;
-                
-                // Отладочная информация
-                if (text && text.length > 0) {
-                  console.log('Parsing metrics, total lines:', text.split('\n').length);
-                }
-                
-                const lines = text.split('\n');
-                for (const line of lines) {
-                  if (!line.trim() || line.startsWith('#')) continue;
-                  
-                  // Парсим mockl_requests_detailed_total{method="GET",path="/api",folder="test",outcome="mock_hit",status_code="200"} 123
-                  const detailedMatch = line.match(/^mockl_requests_detailed_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (detailedMatch) {
-                    const labelsStr = detailedMatch[1];
-                    const count = parseFloat(detailedMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
-                    const statusMatch = labelsStr.match(/status_code="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch && outcomeMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const outcome = outcomeMatch[1];
-                      const statusCode = statusMatch ? statusMatch[1] : 'unknown';
-                      const key = `${method}:${path}`;
-                      
-                      if (!detailedStats[key]) {
-                        detailedStats[key] = {
-                          method,
-                          path,
-                          mock_hits: 0,
-                          proxied: 0,
-                          errors: 0,
-                          not_found: 0,
-                          responseTimes: [],
-                          statusCodes: {}
-                        };
-                      }
-                      
-                      totalRequests += count;
-                      
-                      if (outcome === 'mock_hit') {
-                        detailedStats[key].mock_hits += count;
-                      } else if (outcome === 'proxied') {
-                        detailedStats[key].proxied += count;
-                      } else if (outcome === 'not_found') {
-                        detailedStats[key].not_found += count;
-                        detailedStats[key].errors += count;
-                      } else {
-                        detailedStats[key].errors += count;
-                      }
-                      
-                      if (!detailedStats[key].statusCodes[statusCode]) {
-                        detailedStats[key].statusCodes[statusCode] = 0;
-                      }
-                      detailedStats[key].statusCodes[statusCode] += count;
-                    }
-                  }
-                  
-                  // Парсим mockl_response_time_detailed_seconds_sum и count для вычисления среднего времени
-                  const responseTimeSumMatch = line.match(/^mockl_response_time_detailed_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeSumMatch) {
-                    const labelsStr = responseTimeSumMatch[1];
-                    const sum = parseFloat(responseTimeSumMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch && outcomeMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const outcome = outcomeMatch[1];
-                      const key = `${method}:${path}`;
-                      
-                      if (detailedStats[key]) {
-                        // Ищем соответствующую count метрику в тексте
-                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const countPattern = new RegExp(`mockl_response_time_detailed_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*outcome="${outcome}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
-                        const countMatch = text.match(countPattern);
-                        if (countMatch) {
-                          const count = parseFloat(countMatch[1]);
-                          const avg = count > 0 ? sum / count : 0;
-                          if (!detailedStats[key].responseTimes) {
-                            detailedStats[key].responseTimes = [];
-                          }
-                          detailedStats[key].responseTimes.push({ outcome, avg, count, sum });
-                        }
-                      }
-                    }
-                  }
-                  
-                  // Парсим mockl_proxy_response_time_seconds для проксированных запросов
-                  const proxyTimeSumMatch = line.match(/^mockl_proxy_response_time_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (proxyTimeSumMatch) {
-                    const labelsStr = proxyTimeSumMatch[1];
-                    const sum = parseFloat(proxyTimeSumMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const key = `${method}:${path}`;
-                      
-                      if (detailedStats[key]) {
-                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const countPattern = new RegExp(`mockl_proxy_response_time_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
-                        const countMatch = text.match(countPattern);
-                        if (countMatch) {
-                          const count = parseFloat(countMatch[1]);
-                          const avg = count > 0 ? sum / count : 0;
-                          detailedStats[key].proxyAvgTime = avg;
-                          detailedStats[key].proxyCount = count;
-                        }
-                      }
-                    }
-                  }
-                  
-                  // Старые метрики для обратной совместимости
-                  const responseTimeSumMatchOld = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeSumMatchOld) {
-                    totalResponseTime += parseFloat(responseTimeSumMatchOld[1]);
-                  }
-                  
-                  const responseTimeCountMatchOld = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeCountMatchOld) {
-                    responseTimeCount += parseFloat(responseTimeCountMatchOld[1]);
-                  }
-                }
-                
-                // Вычисляем средние времена ответа для каждого метода/пути
-                const detailedArray = Object.values(detailedStats).map(stat => {
-                  const allTimes = stat.responseTimes.map(rt => rt.avg);
-                  const avgTime = allTimes.length > 0 
-                    ? allTimes.reduce((a, b) => a + b, 0) / allTimes.length 
-                    : (stat.proxyAvgTime || 0);
-                  const minTime = allTimes.length > 0 ? Math.min(...allTimes) : (stat.proxyAvgTime || 0);
-                  const maxTime = allTimes.length > 0 ? Math.max(...allTimes) : (stat.proxyAvgTime || 0);
-                  
-                  return {
-                    ...stat,
-                    avgResponseTime: avgTime,
-                    minResponseTime: minTime,
-                    maxResponseTime: maxTime,
-                    total: stat.mock_hits + stat.proxied + stat.errors
-                  };
-                }).sort((a, b) => b.total - a.total);
-                
-                return { 
-                  detailedStats: detailedArray,
-                  totalRequests, 
-                  avgResponseTime: responseTimeCount > 0 ? totalResponseTime / responseTimeCount : 0 
-                };
-              };
+              // Проверяем, есть ли ошибка
+              if (metricsData && metricsData.error) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <Typography.Text type="danger">{metricsData.error}</Typography.Text>
+                  </div>
+                );
+              }
               
-              const parsed = parseMetrics(metricsData);
+              // Если данные еще не загружены или это старый формат (строка)
+              if (!metricsData || typeof metricsData === 'string') {
+                return (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <Typography.Text type="secondary">
+                      Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                    </Typography.Text>
+                  </div>
+                );
+              }
+              
+              // Используем структурированные данные из API
+              const data = metricsData;
               
               return (
                 <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
@@ -3055,7 +2916,7 @@ export default function App() {
                         Детальная статистика по методам и путям
                       </Typography.Title>
                       <Table
-                        dataSource={parsed.detailedStats}
+                        dataSource={data.methods_paths.map((mp, idx) => ({ ...mp, key: idx }))}
                         pagination={{ pageSize: 10 }}
                         size="small"
                         scroll={{ x: 'max-content' }}
@@ -3087,13 +2948,13 @@ export default function App() {
                           },
                           {
                             title: 'Всего',
-                            dataIndex: 'total',
-                            key: 'total',
+                            dataIndex: 'total_requests',
+                            key: 'total_requests',
                             width: 80,
                             align: 'right',
                             render: (total) => (
                               <Typography.Text style={{ fontWeight: 600 }}>
-                                {total}
+                                {total || 0}
                               </Typography.Text>
                             )
                           },
@@ -3135,47 +2996,47 @@ export default function App() {
                           },
                           {
                             title: 'Среднее время',
-                            dataIndex: 'avgResponseTime',
-                            key: 'avgResponseTime',
+                            dataIndex: 'avg_response_time_ms',
+                            key: 'avg_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text>
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Мин. время',
-                            dataIndex: 'minResponseTime',
-                            key: 'minResponseTime',
+                            dataIndex: 'min_response_time_ms',
+                            key: 'min_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text type="secondary">
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Макс. время',
-                            dataIndex: 'maxResponseTime',
-                            key: 'maxResponseTime',
+                            dataIndex: 'max_response_time_ms',
+                            key: 'max_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text type="secondary">
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Статус коды',
-                            key: 'statusCodes',
+                            key: 'status_codes',
                             width: 200,
                             render: (_, record) => (
                               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                                {Object.entries(record.statusCodes || {}).map(([code, count]) => (
+                                {Object.entries(record.status_codes || {}).map(([code, count]) => (
                                   <Typography.Text key={code} style={{ fontSize: 11 }}>
                                     <Typography.Text 
                                       strong 
@@ -3435,7 +3296,7 @@ export default function App() {
                             Всего запросов
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.totalRequests}
+                            {data.total_requests || 0}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -3445,7 +3306,7 @@ export default function App() {
                             Методов/Путей
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.detailedStats.length}
+                            {data.total_methods_paths || 0}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -3455,14 +3316,46 @@ export default function App() {
                             Среднее время ответа
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.avgResponseTime > 0 ? `${(parsed.avgResponseTime * 1000).toFixed(2)} мс` : '—'}
+                            {data.avg_response_time_ms > 0 ? `${data.avg_response_time_ms.toFixed(2)} мс` : '—'}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                    </Row>
+                    <Row gutter={16} style={{ marginTop: 16 }}>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Успешных моков
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                            {data.mock_hits_total || 0}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Проксированных
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                            {data.proxied_total || 0}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Ошибок
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#ef5350" : "#ff4d4f" }}>
+                            {data.errors_total || 0}
                           </Typography.Text>
                         </div>
                       </Col>
                     </Row>
                   </div>
                   
-                  {parsed.detailedStats.length > 0 ? (
+                  {data.methods_paths && data.methods_paths.length > 0 ? (
                     <div style={{ 
                       background: theme === "dark" ? "#262626" : "#fff",
                       borderRadius: 8,

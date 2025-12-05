@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import asyncio
 import base64
 import logging
@@ -446,7 +447,7 @@ def ensure_migrations():
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
             
-            # Новые поля в folders
+        # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
@@ -479,7 +480,7 @@ def ensure_migrations():
                 except Exception as e:
                     logger.warning(f"Error adding folders.parent_folder: {e}")
             
-            # Новые поля в mocks
+        # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
                 try:
                     conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
@@ -1192,29 +1193,29 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     created = 0
 
     try:
-        for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+
+        for method_name, operation in path_item.items():
+            if method_name.lower() not in allowed_methods:
                 continue
 
-            for method_name, operation in path_item.items():
-                if method_name.lower() not in allowed_methods:
-                    continue
-
-                method_upper = method_name.upper()
+            method_upper = method_name.upper()
 
                 # Нормализуем путь для проверки существования
                 normalized_path = _normalize_path_for_storage(path)
                 
                 # Проверяем, нет ли уже такого мока (быстрая проверка в памяти)
                 if (method_upper, normalized_path) in existing_keys:
-                    continue
+                continue
 
-                op = operation or {}
-                mock_name = (
-                    op.get("operationId")
-                    or op.get("summary")
-                    or f"{method_upper} {path}"
-                )
+            op = operation or {}
+            mock_name = (
+                op.get("operationId")
+                or op.get("summary")
+                or f"{method_upper} {path}"
+            )
 
                 # Извлекаем примеры запроса
                 request_body_contains = None
@@ -1451,7 +1452,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 mock = Mock(
                     id=str(uuid4()),
                     folder_name=folder_name,
-                    name=mock_name,
+                name=mock_name,
                     method=method_upper,
                     path=normalized_path,
                     headers=request_headers if request_headers else {},
@@ -1459,14 +1460,14 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                     status_code=response_status,
                     response_headers=response_headers if response_headers else {},
                     response_body=response_body,
-                    active=True,
-                    delay_ms=0,
+                active=True,
+                delay_ms=0,
                     order=next_order + created,
-                )
-                
+            )
+
                 new_mocks.append(mock)
-                created += 1
-                
+            created += 1
+
                 # Ограничение на количество моков для предотвращения перегрузки
                 if created >= MAX_MOCKS_PER_IMPORT:
                     logger.warning(f"Reached maximum mocks limit ({MAX_MOCKS_PER_IMPORT}), stopping import")
@@ -1890,8 +1891,8 @@ def deactivate_all(
         all_folders = get_all_subfolders(folder)
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
-            raise HTTPException(404, "No matching mock found")
-        
+        raise HTTPException(404, "No matching mock found")
+    
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:
             mock.active = False
@@ -2168,7 +2169,7 @@ async def import_postman_collection(
 
             # Логируем информацию о создаваемом моке для отладки
             logger.debug(f"Importing mock: folder={folder_name}, method={req.get('method', 'GET')}, path={path}, headers={request_headers}, body_contains={'yes' if body_contains else 'no'}")
-            
+
             entry = MockEntry(
                 folder=folder_name,
                 name=item.get("name"),
@@ -2445,9 +2446,322 @@ async def metrics(folder: Optional[str] = Query(None, description="Фильтр 
         
         data = '\n'.join(filtered_lines).encode('utf-8')
     else:
-        data = generate_latest()
+    data = generate_latest()
     
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+
+# Pydantic модели для структурированных метрик
+class MethodPathStats(BaseModel):
+    method: str
+    path: str
+    total_requests: int = 0
+    mock_hits: int = 0
+    proxied: int = 0
+    errors: int = 0
+    not_found: int = 0
+    avg_response_time_ms: float = 0.0
+    min_response_time_ms: float = 0.0
+    max_response_time_ms: float = 0.0
+    status_codes: Dict[str, int] = {}
+    proxy_avg_time_ms: Optional[float] = None
+    proxy_count: int = 0
+
+
+class FolderMetricsResponse(BaseModel):
+    folder: str
+    total_requests: int = 0
+    total_methods_paths: int = 0
+    avg_response_time_ms: float = 0.0
+    mock_hits_total: int = 0
+    proxied_total: int = 0
+    errors_total: int = 0
+    methods_paths: List[MethodPathStats] = []
+
+
+class GlobalMetricsResponse(BaseModel):
+    total_requests: int = 0
+    total_methods_paths: int = 0
+    avg_response_time_ms: float = 0.0
+    folders: Dict[str, FolderMetricsResponse] = {}
+
+
+def _parse_prometheus_metrics(text: str, folder_filter: Optional[str] = None) -> Dict[str, Any]:
+    """Парсит Prometheus метрики и возвращает структурированные данные."""
+    detailed_stats = {}  # {folder:method:path -> stats}
+    folder_totals = {}  # {folder -> totals}
+    total_requests = 0
+    total_response_time = 0.0
+    response_time_count = 0
+    
+    lines = text.split('\n')
+    
+    for line in lines:
+        if not line.strip() or line.startswith('#'):
+            continue
+        
+        # Парсим mockl_requests_detailed_total
+        detailed_match = re.match(r'^mockl_requests_detailed_total\{([^}]+)\}\s+([0-9.eE+-]+)$', line)
+        if detailed_match:
+            labels_str = detailed_match.group(1)
+            count = float(detailed_match.group(2))
+            
+            method_match = re.search(r'method="([^"]+)"', labels_str)
+            path_match = re.search(r'path="([^"]+)"', labels_str)
+            folder_match = re.search(r'folder="([^"]+)"', labels_str)
+            outcome_match = re.search(r'outcome="([^"]+)"', labels_str)
+            status_match = re.search(r'status_code="([^"]+)"', labels_str)
+            
+            if method_match and path_match and folder_match and outcome_match:
+                method = method_match.group(1)
+                path = path_match.group(1)
+                folder = folder_match.group(1)
+                outcome = outcome_match.group(1)
+                status_code = status_match.group(1) if status_match else 'unknown'
+                
+                # Фильтруем по папке, если указано
+                if folder_filter and folder != folder_filter:
+                    continue
+                
+                key = f"{folder}:{method}:{path}"
+                
+                if key not in detailed_stats:
+                    detailed_stats[key] = {
+                        'folder': folder,
+                        'method': method,
+                        'path': path,
+                        'mock_hits': 0,
+                        'proxied': 0,
+                        'errors': 0,
+                        'not_found': 0,
+                        'status_codes': {},
+                        'response_times': [],
+                        'proxy_avg_time': None,
+                        'proxy_count': 0
+                    }
+                
+                if folder not in folder_totals:
+                    folder_totals[folder] = {
+                        'total_requests': 0,
+                        'mock_hits': 0,
+                        'proxied': 0,
+                        'errors': 0
+                    }
+                
+                total_requests += count
+                folder_totals[folder]['total_requests'] += count
+                detailed_stats[key]['total_requests'] = detailed_stats[key].get('total_requests', 0) + count
+                
+                if outcome == 'mock_hit':
+                    detailed_stats[key]['mock_hits'] += count
+                    folder_totals[folder]['mock_hits'] += count
+                elif outcome == 'proxied':
+                    detailed_stats[key]['proxied'] += count
+                    folder_totals[folder]['proxied'] += count
+                elif outcome == 'not_found':
+                    detailed_stats[key]['not_found'] += count
+                    detailed_stats[key]['errors'] += count
+                    folder_totals[folder]['errors'] += count
+                else:
+                    detailed_stats[key]['errors'] += count
+                    folder_totals[folder]['errors'] += count
+                
+                if status_code not in detailed_stats[key]['status_codes']:
+                    detailed_stats[key]['status_codes'][status_code] = 0
+                detailed_stats[key]['status_codes'][status_code] += count
+        
+        # Парсим mockl_response_time_detailed_seconds_sum и count
+        response_time_sum_match = re.match(r'^mockl_response_time_detailed_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$', line)
+        if response_time_sum_match:
+            labels_str = response_time_sum_match.group(1)
+            sum_val = float(response_time_sum_match.group(2))
+            
+            method_match = re.search(r'method="([^"]+)"', labels_str)
+            path_match = re.search(r'path="([^"]+)"', labels_str)
+            folder_match = re.search(r'folder="([^"]+)"', labels_str)
+            outcome_match = re.search(r'outcome="([^"]+)"', labels_str)
+            
+            if method_match and path_match and folder_match and outcome_match:
+                method = method_match.group(1)
+                path = path_match.group(1)
+                folder = folder_match.group(1)
+                outcome = outcome_match.group(1)
+                
+                if folder_filter and folder != folder_filter:
+                    continue
+                
+                key = f"{folder}:{method}:{path}"
+                
+                # Ищем соответствующую count метрику
+                count_pattern = re.compile(
+                    rf'mockl_response_time_detailed_seconds_count\{{[^}}]*method="{re.escape(method)}"[^}}]*path="{re.escape(path)}"[^}}]*folder="{re.escape(folder)}"[^}}]*outcome="{re.escape(outcome)}"[^}}]*\}}\s+([0-9.eE+-]+)',
+                    re.MULTILINE
+                )
+                count_match = count_pattern.search(text)
+                if count_match and key in detailed_stats:
+                    count = float(count_match.group(1))
+                    avg = sum_val / count if count > 0 else 0
+                    detailed_stats[key]['response_times'].append({
+                        'outcome': outcome,
+                        'avg': avg,
+                        'count': count,
+                        'sum': sum_val
+                    })
+        
+        # Парсим mockl_proxy_response_time_seconds
+        proxy_time_sum_match = re.match(r'^mockl_proxy_response_time_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$', line)
+        if proxy_time_sum_match:
+            labels_str = proxy_time_sum_match.group(1)
+            sum_val = float(proxy_time_sum_match.group(2))
+            
+            method_match = re.search(r'method="([^"]+)"', labels_str)
+            path_match = re.search(r'path="([^"]+)"', labels_str)
+            folder_match = re.search(r'folder="([^"]+)"', labels_str)
+            
+            if method_match and path_match and folder_match:
+                method = method_match.group(1)
+                path = path_match.group(1)
+                folder = folder_match.group(1)
+                
+                if folder_filter and folder != folder_filter:
+                    continue
+                
+                key = f"{folder}:{method}:{path}"
+                
+                count_pattern = re.compile(
+                    rf'mockl_proxy_response_time_seconds_count\{{[^}}]*method="{re.escape(method)}"[^}}]*path="{re.escape(path)}"[^}}]*folder="{re.escape(folder)}"[^}}]*\}}\s+([0-9.eE+-]+)',
+                    re.MULTILINE
+                )
+                count_match = count_pattern.search(text)
+                if count_match and key in detailed_stats:
+                    count = float(count_match.group(1))
+                    avg = sum_val / count if count > 0 else 0
+                    detailed_stats[key]['proxy_avg_time'] = avg
+                    detailed_stats[key]['proxy_count'] = count
+        
+        # Старые метрики для обратной совместимости
+        response_time_sum_old = re.match(r'^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$', line)
+        if response_time_sum_old:
+            total_response_time += float(response_time_sum_old.group(1))
+        
+        response_time_count_old = re.match(r'^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$', line)
+        if response_time_count_old:
+            response_time_count += float(response_time_count_old.group(1))
+    
+    # Вычисляем средние времена для каждого метода/пути
+    methods_paths = []
+    for key, stat in detailed_stats.items():
+        all_times = [rt['avg'] for rt in stat['response_times']]
+        avg_time = sum(all_times) / len(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
+        min_time = min(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
+        max_time = max(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
+        
+        methods_paths.append({
+            'folder': stat['folder'],
+            'method': stat['method'],
+            'path': stat['path'],
+            'total_requests': stat.get('total_requests', stat['mock_hits'] + stat['proxied'] + stat['errors']),
+            'mock_hits': stat['mock_hits'],
+            'proxied': stat['proxied'],
+            'errors': stat['errors'],
+            'not_found': stat['not_found'],
+            'avg_response_time_ms': avg_time * 1000,
+            'min_response_time_ms': min_time * 1000,
+            'max_response_time_ms': max_time * 1000,
+            'status_codes': stat['status_codes'],
+            'proxy_avg_time_ms': stat['proxy_avg_time'] * 1000 if stat['proxy_avg_time'] else None,
+            'proxy_count': stat['proxy_count']
+        })
+    
+    methods_paths.sort(key=lambda x: x['total_requests'], reverse=True)
+    
+    return {
+        'total_requests': total_requests,
+        'avg_response_time_ms': (total_response_time / response_time_count * 1000) if response_time_count > 0 else 0.0,
+        'folder_totals': folder_totals,
+        'methods_paths': methods_paths
+    }
+
+
+@app.get("/api/metrics/folder/{folder}", response_model=FolderMetricsResponse)
+async def get_folder_metrics(folder: str = Path(..., description="Имя папки")):
+    """Получить структурированные метрики для конкретной папки."""
+    try:
+        all_metrics = generate_latest().decode('utf-8')
+        parsed = _parse_prometheus_metrics(all_metrics, folder_filter=folder)
+        
+        folder_total = parsed['folder_totals'].get(folder, {
+            'total_requests': 0,
+            'mock_hits': 0,
+            'proxied': 0,
+            'errors': 0
+        })
+        
+        return FolderMetricsResponse(
+            folder=folder,
+            total_requests=parsed['total_requests'],
+            total_methods_paths=len(parsed['methods_paths']),
+            avg_response_time_ms=parsed['avg_response_time_ms'],
+            mock_hits_total=folder_total['mock_hits'],
+            proxied_total=folder_total['proxied'],
+            errors_total=folder_total['errors'],
+            methods_paths=[MethodPathStats(**{k: v for k, v in mp.items() if k != 'folder'}) for mp in parsed['methods_paths']]
+        )
+    except Exception as e:
+        logger.error(f"Error getting folder metrics: {e}", exc_info=True)
+        raise HTTPException(500, f"Ошибка получения метрик: {str(e)}")
+
+
+@app.get("/api/metrics/global", response_model=GlobalMetricsResponse)
+async def get_global_metrics():
+    """Получить структурированные метрики для всего сервиса (всех папок)."""
+    try:
+        all_metrics = generate_latest().decode('utf-8')
+        parsed = _parse_prometheus_metrics(all_metrics, folder_filter=None)
+        
+        # Группируем методы/пути по папкам
+        folders_dict = {}
+        for mp in parsed['methods_paths']:
+            folder = mp['folder']
+            if folder not in folders_dict:
+                folders_dict[folder] = {
+                    'methods_paths': [],
+                    'total_requests': 0,
+                    'mock_hits': 0,
+                    'proxied': 0,
+                    'errors': 0
+                }
+            
+            # Создаем MethodPathStats без поля folder (оно не в модели)
+            mp_stat = {k: v for k, v in mp.items() if k != 'folder'}
+            folders_dict[folder]['methods_paths'].append(MethodPathStats(**mp_stat))
+            folders_dict[folder]['total_requests'] += mp['total_requests']
+            folders_dict[folder]['mock_hits'] += mp['mock_hits']
+            folders_dict[folder]['proxied'] += mp['proxied']
+            folders_dict[folder]['errors'] += mp['errors']
+        
+        folders_response = {}
+        for folder_name, folder_data in folders_dict.items():
+            folders_response[folder_name] = FolderMetricsResponse(
+                folder=folder_name,
+                total_requests=folder_data['total_requests'],
+                total_methods_paths=len(folder_data['methods_paths']),
+                avg_response_time_ms=parsed['avg_response_time_ms'],  # Общее среднее
+                mock_hits_total=folder_data['mock_hits'],
+                proxied_total=folder_data['proxied'],
+                errors_total=folder_data['errors'],
+                methods_paths=folder_data['methods_paths']
+            )
+        
+        return GlobalMetricsResponse(
+            total_requests=parsed['total_requests'],
+            total_methods_paths=len(parsed['methods_paths']),
+            avg_response_time_ms=parsed['avg_response_time_ms'],
+            folders=folders_response
+        )
+    except Exception as e:
+        logger.error(f"Error getting global metrics: {e}", exc_info=True)
+        raise HTTPException(500, f"Ошибка получения метрик: {str(e)}")
 
 
 
@@ -2574,7 +2888,7 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
             return "&".join(f"{k}={v}" for k, v in params)
         
         if normalize_query(mock_query) != normalize_query(request_query):
-            return False
+        return False
     
     # Проверка заголовков
     # Если в моке указаны заголовки (непустой словарь), проверяем их
@@ -2634,7 +2948,7 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                 else:
                     # Обязательный заголовок отсутствует
                     logger.info(f"Header missing for mock {m.id}: header '{hk}' not found in request. Request headers: {dict(req.headers)}")
-                    return False
+                return False
             
             # Если заголовок необязательный, проверяем только наличие (значение не важно)
             if is_optional:
@@ -2673,13 +2987,13 @@ async def match_condition(req: Request, m: Mock, full_path: str) -> bool:
                     logger.debug(f"Ignoring body_contains for mock {m.id} (GET request with empty body)")
             else:
                 # Для POST, PUT, PATCH, DELETE проверяем тело
-                body = (await req.body()).decode("utf-8")
+            body = (await req.body()).decode("utf-8")
                 # Нормализуем оба значения для сравнения
                 normalized_body = _normalize_json_string(body)
                 normalized_contains = _normalize_json_string(m.body_contains)
                 if normalized_contains not in normalized_body:
                     logger.debug(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:50]}...' not in request body")
-                    return False
+                return False
         except Exception as e:
             logger.debug(f"Error checking body for mock {m.id}: {e}")
             return False
@@ -3001,7 +3315,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
             response_time = time.time() - start_time
             status_code = resp.status_code
-            
+
             MOCK_HITS.labels(folder=folder_name).inc()
             RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
             REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="mock_hit").inc()
@@ -3073,7 +3387,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
-        
+
         PROXY_REQUESTS.labels(folder=folder_name).inc()
         RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
         REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="proxied").inc()
