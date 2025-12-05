@@ -296,7 +296,7 @@ const DraggableMockRow = (props) => {
 };
 
 // Компонент для папки с подпапками
-const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, foldersData }) => {
+const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, foldersData, getFolderKey }) => {
   // Восстанавливаем состояние раскрытия из localStorage
   const [isExpanded, setIsExpanded] = useState(() => {
     const saved = localStorage.getItem(`mockl-folder-expanded-${rootFolder.name}`);
@@ -332,11 +332,11 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
             selectedFolder={selectedFolder}
             setSelectedFolder={setSelectedFolder}
             deleteFolder={deleteFolder}
-            startRename={startRename}
             theme={theme}
             isSubfolder={false}
             parentFolder={null}
             showExpandIcon={false}
+            getFolderKey={getFolderKey}
           />
         </div>
       </div>
@@ -344,17 +344,17 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
         <div style={{ marginLeft: 24, marginTop: 4, width: "calc(100% - 24px)" }}>
           {subFolders.map((subFolder, subIndex) => (
             <DraggableFolder
-              key={subFolder.name}
+              key={`${subFolder.name}|${subFolder.parent_folder}`}
               folder={subFolder.name}
               index={rootIndex + 1 + subIndex}
               moveFolder={moveFolder}
               selectedFolder={selectedFolder}
               setSelectedFolder={setSelectedFolder}
               deleteFolder={deleteFolder}
-              startRename={startRename}
               theme={theme}
               isSubfolder={true}
               parentFolder={subFolder.parent_folder}
+              getFolderKey={getFolderKey}
             />
           ))}
         </div>
@@ -363,7 +363,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
   );
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, startRename, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true }) => {
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true, getFolderKey }) => {
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder },
@@ -379,7 +379,8 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
     }
   });
   
-  const isActive = folder === selectedFolder;
+  const folderKey = getFolderKey ? getFolderKey(folder, parentFolder) : folder;
+  const isActive = folderKey === selectedFolder;
   const bgColor = isActive 
     ? (theme === "dark" ? "#1890ff" : "#e6f7ff")
     : (theme === "dark" ? "#262626" : "#fafafa");
@@ -416,7 +417,7 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
       onMouseLeave={e => {
         if (!isActive) e.currentTarget.style.background = bgColor;
       }}
-      onClick={() => setSelectedFolder(folder)}
+      onClick={() => setSelectedFolder(getFolderKey ? getFolderKey(folder, parentFolder) : folder)}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
@@ -431,12 +432,8 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
       </div>
       {folder !== "default" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <EditOutlined
-            onClick={e => { e.stopPropagation(); startRename(folder); }}
-            style={{ color: textColor, fontSize: 16, cursor: "pointer" }}
-          />
           <DeleteOutlined
-            onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
+            onClick={e => { e.stopPropagation(); deleteFolder(folder, parentFolder); }}
             style={{ color: '#ff4d4f', fontSize: 16, cursor: "pointer" }}
           />
         </div>
@@ -448,13 +445,14 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
 export default function App() {
   const [form] = Form.useForm();
   const [folderForm] = Form.useForm();
-  const [renameForm] = Form.useForm();
   const [folders, setFolders] = useState(["default"]);
   const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
   // Восстанавливаем выбранную папку из localStorage
+  // Используем составной ключ для идентификации папок: "name|parent_folder"
+  // Для корневых папок parent_folder = '', для подпапок - имя родительской папки
   const [selectedFolder, setSelectedFolder] = useState(() => {
     const saved = localStorage.getItem("mockl-selected-folder");
-    return saved || "default";
+    return saved || "default|";
   });
   
   // Сохраняем выбранную папку в localStorage при изменении
@@ -463,6 +461,21 @@ export default function App() {
       localStorage.setItem("mockl-selected-folder", selectedFolder);
     }
   }, [selectedFolder]);
+  
+  // Вспомогательные функции для работы с составным ключом
+  const getFolderKey = (name, parentFolder = null) => {
+    const parent = parentFolder || '';
+    return `${name}|${parent}`;
+  };
+  
+  const parseFolderKey = (key) => {
+    if (!key || key === "default") return { name: "default", parent_folder: null };
+    const parts = key.split('|');
+    return {
+      name: parts[0] || "default",
+      parent_folder: parts[1] && parts[1] !== '' ? parts[1] : null
+    };
+  };
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [mockSearchQuery, setMockSearchQuery] = useState("");
   const [mocks, setMocks] = useState([]);
@@ -484,7 +497,9 @@ export default function App() {
       setMetricsLoading(true);
     }
     try {
-      const metricsUrl = `${host}/api/metrics/folder/${encodeURIComponent(selectedFolder)}`;
+      const { name, parent_folder } = parseFolderKey(selectedFolder);
+      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
+      const metricsUrl = `${host}/api/metrics/folder/${encodeURIComponent(folderParam)}`;
       const response = await fetch(metricsUrl);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -506,7 +521,9 @@ export default function App() {
       setRequestLogsLoading(true);
     }
     try {
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}&limit=10000`);
+      const { name, parent_folder } = parseFolderKey(selectedFolder);
+      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -692,8 +709,6 @@ export default function App() {
   }, [isGlobalMetricsModalOpen]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
-  const [isRenameModalOpen, setRenameModalOpen] = useState(false);
-  const [folderToRename, setFolderToRename] = useState(null);
   const [editing, setEditing] = useState(null);
   const [host, setHost] = useState(getBackendUrl());
   const [theme, setTheme] = useState("light");
@@ -775,18 +790,20 @@ export default function App() {
     }
   };
 
-  const deactivateAllMocks = (folderName = null) => {
-    const isCurrentFolder = folderName === selectedFolder || folderName === null;
+  const deactivateAllMocks = (folderKey = null) => {
+    const isCurrentFolder = folderKey === selectedFolder || folderKey === null;
+    const { name, parent_folder } = folderKey ? parseFolderKey(folderKey) : { name: null, parent_folder: null };
     Modal.confirm({
-      title: folderName ? `Отключить все моки в папке "${folderName}"?` : 'Отключить все моки во всех папках?',
-      content: folderName ? 'Будут отключены все моки в этой папке и всех её вложенных папках.' : 'Будут отключены все моки во всех папках.',
+      title: name ? `Отключить все моки в папке "${name}"?` : 'Отключить все моки во всех папках?',
+      content: name ? 'Будут отключены все моки в этой папке и всех её вложенных папках.' : 'Будут отключены все моки во всех папках.',
       icon: <ExclamationCircleOutlined />,
       okText: 'Отключить',
       cancelText: 'Отмена',
       onOk: async () => {
         try {
-          const url = folderName 
-            ? `${host}/api/mocks/deactivate-all?folder=${encodeURIComponent(folderName)}`
+          const folderParam = name ? (parent_folder ? `${name}|${parent_folder}` : name) : null;
+          const url = folderParam 
+            ? `${host}/api/mocks/deactivate-all?folder=${encodeURIComponent(folderParam)}`
             : `${host}/api/mocks/deactivate-all`;
           const res = await fetch(url, { method: "POST" });
           if (!res.ok) throw new Error();
@@ -823,7 +840,9 @@ export default function App() {
     // Сохраняем новый порядок на сервере
     try {
       const mockIds = arr.map(m => m.id);
-      await fetch(`${host}/api/mocks/reorder?folder=${selectedFolder}`, {
+      const { name, parent_folder } = parseFolderKey(selectedFolder);
+      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
+      await fetch(`${host}/api/mocks/reorder?folder=${encodeURIComponent(folderParam)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(mockIds)
@@ -861,25 +880,38 @@ export default function App() {
       // Сохраняем полные данные папок для использования в форме
       setFoldersData(foldersData);
       // Проверяем, существует ли сохраненная папка в списке
-      const savedFolder = localStorage.getItem("mockl-selected-folder");
-      if (savedFolder && sorted.includes(savedFolder)) {
+      const savedFolder = localStorage.getItem("mockl-selected-folder") || "default|";
+      const savedFolderData = parseFolderKey(savedFolder);
+      const folderExists = foldersData.some(f => 
+        f.name === savedFolderData.name && 
+        (f.parent_folder || '') === (savedFolderData.parent_folder || '')
+      );
+      if (folderExists) {
         // Восстанавливаем сохраненную папку, если она существует
         setSelectedFolder(savedFolder);
-      } else if (!sorted.includes(selectedFolder)) {
+      } else {
         // Если текущая папка не существует, выбираем первую доступную
-        setSelectedFolder(sorted[0]);
+        const firstFolder = foldersData[0];
+        if (firstFolder) {
+          setSelectedFolder(getFolderKey(firstFolder.name, firstFolder.parent_folder));
+        } else {
+          setSelectedFolder("default|");
+        }
       }
     } catch {
       setFolders(["default"]);
       setFoldersData([{ name: "default", parent_folder: null, order: 0 }]);
-      setSelectedFolder("default");
+      setSelectedFolder("default|");
       message.error("Ошибка получения папок");
     }
   };
 
   const fetchMocks = async () => {
     try {
-      const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(selectedFolder)}`);
+      const { name, parent_folder } = parseFolderKey(selectedFolder);
+      // Для запроса используем только имя папки, бэкенд сам определит по parent_folder
+      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
+      const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(folderParam)}`);
       if (!res.ok) throw new Error();
       setMocks(await res.json());
     } catch {
@@ -1185,7 +1217,11 @@ export default function App() {
     // Устанавливаем значения формы
     form.setFieldsValue({
       id: m.id,
-      folder: m.folder,
+      folder: (() => {
+        // Преобразуем имя папки в составной ключ, если это подпапка
+        const folderData = foldersData.find(f => f.name === m.folder);
+        return folderData ? getFolderKey(m.folder, folderData.parent_folder) : getFolderKey(m.folder, null);
+      })(),
       name: m.name || "",
       method: m.request_condition.method,
       path: m.request_condition.path,
@@ -1586,11 +1622,6 @@ export default function App() {
     setFolderModalOpen(true);
   };
 
-  const startRenameFolder = name => {
-    setFolderToRename(name);
-    renameForm.setFieldsValue({ new_name: name });
-    setRenameModalOpen(true);
-  };
 
   const addFolder = async vals => {
     const name = vals.name.trim();
@@ -1613,15 +1644,17 @@ export default function App() {
       setFolderModalOpen(false);
       folderForm.resetFields();
       await fetchFolders();
-      setSelectedFolder(name);
+      const newFolderKey = getFolderKey(name, vals.parent_folder || null);
+      setSelectedFolder(newFolderKey);
       await fetchMocks();
     } catch (e) {
       message.error("Ошибка: " + (e.message || "Не удалось создать папку"));
     }
   };
 
-  const deleteFolder = name => {
+  const deleteFolder = (name, parentFolder = null) => {
     if (name === "default") return message.warning("Нельзя удалить Главная");
+    const folderKey = getFolderKey(name, parentFolder);
     Modal.confirm({
       title: `Удалить страницу ${name === "default" ? "Главная" : name}?`,
       icon: <ExclamationCircleOutlined />,
@@ -1630,10 +1663,14 @@ export default function App() {
       cancelText: "Отмена",
       onOk: async () => {
         try {
+          // Для удаления используем только имя, бэкенд сам определит по parent_folder если нужно
           const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(name)}`, { method: "DELETE" });
           if (!res.ok) throw new Error();
           message.success("Удалено");
-          if (selectedFolder === name) setSelectedFolder("default");
+          // Если удаляем выбранную папку, переключаемся на default
+          if (selectedFolder === folderKey) {
+            setSelectedFolder("default|");
+          }
           fetchFolders();
           fetchMocks();
         } catch {
@@ -1643,33 +1680,6 @@ export default function App() {
     });
   };
 
-  const renameFolder = async vals => {
-    const newName = (vals.new_name || "").trim();
-    if (!folderToRename || !newName || newName === folderToRename) {
-      setRenameModalOpen(false);
-      return;
-    }
-    // Убираем проверку на фронтенде - бэкенд проверит с учетом parent_folder
-    try {
-      const res = await fetch(`${host}/api/folders/rename`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_name: folderToRename, new_name: newName })
-      });
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.detail || "Ошибка переименования");
-      }
-      message.success("Переименовано");
-      setRenameModalOpen(false);
-      if (selectedFolder === folderToRename) {
-        setSelectedFolder(newName);
-      }
-      fetchFolders();
-    } catch (e) {
-      message.error(e.message || "Ошибка переименования");
-    }
-  };
 
   const clearCacheForMock = async mock => {
     const path = mock?.request_condition?.path || "/";
@@ -1720,12 +1730,16 @@ export default function App() {
 
   const isDesktop = screens.md ?? false;
   const stickyTopOffset = isDesktop ? 88 : 64;
-  const isDefaultFolder = selectedFolder === "default";
-  const folderTitle = isDefaultFolder ? "Главная" : selectedFolder;
+  const selectedFolderData = parseFolderKey(selectedFolder);
+  const isDefaultFolder = selectedFolderData.name === "default";
+  const folderTitle = isDefaultFolder ? "Главная" : selectedFolderData.name;
   // Находим информацию о выбранной папке для получения родительской папки
-  const selectedFolderData = foldersData.find(f => f.name === selectedFolder);
-  const parentFolder = selectedFolderData?.parent_folder || null;
-  const baseFolderUrl = buildFolderHost(host, selectedFolder, parentFolder);
+  const folderData = foldersData.find(f => 
+    f.name === selectedFolderData.name && 
+    (f.parent_folder || '') === (selectedFolderData.parent_folder || '')
+  );
+  const parentFolder = folderData?.parent_folder || selectedFolderData.parent_folder;
+  const baseFolderUrl = buildFolderHost(host, selectedFolderData.name, parentFolder);
   const primaryButtonStyle = {
     minWidth: isDesktop ? 160 : "calc(50% - 8px)",
     flex: isDesktop ? "0 0 auto" : "1 1 calc(50% - 8px)"
@@ -1951,10 +1965,10 @@ export default function App() {
                       selectedFolder={selectedFolder}
                       setSelectedFolder={setSelectedFolder}
                       deleteFolder={deleteFolder}
-                      startRename={startRenameFolder}
                       theme={theme}
                             isSubfolder={false}
                             parentFolder={null}
+                            getFolderKey={getFolderKey}
                           />
                         );
                       }
@@ -1971,9 +1985,9 @@ export default function App() {
                             selectedFolder={selectedFolder}
                             setSelectedFolder={setSelectedFolder}
                             deleteFolder={deleteFolder}
-                            startRename={startRenameFolder}
                             theme={theme}
                             foldersData={foldersData}
+                            getFolderKey={getFolderKey}
                           />
                         );
                       } else {
@@ -1986,10 +2000,10 @@ export default function App() {
                             selectedFolder={selectedFolder}
                             setSelectedFolder={setSelectedFolder}
                             deleteFolder={deleteFolder}
-                            startRename={startRenameFolder}
                             theme={theme}
                             isSubfolder={false}
                             parentFolder={null}
+                            getFolderKey={getFolderKey}
                           />
                         );
                       }
@@ -2997,26 +3011,6 @@ export default function App() {
             </Form>
           </Modal>
 
-          <Modal
-            title="Переименовать страницу"
-            open={isRenameModalOpen}
-            onCancel={() => setRenameModalOpen(false)}
-            footer={null}
-            destroyOnClose
-          >
-            <Form form={renameForm} onFinish={renameFolder} layout="vertical">
-              <Form.Item
-                name="new_name"
-                label="Новое имя страницы"
-                rules={[{ required: true, message: "Введите новое имя" }]}
-              >
-                <Input placeholder="Новое имя" />
-              </Form.Item>
-              <Form.Item>
-                <Button type="primary" htmlType="submit" block>Переименовать</Button>
-              </Form.Item>
-            </Form>
-          </Modal>
 
           <Modal
             title="Импорт OpenAPI/Swagger"

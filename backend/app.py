@@ -463,15 +463,6 @@ class MockEntry(BaseModel):
 
 
 
-class FolderRenamePayload(BaseModel):
-    """Модель запроса для переименования папки."""
-
-
-    old_name: str = Field(..., description="Текущее имя папки")
-    new_name: str = Field(..., description="Новое имя папки")
-
-
-
 class FolderDuplicatePayload(BaseModel):
     """Модель запроса для дублирования папки."""
 
@@ -933,103 +924,6 @@ def delete_folder(
 
 
 
-@app.patch(
-    "/api/folders/rename",
-    summary="Переименовать папку",
-    description="Переименовывает существующую папку. Папку `default` переименовать нельзя.",
-)
-def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
-    """Переименовывает папку и обновляет все связанные моки."""
-    try:
-        old = payload.old_name.strip()
-        new = payload.new_name.strip()
-        
-        if not new or old == new:
-            raise HTTPException(400, "Некорректное новое имя папки")
-        if old == "default":
-            raise HTTPException(400, "Нельзя переименовать стандартную папку")
-        
-        # Ищем папку по составному ключу
-        # Сначала пробуем найти как корневую (parent_folder = '')
-        folder = db.query(Folder).filter(
-            Folder.name == old,
-            Folder.parent_folder == ''
-        ).first()
-        # Если не найдена, ищем среди всех папок
-        if not folder:
-            folder = db.query(Folder).filter(Folder.name == old).first()
-        if not folder:
-            raise HTTPException(404, "Папка не найдена")
-        
-        # Проверяем уникальность имени с учетом родительской папки
-        # Для корневых папок проверяем, что нет другой корневой папки с таким именем
-        # Для подпапок проверяем, что в той же родительской папке нет подпапки с таким именем
-        # ВАЖНО: исключаем текущую папку из проверки
-        parent_folder = folder.parent_folder or ''
-        if parent_folder == '':
-            # Это корневая папка - проверяем, что нет другой корневой папки с таким именем
-            existing_root = db.query(Folder).filter(
-                Folder.name == new,
-                Folder.parent_folder == '',
-                ~((Folder.name == old) & (Folder.parent_folder == ''))  # Исключаем текущую папку
-            ).first()
-            if existing_root:
-                raise HTTPException(400, f"Корневая папка '{new}' уже существует")
-        else:
-            # Это подпапка - проверяем, что в той же родительской папке нет подпапки с таким именем
-            # ВАЖНО: подпапка может иметь имя, совпадающее с корневой папкой - это разрешено
-            existing_subfolder = db.query(Folder).filter(
-                Folder.name == new,
-                Folder.parent_folder == parent_folder,
-                ~((Folder.name == old) & (Folder.parent_folder == parent_folder))  # Исключаем текущую папку
-            ).first()
-            if existing_subfolder:
-                raise HTTPException(400, f"Подпапка '{new}' уже существует в папке '{parent_folder}'")
-
-        # Из‑за ограничений FK безопаснее всего:
-        # 1) создать новую папку с новым именем,
-        # 2) перевесить все моки на неё,
-        # 3) перевесить все подпапки на неё,
-        # 4) удалить старую папку.
-
-        # 1. Создаём новую запись папки с сохранением parent_folder
-        # Нормализуем parent_folder: None -> ''
-        normalized_parent = parent_folder if parent_folder else ''
-        new_folder = Folder(name=new, parent_folder=normalized_parent)
-        db.add(new_folder)
-        db.flush()
-
-
-        # 2. Обновляем все связанные моки
-        db.query(Mock).filter_by(folder_name=old).update(
-            {"folder_name": new},
-            synchronize_session=False
-        )
-
-        # 3. Обновляем все подпапки (если переименовывается корневая папка)
-        # Если переименовывается подпапка, подпапки у неё остаются с тем же parent_folder (новым именем)
-        # Обновляем только те подпапки, у которых parent_folder = old
-        db.query(Folder).filter(Folder.parent_folder == old).update(
-            {"parent_folder": new},
-            synchronize_session=False
-        )
-
-        # 4. Удаляем старую папку
-        db.delete(folder)
-
-        # 5. Коммитим всё разом
-        db.commit()
-        return {"message": "Папка переименована", "old": old, "new": new}
-    
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Ошибка при переименовании папки: {str(e)}")
-
-
-
 @app.post(
     "/api/folders/duplicate",
     summary="Продублировать папку и все её моки",
@@ -1337,17 +1231,31 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     if not folder_name:
         folder_name = "default"
     
-    # Ищем папку (сначала как корневую, потом среди всех)
-    folder = db.query(Folder).filter(
-        Folder.name == folder_name,
-        Folder.parent_folder == ''
-    ).first()
+    # Поддерживаем формат "name|parent_folder" для подпапок
+    parent_folder = None
+    if '|' in folder_name:
+        parts = folder_name.split('|', 1)
+        folder_name = parts[0]
+        parent_folder = parts[1] if parts[1] else None
+    
+    # Ищем папку с учетом parent_folder
+    if parent_folder:
+        # Ищем подпапку
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == parent_folder
+        ).first()
+    else:
+        # Ищем корневую папку
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == ''
+        ).first()
+    
     if not folder:
-        folder = db.query(Folder).filter(Folder.name == folder_name).first()
-    if not folder:
-        # Автоматически создаем корневую папку, если её нет
-        # Это нужно для обратной совместимости
-        folder = Folder(name=folder_name, parent_folder='')
+        # Автоматически создаем папку, если её нет
+        normalized_parent = parent_folder if parent_folder else ''
+        folder = Folder(name=folder_name, parent_folder=normalized_parent)
         db.add(folder)
         db.flush()
 
@@ -1629,7 +1537,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 if method_name.lower() not in allowed_methods:
                     continue
 
-            method_upper = method_name.upper()
+                method_upper = method_name.upper()
 
             # Нормализуем путь для проверки существования
             normalized_path = _normalize_path_for_storage(path)
@@ -2240,10 +2148,16 @@ def list_mocks(
         logger.debug(f"list_mocks called with folder='{folder}'")
         q = db.query(Mock)
         if folder:
-            # Декодируем имя папки на случай URL-кодирования
+            # Поддерживаем формат "name|parent_folder" для подпапок
             folder = folder.strip()
-            logger.debug(f"Filtering mocks by folder_name='{folder}'")
-            q = q.filter_by(folder_name=folder)
+            folder_name = folder
+            if '|' in folder:
+                parts = folder.split('|', 1)
+                folder_name = parts[0]
+                # parent_folder игнорируем, так как моки хранят только folder_name
+                # и бэкенд должен найти папку по составному ключу если нужно
+            logger.debug(f"Filtering mocks by folder_name='{folder_name}'")
+            q = q.filter_by(folder_name=folder_name)
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
@@ -2342,6 +2256,12 @@ def deactivate_all(
     db: Session = Depends(get_db),
 ):
     if folder:
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = folder.strip()
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+        
         # Отключаем моки в указанной папке и всех её вложенных папках
         # Сначала получаем все вложенные папки рекурсивно
         def get_all_subfolders(parent_name: str, visited: set = None) -> List[str]:
@@ -2356,11 +2276,11 @@ def deactivate_all(
                 result.extend(get_all_subfolders(subfolder.name, visited))
             return result
         
-        all_folders = get_all_subfolders(folder)
+        all_folders = get_all_subfolders(folder_name)
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
             raise HTTPException(404, "No matching mock found")
-        
+    
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:
             mock.active = False
@@ -2384,15 +2304,21 @@ def deactivate_all(
     description="Изменяет порядок моков в папке. Принимает список ID моков в новом порядке.",
 )
 def reorder_mocks(
-    folder: str = Query(..., description="Имя папки"),
+    folder: str = Query(..., description="Имя папки (может быть в формате name|parent_folder)"),
     mock_ids: List[str] = Body(..., description="Список ID моков в новом порядке"),
     db: Session = Depends(get_db),
 ):
     """Изменяет порядок моков в указанной папке."""
+    # Поддерживаем формат "name|parent_folder" для подпапок
+    folder_name = folder.strip()
+    if '|' in folder_name:
+        parts = folder_name.split('|', 1)
+        folder_name = parts[0]
+    
     # Проверяем, что все моки принадлежат указанной папке
     mocks = db.query(Mock).filter(
         Mock.id.in_(mock_ids),
-        Mock.folder_name == folder
+        Mock.folder_name == folder_name
     ).all()
     
     if len(mocks) != len(mock_ids):
@@ -3186,13 +3112,19 @@ def _parse_prometheus_metrics(text: str, folder_filter: Optional[str] = None) ->
 
 
 @app.get("/api/metrics/folder/{folder}", response_model=FolderMetricsResponse)
-async def get_folder_metrics(folder: str = Path(..., description="Имя папки")):
+async def get_folder_metrics(folder: str = Path(..., description="Имя папки (может быть в формате name|parent_folder)")):
     """Получить структурированные метрики для конкретной папки."""
     try:
-        all_metrics = generate_latest().decode('utf-8')
-        parsed = _parse_prometheus_metrics(all_metrics, folder_filter=folder)
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = folder.strip()
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
         
-        folder_total = parsed['folder_totals'].get(folder, {
+        all_metrics = generate_latest().decode('utf-8')
+        parsed = _parse_prometheus_metrics(all_metrics, folder_filter=folder_name)
+        
+        folder_total = parsed['folder_totals'].get(folder_name, {
             'total_requests': 0,
             'mock_hits': 0,
             'proxied': 0,
@@ -3200,7 +3132,7 @@ async def get_folder_metrics(folder: str = Path(..., description="Имя пап�
         })
         
         return FolderMetricsResponse(
-            folder=folder,
+            folder=folder_name,
             total_requests=parsed['total_requests'],
             total_methods_paths=len(parsed['methods_paths']),
             avg_response_time_ms=parsed['avg_response_time_ms'],
@@ -3280,7 +3212,12 @@ def get_request_logs(
     """Возвращает историю вызовов с возможностью фильтрации по папке."""
     query = db.query(RequestLog)
     if folder:
-        query = query.filter_by(folder_name=folder)
+        # Поддерживаем формат "name|parent_folder" для подпапок
+        folder_name = folder.strip()
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+        query = query.filter_by(folder_name=folder_name)
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
