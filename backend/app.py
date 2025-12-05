@@ -23,7 +23,7 @@ from sqlalchemy import (
     create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.orm import sessionmaker, Session, relationship, foreign, remote
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry, REGISTRY
 
 
@@ -169,7 +169,7 @@ class Folder(Base):
         back_populates="folder_obj",
         cascade="all, delete",
         order_by="Mock.order",
-        primaryjoin="and_(foreign(Mock.folder_name) == Folder.name, foreign(Mock.parent_folder) == Folder.parent_folder)"
+        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
     )
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
@@ -180,14 +180,21 @@ class Folder(Base):
     # parent_folder подпапки должен совпадать с name родительской папки
     # Для корневых папок parent_folder = '', для подпапок - имя родительской папки
     # Используем строковый primaryjoin для self-referential relationship
-    # ВАЖНО: remote_side указывает на name, так как это часть составного PK
+    # ВАЖНО: remote_side указывает на name родительской папки
     subfolders = relationship(
         "Folder",
-        backref="parent",
+        back_populates="parent",
         primaryjoin="and_(Folder.parent_folder == Folder.name, Folder.parent_folder != '')",
         foreign_keys="[Folder.parent_folder]",
-        remote_side=[name],
         cascade="all, delete"
+    )
+    # Обратная связь для родительской папки (many-to-one)
+    parent = relationship(
+        "Folder",
+        back_populates="subfolders",
+        primaryjoin="and_(Folder.name == Folder.parent_folder, Folder.parent_folder != '')",
+        remote_side=[name],
+        uselist=False
     )
 
 
@@ -236,7 +243,8 @@ class Mock(Base):
     folder_obj = relationship(
         "Folder",
         back_populates="mocks",
-        primaryjoin="and_(Mock.folder_name == foreign(Folder.name), Mock.parent_folder == foreign(Folder.parent_folder))"
+        foreign_keys="[Mock.folder_name, Mock.parent_folder]",
+        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
     )
 
 
@@ -464,7 +472,7 @@ class MockEntry(BaseModel):
 
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": "d7f9f6b4-6c86-4d3b-a8d2-0b8c2e1e1234",
                 "folder": "auth",
