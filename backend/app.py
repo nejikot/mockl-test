@@ -3430,17 +3430,125 @@ def get_request_logs(
     }
 
 
+def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
+    """Очищает метрики Prometheus для конкретной папки.
+    
+    Использует данные из request_logs для определения всех комбинаций методов и путей,
+    затем обнуляет соответствующие метрики Prometheus.
+    """
+    try:
+        # Получаем все уникальные комбинации method/path из request_logs для этой папки
+        logs = db.query(RequestLog).filter_by(folder_name=folder_name).all()
+        
+        # Собираем уникальные комбинации method/path
+        method_path_combinations = set()
+        outcomes = ['mock_hit', 'proxied', 'not_found', 'cache_hit']
+        status_codes = set()
+        
+        for log in logs:
+            method_path_combinations.add((log.method, log.path))
+            if log.status_code:
+                status_codes.add(str(log.status_code))
+            if log.is_proxied:
+                outcomes.add('proxied')
+            else:
+                outcomes.add('mock_hit')
+        
+        # Обнуляем детальные метрики для всех комбинаций
+        for method, path in method_path_combinations:
+            for outcome in outcomes:
+                for status_code in status_codes:
+                    try:
+                        REQUEST_DETAILED.labels(
+                            method=method,
+                            path=path,
+                            folder=folder_name,
+                            outcome=outcome,
+                            status_code=status_code
+                        )._value._value = 0
+                    except Exception:
+                        pass  # Метрика может не существовать для этой комбинации
+                
+                try:
+                    REQUESTS_TOTAL.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._value._value = 0
+                except Exception:
+                    pass
+                
+                try:
+                    RESPONSE_TIME_DETAILED.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._sum._value = 0
+                    RESPONSE_TIME_DETAILED.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._count._value = 0
+                except Exception:
+                    pass
+                
+                if outcome == 'proxied':
+                    try:
+                        PROXY_RESPONSE_TIME.labels(
+                            method=method,
+                            path=path,
+                            folder=folder_name
+                        )._sum._value = 0
+                        PROXY_RESPONSE_TIME.labels(
+                            method=method,
+                            path=path,
+                            folder=folder_name
+                        )._count._value = 0
+                    except Exception:
+                        pass
+        
+        # Обнуляем общие метрики для папки
+        try:
+            MOCK_HITS.labels(folder=folder_name)._value._value = 0
+        except Exception:
+            pass
+        try:
+            PROXY_REQUESTS.labels(folder=folder_name)._value._value = 0
+        except Exception:
+            pass
+        try:
+            ERRORS_SIMULATED.labels(folder=folder_name)._value._value = 0
+        except Exception:
+            pass
+        try:
+            CACHE_HITS.labels(folder=folder_name)._value._value = 0
+        except Exception:
+            pass
+        try:
+            RESPONSE_TIME.labels(folder=folder_name)._sum._value = 0
+            RESPONSE_TIME.labels(folder=folder_name)._count._value = 0
+        except Exception:
+            pass
+                
+    except Exception as e:
+        logger.warning(f"Error clearing Prometheus metrics for folder {folder_name}: {e}")
+
+
 @app.delete(
     "/api/request-logs",
     summary="Очистить историю вызовов",
-    description="Удаляет все записи истории вызовов, опционально только для указанной папки.",
+    description="Удаляет все записи истории вызовов, опционально только для указанной папки. Также очищает метрики Prometheus для указанной папки.",
 )
 def clear_request_logs(
     folder: Optional[str] = Query(None, description="Имя папки (может быть в формате name|parent_folder для подпапок). Если не указано, удаляются все записи."),
     db: Session = Depends(get_db),
 ):
-    """Очищает историю вызовов."""
+    """Очищает историю вызовов и метрики Prometheus."""
     query = db.query(RequestLog)
+    folder_name = None
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
         # В request_logs хранится только folder_name (без parent_folder)
@@ -3449,6 +3557,16 @@ def clear_request_logs(
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
         query = query.filter_by(folder_name=folder_name)
+    
+    # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
+    if folder_name:
+        _clear_prometheus_metrics_for_folder(folder_name, db)
+    else:
+        # Если папка не указана, очищаем метрики для всех папок
+        # Получаем список всех уникальных папок из request_logs
+        all_folders = db.query(RequestLog.folder_name).distinct().all()
+        for (fname,) in all_folders:
+            _clear_prometheus_metrics_for_folder(fname, db)
     
     count = query.count()
     query.delete()
