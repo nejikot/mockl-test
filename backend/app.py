@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship, foreign, remote
@@ -166,7 +166,7 @@ class Folder(Base):
     # foreign() аннотирует колонки как внешние ключи
     mocks = relationship(
         "Mock",
-        back_populates="folder_obj",
+        backref="folder_obj",
         cascade="all, delete",
         order_by="Mock.order",
         primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
@@ -240,12 +240,6 @@ class Mock(Base):
     error_simulation_body = Column(SAJSON, nullable=True)
     error_simulation_delay_ms = Column(Integer, nullable=True)
 
-    folder_obj = relationship(
-        "Folder",
-        back_populates="mocks",
-        foreign_keys="[Mock.folder_name, Mock.parent_folder]",
-        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
-    )
 
 
 class RequestLog(Base):
