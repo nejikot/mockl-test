@@ -464,6 +464,9 @@ export default function App() {
   const [isMetricsModalOpen, setIsMetricsModalOpen] = useState(false);
   const [metricsData, setMetricsData] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
+  const [isGlobalMetricsModalOpen, setIsGlobalMetricsModalOpen] = useState(false);
+  const [globalMetricsData, setGlobalMetricsData] = useState("");
+  const [globalMetricsLoading, setGlobalMetricsLoading] = useState(false);
   
   // Функция для загрузки метрик (с индикатором загрузки)
   const loadMetrics = async (showLoading = true) => {
@@ -484,6 +487,25 @@ export default function App() {
     }
   };
   
+  // Функция для загрузки метрик всего сервиса (без фильтра по папке)
+  const loadGlobalMetrics = async (showLoading = true) => {
+    if (showLoading) {
+      setGlobalMetricsLoading(true);
+    }
+    try {
+      const metricsUrl = `${host}/metrics`;
+      const response = await fetch(metricsUrl);
+      const text = await response.text();
+      setGlobalMetricsData(text);
+    } catch (error) {
+      setGlobalMetricsData(`Ошибка загрузки метрик: ${error.message}`);
+    } finally {
+      if (showLoading) {
+        setGlobalMetricsLoading(false);
+      }
+    }
+  };
+  
   // Автоматическое обновление метрик каждые 5 секунд, когда модальное окно открыто (фоново, без мигания)
   useEffect(() => {
     if (!isMetricsModalOpen) return;
@@ -498,6 +520,21 @@ export default function App() {
     
     return () => clearInterval(interval);
   }, [isMetricsModalOpen, selectedFolder]);
+  
+  // Автоматическое обновление глобальных метрик каждые 5 секунд
+  useEffect(() => {
+    if (!isGlobalMetricsModalOpen) return;
+    
+    // Загружаем метрики сразу при открытии (с индикатором)
+    loadGlobalMetrics(true);
+    
+    // Устанавливаем интервал для автоматического обновления (без индикатора)
+    const interval = setInterval(() => {
+      loadGlobalMetrics(false);
+    }, 5000);
+    
+    return () => clearInterval(interval);
+  }, [isGlobalMetricsModalOpen]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
   const [isRenameModalOpen, setRenameModalOpen] = useState(false);
@@ -1570,6 +1607,13 @@ export default function App() {
             disabled={!mocks.length}
           >
             Экспорт
+          </Button>
+          <Button
+            icon={<BarChartOutlined />}
+            onClick={() => setIsGlobalMetricsModalOpen(true)}
+            style={primaryButtonStyle}
+          >
+            Получить метрики
           </Button>
           <input
             type="file"
@@ -3022,6 +3066,437 @@ export default function App() {
                             key: 'method',
                             width: 80,
                             fixed: 'left',
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            width: 200,
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Всего',
+                            dataIndex: 'total',
+                            key: 'total',
+                            width: 80,
+                            align: 'right',
+                            render: (total) => (
+                              <Typography.Text style={{ fontWeight: 600 }}>
+                                {total}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Моки',
+                            dataIndex: 'mock_hits',
+                            key: 'mock_hits',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'proxied',
+                            key: 'proxied',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Ошибки',
+                            dataIndex: 'errors',
+                            key: 'errors',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: count > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Среднее время',
+                            dataIndex: 'avgResponseTime',
+                            key: 'avgResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text>
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Мин. время',
+                            dataIndex: 'minResponseTime',
+                            key: 'minResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Макс. время',
+                            dataIndex: 'maxResponseTime',
+                            key: 'maxResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Статус коды',
+                            key: 'statusCodes',
+                            width: 200,
+                            render: (_, record) => (
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {Object.entries(record.statusCodes || {}).map(([code, count]) => (
+                                  <Typography.Text key={code} style={{ fontSize: 11 }}>
+                                    <Typography.Text 
+                                      strong 
+                                      style={{ 
+                                        color: code.startsWith('2') 
+                                          ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                          : code.startsWith('4') || code.startsWith('5')
+                                          ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                          : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                      }}
+                                    >
+                                      {code}
+                                    </Typography.Text>
+                                    {' '}
+                                    <Typography.Text type="secondary">
+                                      {count}
+                                    </Typography.Text>
+                                  </Typography.Text>
+                                ))}
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 40,
+                      textAlign: 'center',
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Text type="secondary">
+                        Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                      </Typography.Text>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </Modal>
+
+          {/* Модальное окно для глобальных метрик всего сервиса */}
+          <Modal
+            title="Метрики всего сервиса"
+            open={isGlobalMetricsModalOpen}
+            onCancel={() => setIsGlobalMetricsModalOpen(false)}
+            width={1000}
+            footer={[
+              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => loadGlobalMetrics(true)} loading={globalMetricsLoading}>
+                Обновить
+              </Button>,
+              <Button key="download" icon={<DownloadOutlined />} onClick={() => {
+                const blob = new Blob([globalMetricsData], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `metrics-all-${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+              }}>
+                Скачать метрики
+              </Button>,
+              <Button key="close" onClick={() => setIsGlobalMetricsModalOpen(false)}>
+                Закрыть
+              </Button>
+            ]}
+            destroyOnClose
+          >
+            {globalMetricsLoading ? (
+              <div style={{ textAlign: 'center', padding: '40px' }}>
+                <Typography.Text>Загрузка метрик...</Typography.Text>
+              </div>
+            ) : (() => {
+              // Используем ту же функцию парсинга метрик, но с учетом папок
+              const parseMetrics = (text) => {
+                const detailedStats = {};
+                let totalRequests = 0;
+                let totalResponseTime = 0;
+                let responseTimeCount = 0;
+                
+                const lines = text.split('\n');
+                for (const line of lines) {
+                  if (!line.trim() || line.startsWith('#')) continue;
+                  
+                  const detailedMatch = line.match(/^mockl_requests_detailed_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (detailedMatch) {
+                    const labelsStr = detailedMatch[1];
+                    const count = parseFloat(detailedMatch[2]);
+                    
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
+                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
+                    const statusMatch = labelsStr.match(/status_code="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch && folderMatch && outcomeMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const folder = folderMatch[1];
+                      const outcome = outcomeMatch[1];
+                      const statusCode = statusMatch ? statusMatch[1] : 'unknown';
+                      const key = `${folder}:${method}:${path}`;
+                      
+                      if (!detailedStats[key]) {
+                        detailedStats[key] = {
+                          folder,
+                          method,
+                          path,
+                          mock_hits: 0,
+                          proxied: 0,
+                          errors: 0,
+                          not_found: 0,
+                          responseTimes: [],
+                          statusCodes: {}
+                        };
+                      }
+                      
+                      totalRequests += count;
+                      
+                      if (outcome === 'mock_hit') {
+                        detailedStats[key].mock_hits += count;
+                      } else if (outcome === 'proxied') {
+                        detailedStats[key].proxied += count;
+                      } else if (outcome === 'not_found') {
+                        detailedStats[key].not_found += count;
+                        detailedStats[key].errors += count;
+                      } else {
+                        detailedStats[key].errors += count;
+                      }
+                      
+                      if (!detailedStats[key].statusCodes[statusCode]) {
+                        detailedStats[key].statusCodes[statusCode] = 0;
+                      }
+                      detailedStats[key].statusCodes[statusCode] += count;
+                    }
+                  }
+                  
+                  const responseTimeSumMatch = line.match(/^mockl_response_time_detailed_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeSumMatch) {
+                    const labelsStr = responseTimeSumMatch[1];
+                    const sum = parseFloat(responseTimeSumMatch[2]);
+                    
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
+                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch && folderMatch && outcomeMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const folder = folderMatch[1];
+                      const outcome = outcomeMatch[1];
+                      const key = `${folder}:${method}:${path}`;
+                      
+                      if (detailedStats[key]) {
+                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const countPattern = new RegExp(`mockl_response_time_detailed_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*folder="${folder}"[^}]*outcome="${outcome}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
+                        const countMatch = text.match(countPattern);
+                        if (countMatch) {
+                          const count = parseFloat(countMatch[1]);
+                          const avg = count > 0 ? sum / count : 0;
+                          if (!detailedStats[key].responseTimes) {
+                            detailedStats[key].responseTimes = [];
+                          }
+                          detailedStats[key].responseTimes.push({ outcome, avg, count, sum });
+                        }
+                      }
+                    }
+                  }
+                  
+                  const proxyTimeSumMatch = line.match(/^mockl_proxy_response_time_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (proxyTimeSumMatch) {
+                    const labelsStr = proxyTimeSumMatch[1];
+                    const sum = parseFloat(proxyTimeSumMatch[2]);
+                    
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch && folderMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const folder = folderMatch[1];
+                      const key = `${folder}:${method}:${path}`;
+                      
+                      if (detailedStats[key]) {
+                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const countPattern = new RegExp(`mockl_proxy_response_time_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*folder="${folder}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
+                        const countMatch = text.match(countPattern);
+                        if (countMatch) {
+                          const count = parseFloat(countMatch[1]);
+                          const avg = count > 0 ? sum / count : 0;
+                          detailedStats[key].proxyAvgTime = avg;
+                          detailedStats[key].proxyCount = count;
+                        }
+                      }
+                    }
+                  }
+                  
+                  const responseTimeSumMatchOld = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeSumMatchOld) {
+                    totalResponseTime += parseFloat(responseTimeSumMatchOld[1]);
+                  }
+                  
+                  const responseTimeCountMatchOld = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeCountMatchOld) {
+                    responseTimeCount += parseFloat(responseTimeCountMatchOld[1]);
+                  }
+                }
+                
+                const detailedArray = Object.values(detailedStats).map(stat => {
+                  const allTimes = stat.responseTimes.map(rt => rt.avg);
+                  const avgTime = allTimes.length > 0 
+                    ? allTimes.reduce((a, b) => a + b, 0) / allTimes.length 
+                    : (stat.proxyAvgTime || 0);
+                  const minTime = allTimes.length > 0 ? Math.min(...allTimes) : (stat.proxyAvgTime || 0);
+                  const maxTime = allTimes.length > 0 ? Math.max(...allTimes) : (stat.proxyAvgTime || 0);
+                  
+                  return {
+                    ...stat,
+                    avgResponseTime: avgTime,
+                    minResponseTime: minTime,
+                    maxResponseTime: maxTime,
+                    total: stat.mock_hits + stat.proxied + stat.errors
+                  };
+                }).sort((a, b) => b.total - a.total);
+                
+                return { 
+                  detailedStats: detailedArray,
+                  totalRequests, 
+                  avgResponseTime: responseTimeCount > 0 ? totalResponseTime / responseTimeCount : 0 
+                };
+              };
+              
+              const parsed = parseMetrics(globalMetricsData);
+              
+              return (
+                <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
+                  <div style={{ 
+                    background: theme === "dark" ? "#262626" : "#fff",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginBottom: 16,
+                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 12 }}>
+                      Общая статистика всего сервиса
+                    </Typography.Title>
+                    <Row gutter={16}>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Всего запросов
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {parsed.totalRequests}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Методов/Путей
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {parsed.detailedStats.length}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Среднее время ответа
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
+                            {parsed.avgResponseTime > 0 ? `${(parsed.avgResponseTime * 1000).toFixed(2)} мс` : '—'}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                    </Row>
+                  </div>
+                  
+                  {parsed.detailedStats.length > 0 ? (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 16,
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                        Детальная статистика по всем папкам, методам и путям
+                      </Typography.Title>
+                      <Table
+                        dataSource={parsed.detailedStats}
+                        pagination={{ pageSize: 10 }}
+                        size="small"
+                        scroll={{ x: 'max-content' }}
+                        columns={[
+                          {
+                            title: 'Папка',
+                            dataIndex: 'folder',
+                            key: 'folder',
+                            width: 120,
+                            fixed: 'left',
+                            render: (folder) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {folder}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
                             render: (method) => (
                               <Typography.Text strong style={{ 
                                 color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
