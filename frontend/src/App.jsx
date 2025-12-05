@@ -749,6 +749,8 @@ export default function App() {
 
   useEffect(() => {
     document.body.style.background = theme === "light" ? "#f0f2f5" : "#141414";
+    // Устанавливаем data-theme для стилей скроллбара
+    document.body.setAttribute("data-theme", theme);
   }, [theme]);
 
   const toggleTheme = () => {
@@ -2167,14 +2169,19 @@ export default function App() {
               </Sider>
 
               <Content style={{ width: "100%", flex: 1, minHeight: 0, overflowY: "auto" }}>
-                {isDefaultFolder && (
+                {!isDefaultFolder && (
                   <div style={{
                     background: theme === "light" ? "#fff" : "#1f1f1f",
                     borderRadius: 12,
                     padding: isDesktop ? 24 : 16,
                     boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
-                    marginBottom: 16
-                  }}>
+                    marginBottom: 16,
+                    maxHeight: "60vh",
+                    overflowY: "auto",
+                    overflowX: "hidden"
+                  }}
+                  className="description-scroll-container"
+                  >
                     <Typography.Title level={3} style={{ marginTop: 0 }}>
                       Mock — визуальный mock-сервер и песочница API
                     </Typography.Title>
