@@ -2805,7 +2805,9 @@ export default function App() {
             title={`Метрики для папки "${selectedFolder}"`}
             open={isMetricsModalOpen}
             onCancel={() => setIsMetricsModalOpen(false)}
-            width={900}
+            width={1400}
+            style={{ top: 20 }}
+            bodyStyle={{ maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}
             footer={[
               <Button key="refresh" icon={<ReloadOutlined />} onClick={() => loadMetrics(true)} loading={metricsLoading}>
                 Обновить
@@ -2949,7 +2951,7 @@ export default function App() {
                       </Typography.Title>
                       <Table
                         dataSource={data.methods_paths.map((mp, idx) => ({ ...mp, key: idx }))}
-                        pagination={{ pageSize: 10 }}
+                        pagination={{ pageSize: 15 }}
                         size="small"
                         scroll={{ x: 'max-content' }}
                         columns={[
@@ -2971,7 +2973,8 @@ export default function App() {
                             title: 'Путь',
                             dataIndex: 'path',
                             key: 'path',
-                            width: 200,
+                            width: 250,
+                            fixed: 'left',
                             render: (path) => (
                               <Typography.Text code style={{ fontSize: 11 }}>
                                 {path}
@@ -3030,42 +3033,89 @@ export default function App() {
                             title: 'Среднее время',
                             dataIndex: 'avg_response_time_ms',
                             key: 'avg_response_time_ms',
-                            width: 120,
+                            width: 140,
                             align: 'right',
-                            render: (time) => (
-                              <Typography.Text>
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
-                              </Typography.Text>
-                            )
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем точное время
+                              if (record.total_requests === 1 && time > 0) {
+                                return (
+                                  <Typography.Text strong style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff" }}>
+                                    {time.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text>
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
                           },
                           {
                             title: 'Мин. время',
                             dataIndex: 'min_response_time_ms',
                             key: 'min_response_time_ms',
-                            width: 120,
+                            width: 140,
                             align: 'right',
-                            render: (time) => (
-                              <Typography.Text type="secondary">
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
-                              </Typography.Text>
-                            )
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем то же время что и среднее
+                              if (record.total_requests === 1 && record.avg_response_time_ms > 0) {
+                                return (
+                                  <Typography.Text type="secondary">
+                                    {record.avg_response_time_ms.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text type="secondary">
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
                           },
                           {
                             title: 'Макс. время',
                             dataIndex: 'max_response_time_ms',
                             key: 'max_response_time_ms',
-                            width: 120,
+                            width: 140,
                             align: 'right',
-                            render: (time) => (
-                              <Typography.Text type="secondary">
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем то же время что и среднее
+                              if (record.total_requests === 1 && record.avg_response_time_ms > 0) {
+                                return (
+                                  <Typography.Text type="secondary">
+                                    {record.avg_response_time_ms.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text type="secondary">
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
+                          },
+                          {
+                            title: 'Прокси (среднее)',
+                            dataIndex: 'proxy_avg_time_ms',
+                            key: 'proxy_avg_time_ms',
+                            width: 150,
+                            align: 'right',
+                            render: (time, record) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {time ? `${time.toFixed(2)} мс` : '—'}
+                                {record.proxy_count > 0 && (
+                                  <Typography.Text type="secondary" style={{ fontSize: 10, marginLeft: 4 }}>
+                                    ({record.proxy_count})
+                                  </Typography.Text>
+                                )}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Статус коды',
                             key: 'status_codes',
-                            width: 200,
+                            width: 250,
                             render: (_, record) => (
                               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                 {Object.entries(record.status_codes || {}).map(([code, count]) => (

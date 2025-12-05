@@ -2651,10 +2651,41 @@ def _parse_prometheus_metrics(text: str, folder_filter: Optional[str] = None) ->
     # Вычисляем средние времена для каждого метода/пути
     methods_paths = []
     for key, stat in detailed_stats.items():
-        all_times = [rt['avg'] for rt in stat['response_times']]
-        avg_time = sum(all_times) / len(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
-        min_time = min(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
-        max_time = max(all_times) if all_times else (stat['proxy_avg_time'] or 0.0)
+        # Собираем все времена ответов из разных источников
+        all_times = []
+        
+        # Добавляем времена из response_times (детальные метрики)
+        for rt in stat['response_times']:
+            if rt.get('count', 0) > 0:
+                # Если есть несколько запросов, используем среднее
+                all_times.append(rt['avg'])
+            else:
+                # Если count = 0, но есть avg, все равно используем
+                if rt.get('avg', 0) > 0:
+                    all_times.append(rt['avg'])
+        
+        # Если есть proxy время, добавляем его
+        if stat.get('proxy_avg_time') and stat.get('proxy_avg_time', 0) > 0:
+            # Для проксированных запросов добавляем среднее время
+            proxy_count = stat.get('proxy_count', 0)
+            if proxy_count > 0:
+                all_times.append(stat['proxy_avg_time'])
+        
+        # Вычисляем статистику
+        if all_times:
+            avg_time = sum(all_times) / len(all_times)
+            min_time = min(all_times)
+            max_time = max(all_times)
+        elif stat.get('proxy_avg_time') and stat.get('proxy_avg_time', 0) > 0:
+            # Если есть только proxy время
+            avg_time = stat['proxy_avg_time']
+            min_time = stat['proxy_avg_time']
+            max_time = stat['proxy_avg_time']
+        else:
+            # Если нет данных о времени, но есть запросы, используем 0
+            avg_time = 0.0
+            min_time = 0.0
+            max_time = 0.0
         
         methods_paths.append({
             'folder': stat['folder'],
