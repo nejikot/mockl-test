@@ -2877,7 +2877,7 @@ export default function App() {
                             Всего запросов
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.totalRequests}
+                            {data.total_requests || 0}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -2887,7 +2887,7 @@ export default function App() {
                             Методов/Путей
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.detailedStats.length}
+                            {data.total_methods_paths || 0}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -2897,7 +2897,39 @@ export default function App() {
                             Среднее время ответа
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {parsed.avgResponseTime > 0 ? `${(parsed.avgResponseTime * 1000).toFixed(2)} мс` : '—'}
+                            {data.avg_response_time_ms > 0 ? `${data.avg_response_time_ms.toFixed(2)} мс` : '—'}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                    </Row>
+                    <Row gutter={16} style={{ marginTop: 16 }}>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Успешных моков
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                            {data.mock_hits_total || 0}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Проксированных
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                            {data.proxied_total || 0}
+                          </Typography.Text>
+                        </div>
+                      </Col>
+                      <Col span={8}>
+                        <div style={{ textAlign: 'center' }}>
+                          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            Ошибок
+                          </Typography.Text>
+                          <Typography.Text style={{ fontSize: 20, fontWeight: 600, display: 'block', marginTop: 4, color: theme === "dark" ? "#ef5350" : "#ff4d4f" }}>
+                            {data.errors_total || 0}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -2905,7 +2937,7 @@ export default function App() {
                   </div>
                   
                   {/* Детальная статистика по методам и путям */}
-                  {parsed.detailedStats.length > 0 ? (
+                  {data.methods_paths && data.methods_paths.length > 0 ? (
                     <div style={{ 
                       background: theme === "dark" ? "#262626" : "#fff",
                       borderRadius: 8,
