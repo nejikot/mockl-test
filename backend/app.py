@@ -3999,8 +3999,19 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
     logger.debug(f"Path comparison for mock {m.id}: mock_path='{m.path}' -> base='{mock_path_base}' query='{mock_query}', request_path='{full_path}' -> base='{request_path_base}' query='{request_query}'")
     
     # Сравниваем базовые пути
-    if mock_path_base != request_path_base:
-        logger.info(f"Path mismatch for mock {m.id}: '{mock_path_base}' != '{request_path_base}'")
+    # Также проверяем, если запрос к корню (/) и мок для корня, или наоборот
+    paths_match = mock_path_base == request_path_base
+    
+    # Дополнительная проверка: если один путь "/", а другой пустой или наоборот
+    if not paths_match:
+        # Проверяем, не являются ли оба пути корневыми (разные представления)
+        if (mock_path_base == "/" and request_path_base == "/") or \
+           (mock_path_base == "" and request_path_base == "/") or \
+           (mock_path_base == "/" and request_path_base == ""):
+            paths_match = True
+    
+    if not paths_match:
+        logger.info(f"Path mismatch for mock {m.id}: mock='{mock_path_base}' != request='{request_path_base}'")
         return False
     
     # Если в моке есть query параметры, они должны полностью совпадать
@@ -4367,18 +4378,37 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     # Для обратной совместимости также ищем моки, где folder_parent может быть NULL или пустой строкой
     # если folder_parent = '' (корневая папка)
     if folder_parent == '':
+        # Ищем моки с folder_parent = '' или NULL (для обратной совместимости)
         mocks = db.query(Mock).filter(
             Mock.active == True,
             Mock.folder_name == folder_name,
             (Mock.folder_parent == '') | (Mock.folder_parent.is_(None))
         ).all()
+        # Если не нашли, попробуем найти все моки с таким folder_name (на случай проблем с миграцией)
+        if not mocks:
+            logger.warning(f"No mocks found with folder_parent='' or NULL, trying to find all mocks with folder_name='{folder_name}'")
+            all_mocks = db.query(Mock).filter(
+                Mock.active == True,
+                Mock.folder_name == folder_name
+            ).all()
+            logger.warning(f"Found {len(all_mocks)} total mocks with folder_name='{folder_name}' (ignoring folder_parent)")
+            if all_mocks:
+                logger.warning(f"These mocks have folder_parent values: {[m.folder_parent for m in all_mocks]}")
     else:
         mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name, folder_parent=folder_parent).all()
-    logger.info(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    logger.info(f"Searching for mock: folder={folder_name}, folder_parent={folder_parent}, path={full_inner}, method={request.method}, original_path={request.url.path}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
     request_headers_dict = {k: v for k, v in request.headers.items()}
     logger.debug(f"Request headers: {request_headers_dict}")
+    
+    # Логируем все найденные моки для отладки
+    if mocks:
+        logger.info(f"Found {len(mocks)} mocks in folder '{folder_name}':")
+        for m in mocks:
+            logger.info(f"  - Mock {m.id}: method={m.method}, path='{m.path}', folder_name={m.folder_name}, folder_parent={m.folder_parent}, active={m.active}")
+    else:
+        logger.warning(f"No mocks found in folder '{folder_name}' with folder_parent='{folder_parent}'")
     
     for m in mocks:
         matched = await match_condition(request, m, full_inner, body_bytes)
