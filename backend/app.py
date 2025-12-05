@@ -945,14 +945,25 @@ def delete_folder(
         
         # Удаляем все подпапки рекурсивно перед удалением самой папки
         # Используем составной ключ для точной идентификации подпапок
+        # Добавляем защиту от бесконечной рекурсии через множество посещенных папок
+        visited_folders = set()
+        
         def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
             # Ищем подпапки, у которых parent_folder == parent_name
-            # Важно: используем parent_name для поиска подпапок
+            # Ищем все подпапки, у которых parent_folder совпадает с name родительской папки
             subfolders = db.query(Folder).filter(
                 Folder.parent_folder == parent_name
             ).all()
             
             for subfolder in subfolders:
+                # Создаем уникальный идентификатор подпапки для защиты от циклов
+                # Используем составной ключ (name, parent_folder) для точной идентификации
+                subfolder_key = (subfolder.name, subfolder.parent_folder)
+                if subfolder_key in visited_folders:
+                    logger.warning(f"Circular reference detected for folder '{subfolder.name}' with parent '{subfolder.parent_folder}', skipping")
+                    continue
+                visited_folders.add(subfolder_key)
+                
                 # Удаляем моки подпапки
                 # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
                 # Это ограничение текущей схемы БД - моки не хранят parent_folder
@@ -1002,7 +1013,7 @@ def delete_folder(
     ),
 )
 def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_db)):
-    """Дублирует папку: создаёт новую и копирует в неё все моки и настройки."""
+    """Дублирует папку: создаёт новую и копирует в неё все моки и настройки, включая подпапки рекурсивно."""
     try:
         src = payload.old_name.strip()
         dst = payload.new_name.strip()
@@ -1012,13 +1023,28 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         if src == dst:
             raise HTTPException(400, "Имя новой папки должно отличаться от исходного")
 
-        # Ищем исходную папку (сначала как корневую, потом среди всех)
-        src_folder = db.query(Folder).filter(
-            Folder.name == src,
-            Folder.parent_folder == ''
-        ).first()
-        if not src_folder:
-            src_folder = db.query(Folder).filter(Folder.name == src).first()
+        # Поддерживаем формат "name|parent_folder" для исходной папки
+        src_folder_name = src
+        src_parent_folder = None
+        if '|' in src:
+            parts = src.split('|', 1)
+            src_folder_name = parts[0]
+            src_parent_folder = parts[1] if parts[1] else None
+
+        # Ищем исходную папку по составному ключу
+        if src_parent_folder:
+            # Ищем подпапку
+            src_folder = db.query(Folder).filter(
+                Folder.name == src_folder_name,
+                Folder.parent_folder == src_parent_folder
+            ).first()
+        else:
+            # Ищем корневую папку (parent_folder = '')
+            src_folder = db.query(Folder).filter(
+                Folder.name == src_folder_name,
+                Folder.parent_folder == ''
+            ).first()
+        
         if not src_folder:
             raise HTTPException(404, "Исходная папка не найдена")
 
@@ -1031,38 +1057,89 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         if existing:
             raise HTTPException(400, "Корневая папка с таким именем уже существует")
 
-        # Создаём новую папку, копируя настройки прокси
-        new_folder = Folder(
-            name=dst,
-            proxy_enabled=src_folder.proxy_enabled or False,
-            proxy_base_url=src_folder.proxy_base_url,
-        )
-        db.add(new_folder)
-        db.flush()
-
-        # Копируем все моки
-        src_mocks = db.query(Mock).filter_by(folder_name=src).all()
-        copied_ids = []
-        for m in src_mocks:
-            new_id = str(uuid4())
-            copied = Mock(
-                id=new_id,
-                folder_name=dst,
-                name=m.name,
-                method=m.method,
-                path=m.path,
-                headers=m.headers if m.headers else {},
-                body_contains=m.body_contains,
-                body_contains_required=getattr(m, 'body_contains_required', True),
-                status_code=m.status_code,
-                response_headers=m.response_headers if m.response_headers else {},
-                response_body=m.response_body,
-                active=m.active,
-                delay_ms=m.delay_ms or 0,
+        # Словарь для маппинга старых имен подпапок на новые
+        folder_mapping = {}  # (old_name, old_parent) -> (new_name, new_parent)
+        
+        def duplicate_folder_recursive(src_f: Folder, dst_name: str, dst_parent: str = ''):
+            """Рекурсивно дублирует папку и все её подпапки."""
+            # Создаём новую папку, копируя настройки прокси
+            new_folder = Folder(
+                name=dst_name,
+                parent_folder=dst_parent,
+                proxy_enabled=src_f.proxy_enabled or False,
+                proxy_base_url=src_f.proxy_base_url,
+                order=src_f.order or 0,
             )
-            db.add(copied)
-            copied_ids.append(new_id)
-
+            db.add(new_folder)
+            db.flush()
+            
+            # Сохраняем маппинг
+            folder_mapping[(src_f.name, src_f.parent_folder)] = (dst_name, dst_parent)
+            
+            # Копируем все моки из исходной папки
+            # ВАЖНО: Mock хранит только folder_name, поэтому копируем все моки с таким именем
+            # Это ограничение текущей схемы БД - моки не хранят parent_folder
+            src_mocks = db.query(Mock).filter_by(folder_name=src_f.name).all()
+            copied_ids = []
+            for m in src_mocks:
+                new_id = str(uuid4())
+                # Копируем все поля мока
+                copied = Mock(
+                    id=new_id,
+                    folder_name=dst_name,
+                    name=m.name,
+                    method=m.method,
+                    path=m.path,
+                    headers=m.headers if m.headers else {},
+                    body_contains=m.body_contains,
+                    body_contains_required=getattr(m, 'body_contains_required', True),
+                    status_code=m.status_code,
+                    response_headers=m.response_headers if m.response_headers else {},
+                    response_body=m.response_body,
+                    active=m.active,
+                    delay_ms=m.delay_ms or 0,
+                    order=getattr(m, 'order', 0) or 0,
+                )
+                # Копируем дополнительные поля, если они есть
+                if hasattr(m, 'delay_range_min_ms'):
+                    copied.delay_range_min_ms = m.delay_range_min_ms
+                if hasattr(m, 'delay_range_max_ms'):
+                    copied.delay_range_max_ms = m.delay_range_max_ms
+                if hasattr(m, 'cache_enabled'):
+                    copied.cache_enabled = m.cache_enabled
+                if hasattr(m, 'cache_ttl_seconds'):
+                    copied.cache_ttl_seconds = m.cache_ttl_seconds
+                if hasattr(m, 'error_simulation_enabled'):
+                    copied.error_simulation_enabled = m.error_simulation_enabled
+                if hasattr(m, 'error_simulation_probability'):
+                    copied.error_simulation_probability = m.error_simulation_probability
+                if hasattr(m, 'error_simulation_status_code'):
+                    copied.error_simulation_status_code = m.error_simulation_status_code
+                if hasattr(m, 'error_simulation_body'):
+                    copied.error_simulation_body = m.error_simulation_body
+                if hasattr(m, 'error_simulation_delay_ms'):
+                    copied.error_simulation_delay_ms = m.error_simulation_delay_ms
+                
+                db.add(copied)
+                copied_ids.append(new_id)
+            
+            # Рекурсивно копируем подпапки
+            subfolders = db.query(Folder).filter(
+                Folder.parent_folder == src_f.name
+            ).all()
+            
+            for subfolder in subfolders:
+                # Проверяем, что это действительно подпапка исходной папки
+                if subfolder.parent_folder != src_f.name:
+                    continue
+                # Рекурсивно копируем подпапку
+                duplicate_folder_recursive(subfolder, subfolder.name, dst_name)
+            
+            return copied_ids
+        
+        # Начинаем рекурсивное копирование с корневой папки
+        copied_ids = duplicate_folder_recursive(src_folder, dst, '')
+        
         db.commit()
         return {
             "message": f"Папка '{src}' продублирована в '{dst}'",
@@ -1076,6 +1153,7 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         raise
     except Exception as e:
         db.rollback()
+        logger.error(f"Error duplicating folder: {e}", exc_info=True)
         raise HTTPException(500, f"Ошибка при дублировании папки: {str(e)}")
 
 
@@ -1981,16 +2059,31 @@ def load_openapi_specs_from_env():
     summary="Получить настройки папки",
 )
 def get_folder_settings(
-    name: str = Path(..., description="Имя папки"),
+    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
     db: Session = Depends(get_db),
 ):
-    # Ищем папку (сначала как корневую, потом среди всех)
-    folder = db.query(Folder).filter(
-        Folder.name == name,
-        Folder.parent_folder == ''
-    ).first()
-    if not folder:
-        folder = db.query(Folder).filter(Folder.name == name).first()
+    # Поддерживаем формат "name|parent_folder" для подпапок
+    folder_name = name.strip()
+    parent_folder = None
+    if '|' in folder_name:
+        parts = folder_name.split('|', 1)
+        folder_name = parts[0]
+        parent_folder = parts[1] if parts[1] else None
+    
+    # Ищем папку по составному ключу
+    if parent_folder:
+        # Ищем подпапку
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == parent_folder
+        ).first()
+    else:
+        # Ищем корневую папку (parent_folder = '')
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == ''
+        ).first()
+    
     if not folder:
         raise HTTPException(404, "Папка не найдена")
     return FolderSettingsOut(
@@ -2006,24 +2099,37 @@ def get_folder_settings(
     summary="Обновить настройки папки (прокси и пр.)",
 )
 def update_folder_settings(
-    name: str = Path(..., description="Имя папки"),
+    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
     payload: FolderSettings = Body(...),
     db: Session = Depends(get_db),
 ):
-    # Ищем папку (сначала как корневую, потом среди всех)
-    folder = db.query(Folder).filter(
-        Folder.name == name,
-        Folder.parent_folder == ''
-    ).first()
-    if not folder:
-        folder = db.query(Folder).filter(Folder.name == name).first()
+    # Поддерживаем формат "name|parent_folder" для подпапок
+    folder_name = name.strip()
+    parent_folder = None
+    if '|' in folder_name:
+        parts = folder_name.split('|', 1)
+        folder_name = parts[0]
+        parent_folder = parts[1] if parts[1] else None
+    
+    # Ищем папку по составному ключу
+    if parent_folder:
+        # Ищем подпапку
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == parent_folder
+        ).first()
+    else:
+        # Ищем корневую папку (parent_folder = '')
+        folder = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == ''
+        ).first()
+    
     if not folder:
         raise HTTPException(404, "Папка не найдена")
 
-
     folder.proxy_enabled = payload.proxy_enabled
     folder.proxy_base_url = (payload.proxy_base_url or "").strip() or None
-
 
     db.commit()
     return {"message": "Настройки папки обновлены"}

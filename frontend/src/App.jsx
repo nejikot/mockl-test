@@ -1756,8 +1756,10 @@ export default function App() {
       setDuplicateModalOpen(false);
       return;
     }
-    if (folders.includes(newName)) {
-      return message.error("Папка с таким именем уже существует");
+    // Проверяем, не существует ли уже корневая папка с таким именем
+    const existingFolder = foldersData.find(f => f.name === newName && !f.parent_folder);
+    if (existingFolder) {
+      return message.error("Корневая папка с таким именем уже существует");
     }
     try {
       const res = await fetch(`${host}/api/folders/duplicate`, {
@@ -1765,14 +1767,19 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ old_name: folderToDuplicate, new_name: newName })
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Ошибка дублирования");
+      }
       message.success("Страница продублирована");
       setDuplicateModalOpen(false);
       await fetchFolders();
+      // Устанавливаем выбранную папку на новую (дублированную) папку
+      // Дублирование создает только корневую папку, поэтому используем только имя
       setSelectedFolder(newName);
       await fetchMocks();
     } catch (e) {
-      message.error("Ошибка дублирования страницы");
+      message.error(e.message || "Ошибка дублирования страницы");
     }
   };
 
