@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, ForeignKeyConstraint, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -187,9 +187,18 @@ class Folder(Base):
 class Mock(Base):
     __tablename__ = "mocks"
     id = Column(String, primary_key=True, index=True)
-    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    folder_name = Column(String, nullable=False, index=True)
+    folder_parent = Column(String, nullable=False, default='', index=True)
     # Человекочитаемое имя мока для навигации
     name = Column(String, nullable=True)
+    
+    # Составной внешний ключ на (name, parent_folder) в таблице folders
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['folder_name', 'folder_parent'],
+            ['folders.name', 'folders.parent_folder']
+        ),
+    )
 
 
     # Условия запроса
@@ -222,7 +231,12 @@ class Mock(Base):
     error_simulation_body = Column(SAJSON, nullable=True)
     error_simulation_delay_ms = Column(Integer, nullable=True)
 
-    folder_obj = relationship("Folder", back_populates="mocks")
+    folder_obj = relationship(
+        "Folder",
+        back_populates="mocks",
+        foreign_keys=[folder_name, folder_parent],
+        primaryjoin="and_(Mock.folder_name == Folder.name, Mock.folder_parent == Folder.parent_folder)"
+    )
 
 
 class RequestLog(Base):
@@ -231,7 +245,16 @@ class RequestLog(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     timestamp = Column(String, nullable=False, index=True)  # ISO format timestamp
-    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    folder_name = Column(String, nullable=False, index=True)
+    folder_parent = Column(String, nullable=False, default='', index=True)
+    
+    # Составной внешний ключ на (name, parent_folder) в таблице folders
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['folder_name', 'folder_parent'],
+            ['folders.name', 'folders.parent_folder']
+        ),
+    )
     method = Column(String, nullable=False, index=True)
     path = Column(String, nullable=False, index=True)
     is_proxied = Column(Boolean, default=False, index=True)
@@ -520,54 +543,6 @@ def ensure_migrations():
     поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
     """
     
-    # ============================================================================
-    # ВРЕМЕННАЯ МИГРАЦИЯ: ПОЛНАЯ ОЧИСТКА БД
-    # УДАЛИТЬ ЭТОТ БЛОК ПОСЛЕ ПЕРВОГО УСПЕШНОГО ЗАПУСКА!
-    # ============================================================================
-    try:
-        logger.warning("=" * 80)
-        logger.warning("ВНИМАНИЕ: Выполняется полная очистка базы данных!")
-        logger.warning("Все таблицы будут удалены и созданы заново.")
-        logger.warning("=" * 80)
-        
-        with engine.begin() as conn:
-            # Получаем список всех таблиц в текущей схеме
-            tables = conn.execute(text("""
-                SELECT tablename 
-                FROM pg_tables 
-                WHERE schemaname = 'public'
-            """)).fetchall()
-            
-            if tables:
-                logger.info(f"Найдено таблиц для удаления: {len(tables)}")
-                
-                # Удаляем все таблицы с CASCADE для автоматического удаления зависимостей
-                # CASCADE автоматически удалит все внешние ключи и зависимости
-                for (table_name,) in tables:
-                    try:
-                        conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
-                        logger.info(f"Удалена таблица: {table_name}")
-                    except Exception as e:
-                        logger.warning(f"Ошибка при удалении таблицы {table_name}: {e}")
-                
-                logger.info("Все таблицы успешно удалены")
-        
-        # Создаем все таблицы заново с правильной схемой (после завершения транзакции)
-        logger.info("Создание всех таблиц заново...")
-        Base.metadata.create_all(bind=engine)
-        logger.info("Все таблицы успешно созданы")
-        
-        logger.warning("=" * 80)
-        logger.warning("Полная очистка БД завершена. УДАЛИТЕ ЭТОТ БЛОК ИЗ КОДА!")
-        logger.warning("=" * 80)
-        return  # Выходим из функции, так как БД уже полностью пересоздана
-    except Exception as e:
-        logger.error(f"Ошибка при полной очистке БД: {e}", exc_info=True)
-        raise
-    # ============================================================================
-    # КОНЕЦ ВРЕМЕННОЙ МИГРАЦИИ - УДАЛИТЬ ВЫШЕ
-    # ============================================================================
-    
     try:
         with engine.begin() as conn:
             # Проверяем, нужно ли мигрировать первичный ключ folders
@@ -629,6 +604,101 @@ def ensure_migrations():
                 except Exception as e:
                     logger.warning(f"Error migrating folders table: {e}")
                     # Продолжаем выполнение, даже если миграция не удалась
+            
+            # Миграция: добавляем folder_parent в mocks и request_logs для поддержки составного внешнего ключа
+            # Проверяем, существует ли колонка folder_parent в mocks
+            mocks_folder_parent_exists = conn.execute(
+                text("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'mocks' AND column_name = 'folder_parent'
+                """)
+            ).fetchone()
+            
+            if not mocks_folder_parent_exists:
+                try:
+                    # Добавляем колонку folder_parent в mocks
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN folder_parent VARCHAR NOT NULL DEFAULT ''"))
+                    # Обновляем существующие записи: устанавливаем folder_parent = '' для всех моков
+                    # (предполагаем, что все существующие моки относятся к корневым папкам)
+                    conn.execute(text("UPDATE mocks SET folder_parent = '' WHERE folder_parent IS NULL"))
+                    # Создаем индекс
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mocks_folder_parent ON mocks (folder_parent)"))
+                    logger.info("Added column mocks.folder_parent")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.folder_parent: {e}")
+            
+            # Проверяем, существует ли колонка folder_parent в request_logs
+            request_logs_folder_parent_exists = conn.execute(
+                text("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'request_logs' AND column_name = 'folder_parent'
+                """)
+            ).fetchone()
+            
+            if not request_logs_folder_parent_exists:
+                try:
+                    # Добавляем колонку folder_parent в request_logs
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN folder_parent VARCHAR NOT NULL DEFAULT ''"))
+                    # Обновляем существующие записи: устанавливаем folder_parent = '' для всех логов
+                    conn.execute(text("UPDATE request_logs SET folder_parent = '' WHERE folder_parent IS NULL"))
+                    # Создаем индекс
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_request_logs_folder_parent ON request_logs (folder_parent)"))
+                    logger.info("Added column request_logs.folder_parent")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.folder_parent: {e}")
+            
+            # После добавления folder_parent, нужно пересоздать внешние ключи
+            # Сначала удаляем старые внешние ключи, если они существуют
+            try:
+                # Проверяем существующие внешние ключи
+                fk_check = conn.execute(
+                    text("""
+                        SELECT constraint_name
+                        FROM information_schema.table_constraints
+                        WHERE table_name IN ('mocks', 'request_logs')
+                        AND constraint_type = 'FOREIGN KEY'
+                        AND constraint_name LIKE '%folder_name%'
+                    """)
+                ).fetchall()
+                
+                # Удаляем старые внешние ключи
+                for (fk_name,) in fk_check:
+                    try:
+                        conn.execute(text(f"ALTER TABLE mocks DROP CONSTRAINT IF EXISTS {fk_name}"))
+                        conn.execute(text(f"ALTER TABLE request_logs DROP CONSTRAINT IF EXISTS {fk_name}"))
+                    except Exception:
+                        pass
+                
+                # Создаем новые составные внешние ключи
+                # Для mocks
+                try:
+                    conn.execute(text("""
+                        ALTER TABLE mocks
+                        ADD CONSTRAINT mocks_folder_fkey
+                        FOREIGN KEY (folder_name, folder_parent)
+                        REFERENCES folders (name, parent_folder)
+                    """))
+                    logger.info("Created composite foreign key for mocks")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error creating foreign key for mocks: {e}")
+                
+                # Для request_logs
+                try:
+                    conn.execute(text("""
+                        ALTER TABLE request_logs
+                        ADD CONSTRAINT request_logs_folder_fkey
+                        FOREIGN KEY (folder_name, folder_parent)
+                        REFERENCES folders (name, parent_folder)
+                    """))
+                    logger.info("Created composite foreign key for request_logs")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error creating foreign key for request_logs: {e}")
+            except Exception as e:
+                logger.warning(f"Error recreating foreign keys: {e}")
             
             # Проверяем существование колонок одним запросом для оптимизации
             existing_columns = conn.execute(
@@ -1040,10 +1110,9 @@ def delete_folder(
                 visited_folders.add(subfolder_key)
                 
                 # Сначала удаляем моки подпапки через прямой SQL, чтобы разорвать связи
-                # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
-                # Это ограничение текущей схемы БД - моки не хранят parent_folder
-                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
-                          {"folder_name": subfolder.name})
+                # Удаляем все моки подпапки (с учетом parent_folder)
+                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
+                          {"folder_name": subfolder.name, "parent_folder": subfolder.parent_folder})
                 db.flush()
                 
                 # Рекурсивно удаляем подпапки подпапки
@@ -1058,13 +1127,9 @@ def delete_folder(
         # Используем folder_name как parent_folder для поиска подпапок
         delete_subfolders_recursive(folder_name, parent_folder if parent_folder else '')
         
-        # Удаляем моки самой папки через прямой SQL
-        # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
-        # Это может удалить моки из других папок с таким же именем, если они существуют
-        # Это ограничение текущей схемы БД - моки не хранят parent_folder
-        # В будущем можно добавить parent_folder в Mock для точной идентификации
-        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
-                  {"folder_name": folder_name})
+        # Удаляем моки самой папки через прямой SQL (с учетом parent_folder)
+        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
+                  {"folder_name": folder_name, "parent_folder": parent_folder if parent_folder else ''})
         db.flush()
         
         # Удаляем саму папку через прямой SQL
@@ -1156,10 +1221,8 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
             # Сохраняем маппинг
             folder_mapping[(src_f.name, src_f.parent_folder)] = (dst_name, dst_parent)
             
-            # Копируем все моки из исходной папки
-            # ВАЖНО: Mock хранит только folder_name, поэтому копируем все моки с таким именем
-            # Это ограничение текущей схемы БД - моки не хранят parent_folder
-            src_mocks = db.query(Mock).filter_by(folder_name=src_f.name).all()
+            # Копируем все моки из исходной папки (с учетом parent_folder)
+            src_mocks = db.query(Mock).filter_by(folder_name=src_f.name, folder_parent=src_f.parent_folder).all()
             copied_ids = []
             for m in src_mocks:
                 new_id = str(uuid4())
@@ -1167,6 +1230,7 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
                 copied = Mock(
                     id=new_id,
                     folder_name=dst_name,
+                    folder_parent=dst_parent,
                     name=m.name,
                     method=m.method,
                     path=m.path,
@@ -1324,14 +1388,22 @@ def rename_folder(
                       {"new_name": new_name, "old_name": old_folder_name})
         db.flush()
         
-        # Обновляем folder_name во всех моках
-        db.execute(text("UPDATE mocks SET folder_name = :new_name WHERE folder_name = :old_name"), 
-                  {"new_name": new_name, "old_name": old_folder_name})
+        # Обновляем folder_name во всех моках (с учетом parent_folder)
+        if parent_folder:
+            db.execute(text("UPDATE mocks SET folder_name = :new_name WHERE folder_name = :old_name AND folder_parent = :parent_folder"), 
+                      {"new_name": new_name, "old_name": old_folder_name, "parent_folder": parent_folder})
+        else:
+            db.execute(text("UPDATE mocks SET folder_name = :new_name WHERE folder_name = :old_name AND folder_parent = ''"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
         db.flush()
         
-        # Обновляем folder_name во всех request_logs
-        db.execute(text("UPDATE request_logs SET folder_name = :new_name WHERE folder_name = :old_name"), 
-                  {"new_name": new_name, "old_name": old_folder_name})
+        # Обновляем folder_name во всех request_logs (с учетом parent_folder)
+        if parent_folder:
+            db.execute(text("UPDATE request_logs SET folder_name = :new_name WHERE folder_name = :old_name AND folder_parent = :parent_folder"), 
+                      {"new_name": new_name, "old_name": old_folder_name, "parent_folder": parent_folder})
+        else:
+            db.execute(text("UPDATE request_logs SET folder_name = :new_name WHERE folder_name = :old_name AND folder_parent = ''"), 
+                      {"new_name": new_name, "old_name": old_folder_name})
         db.flush()
         
         # Если это корневая папка, обновляем parent_folder во всех подпапках
@@ -1612,13 +1684,14 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         mock = Mock(id=entry.id)
         db.add(mock)
         # Для нового мока устанавливаем порядок в конец списка
-        max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+        max_order_result = db.query(Mock).filter_by(folder_name=folder_name, folder_parent=normalized_parent).with_entities(Mock.order).order_by(Mock.order.desc()).first()
         mock.order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     # При обновлении существующего мока не меняем порядок, если он не указан явно
     elif hasattr(entry, 'order') and entry.order is not None:
         mock.order = entry.order
 
     mock.folder_name = folder_name
+    mock.folder_parent = normalized_parent
     mock.name = entry.name
     mock.method = entry.request_condition.method.upper()
     normalized_path = _normalize_path_for_storage(entry.request_condition.path)
@@ -1862,12 +1935,13 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     allowed_methods = {"get", "post", "put", "delete", "patch", "options", "head"}
     
     # ОПТИМИЗАЦИЯ: Загружаем все существующие моки для папки одним запросом
-    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name).all()
+    # Моки из OpenAPI создаются в корневых папках (parent_folder = '')
+    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name, folder_parent='').all()
     # Используем нормализованные пути для сравнения
     existing_keys = {(m.method, m.path) for m in existing_mocks}
     
     # ОПТИМИЗАЦИЯ: Получаем максимальный order один раз
-    max_order_result = db.query(Mock).filter_by(folder_name=folder_name).with_entities(Mock.order).order_by(Mock.order.desc()).first()
+    max_order_result = db.query(Mock).filter_by(folder_name=folder_name, folder_parent='').with_entities(Mock.order).order_by(Mock.order.desc()).first()
     next_order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     
     # ОПТИМИЗАЦИЯ: Собираем все новые моки в список для bulk insert
@@ -2136,6 +2210,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             mock = Mock(
                 id=str(uuid4()),
                 folder_name=folder_name,
+                folder_parent='',  # Моки из OpenAPI создаются в корневых папках
                 name=mock_name,
                     method=method_upper,
                 path=normalized_path,
@@ -4206,6 +4281,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
     inner_path = path
     folder_name = "default"
+    folder_parent = ''  # Для корневых папок parent_folder = ''
     # Ищем корневую папку default (parent_folder = '')
     folder = db.query(Folder).filter(
         Folder.name == "default",
@@ -4233,16 +4309,19 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 if subfolder:
                     # Нашли подпапку: /parent/sub/...
                     folder_name = second_segment
+                    folder_parent = first_segment  # parent_folder подпапки = имя корневой папки
                     folder = subfolder
                     inner_path = "/" + "/".join(segments[2:]) if len(segments) > 2 else "/"
                 else:
                     # Второй сегмент не подпапка, используем корневую папку
                     folder_name = first_segment
+                    folder_parent = ''  # Корневая папка
                     folder = root_folder
                     inner_path = "/" + "/".join(segments[1:]) if len(segments) > 1 else "/"
             else:
                 # Только один сегмент - это корневая папка
                 folder_name = first_segment
+                folder_parent = ''  # Корневая папка
                 folder = root_folder
                 inner_path = "/"
         else:
@@ -4266,8 +4345,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         full_inner = full_inner.rstrip("/") or "/"
 
 
-    # Ищем подходящий мок только в выбранной папке
-    mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name).all()
+    # Ищем подходящий мок только в выбранной папке (с учетом parent_folder)
+    mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name, folder_parent=folder_parent).all()
     logger.info(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
@@ -4431,6 +4510,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 request_log = RequestLog(
                     timestamp=datetime.utcnow().isoformat() + "Z",
                     folder_name=folder_name,
+                    folder_parent=folder_parent,
                     method=request.method,
                     path=full_inner.split('?')[0],
                     is_proxied=False,
@@ -4527,6 +4607,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
                 folder_name=folder_name,
+                folder_parent=folder_parent,
                 method=request.method,
                 path=full_inner.split('?')[0],
                 is_proxied=True,
@@ -4568,6 +4649,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         request_log = RequestLog(
             timestamp=datetime.utcnow().isoformat() + "Z",
             folder_name=folder_name,
+            folder_parent=folder_parent,
             method=request.method,
             path=full_inner.split('?')[0],
             is_proxied=False,
