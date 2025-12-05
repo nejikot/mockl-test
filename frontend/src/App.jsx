@@ -296,7 +296,7 @@ const DraggableMockRow = (props) => {
 };
 
 // Компонент для папки с подпапками
-const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, foldersData, getFolderKey }) => {
+const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, foldersData }) => {
   // Восстанавливаем состояние раскрытия из localStorage
   const [isExpanded, setIsExpanded] = useState(() => {
     const saved = localStorage.getItem(`mockl-folder-expanded-${rootFolder.name}`);
@@ -331,7 +331,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <DraggableFolder
-            folder={rootFolder.name}
+            folder={rootFolder}
             index={rootIndex}
             moveFolder={moveFolder}
             selectedFolder={selectedFolder}
@@ -341,7 +341,6 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
             isSubfolder={false}
             parentFolder={null}
             showExpandIcon={false}
-            getFolderKey={getFolderKey}
           />
         </div>
       </div>
@@ -349,8 +348,8 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
         <div style={{ marginLeft: 24, marginTop: 4, width: "calc(100% - 24px)" }}>
           {subFolders.map((subFolder, subIndex) => (
             <DraggableFolder
-              key={`${subFolder.name}|${subFolder.parent_folder}`}
-              folder={subFolder.name}
+              key={subFolder.id}
+              folder={subFolder}
               index={rootIndex + 1 + subIndex}
               moveFolder={moveFolder}
               selectedFolder={selectedFolder}
@@ -358,8 +357,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
               deleteFolder={deleteFolder}
               theme={theme}
               isSubfolder={true}
-              parentFolder={subFolder.parent_folder}
-              getFolderKey={getFolderKey}
+              parentFolder={subFolder.parent_folder_id}
             />
           ))}
         </div>
@@ -368,27 +366,28 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
   );
 };
 
-const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true, getFolderKey }) => {
+const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelectedFolder, deleteFolder, theme, isSubfolder = false, parentFolder = null, showExpandIcon = true }) => {
+  const folderId = folder?.id || folder;
+  const folderName = folder?.name || folder;
   const [{ isDragging }, drag] = useDrag({
     type: 'folder',
     item: { index, folder, parentFolder },
     collect: monitor => ({ isDragging: monitor.isDragging() }),
-    canDrag: () => folder !== "default" // Нельзя перетаскивать default
+    canDrag: () => folderName !== "default" // Нельзя перетаскивать default
   });
   const [, drop] = useDrop({
     accept: 'folder',
     hover: (item, monitor) => {
       if (!monitor.isOver({ shallow: true })) return;
-      if (item.index !== index && item.folder !== "default") {
+      if (item.index !== index && (item.folder?.name || item.folder) !== "default") {
         moveFolder(item.index, index);
         item.index = index;
       }
     },
-    canDrop: () => folder !== "default" // Нельзя бросать на default
+    canDrop: () => folderName !== "default" // Нельзя бросать на default
   });
   
-  const folderKey = getFolderKey ? getFolderKey(folder, parentFolder) : folder;
-  const isActive = folderKey === selectedFolder;
+  const isActive = folderId === selectedFolder;
   const bgColor = isActive 
     ? (theme === "dark" ? "#1890ff" : "#e6f7ff")
     : (theme === "dark" ? "#262626" : "#fafafa");
@@ -425,12 +424,12 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
       onMouseLeave={e => {
         if (!isActive) e.currentTarget.style.background = bgColor;
       }}
-      onClick={() => setSelectedFolder(getFolderKey ? getFolderKey(folder, parentFolder) : folder)}
+      onClick={() => setSelectedFolder(folderId)}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <MenuOutlined style={{ color: theme === "dark" ? "#999" : "#999", cursor: 'grab' }} />
         <Typography.Text style={{ color: textColor }}>
-          {folder === "default" ? "Главная" : folder}
+          {folderName === "default" ? "Главная" : folderName}
           {isSubfolder && parentFolder && (
             <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
               ({parentFolder})
@@ -438,10 +437,10 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
           )}
         </Typography.Text>
       </div>
-      {folder !== "default" && (
+      {folderName !== "default" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <DeleteOutlined
-            onClick={e => { e.stopPropagation(); deleteFolder(folder, parentFolder); }}
+            onClick={e => { e.stopPropagation(); deleteFolder(folder); }}
             style={{ color: '#ff4d4f', fontSize: 16, cursor: "pointer" }}
           />
         </div>
@@ -454,13 +453,12 @@ export default function App() {
   const [form] = Form.useForm();
   const [folderForm] = Form.useForm();
   const [folders, setFolders] = useState(["default"]);
-  const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
+  const [foldersData, setFoldersData] = useState([{ id: "default", name: "default", parent_folder_id: null, order: 0 }]);
   // Восстанавливаем выбранную папку из localStorage
-  // Используем составной ключ для идентификации папок: "name|parent_folder"
-  // Для корневых папок parent_folder = '', для подпапок - имя родительской папки
+  // Теперь используем folder_id для идентификации папок
   const [selectedFolder, setSelectedFolder] = useState(() => {
     const saved = localStorage.getItem("mockl-selected-folder");
-    return saved || "default|";
+    return saved || null;
   });
   
   // Сохраняем выбранную папку в localStorage при изменении
@@ -470,19 +468,13 @@ export default function App() {
     }
   }, [selectedFolder]);
   
-  // Вспомогательные функции для работы с составным ключом
-  const getFolderKey = (name, parentFolder = null) => {
-    const parent = parentFolder || '';
-    return `${name}|${parent}`;
+  // Вспомогательные функции для работы с folder_id
+  const getFolderId = (folder) => {
+    return folder?.id || folder;
   };
   
-  const parseFolderKey = (key) => {
-    if (!key || key === "default") return { name: "default", parent_folder: null };
-    const parts = key.split('|');
-    return {
-      name: parts[0] || "default",
-      parent_folder: parts[1] && parts[1] !== '' ? parts[1] : null
-    };
+  const findFolderById = (folderId) => {
+    return foldersData.find(f => f.id === folderId);
   };
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [mockSearchQuery, setMockSearchQuery] = useState("");
@@ -505,9 +497,8 @@ export default function App() {
       setMetricsLoading(true);
     }
     try {
-      const { name, parent_folder } = parseFolderKey(selectedFolder);
-      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const metricsUrl = `${host}/api/metrics/folder/${encodeURIComponent(folderParam)}`;
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      const metricsUrl = `${host}/api/metrics/folder/${encodeURIComponent(folderId)}`;
       const response = await fetch(metricsUrl);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -529,9 +520,8 @@ export default function App() {
       setRequestLogsLoading(true);
     }
     try {
-      const { name, parent_folder } = parseFolderKey(selectedFolder);
-      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`);
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      const response = await fetch(`${host}/api/request-logs?folder_id=${encodeURIComponent(folderId)}&limit=10000`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -550,7 +540,8 @@ export default function App() {
   const clearRequestLogs = async () => {
     if (!selectedFolder) return;
     try {
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}`, {
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      const response = await fetch(`${host}/api/request-logs?folder_id=${encodeURIComponent(folderId)}`, {
         method: 'DELETE'
       });
       if (!response.ok) {
@@ -907,15 +898,22 @@ export default function App() {
       const res = await fetch(`${host}/api/mocks/folders`);
       if (!res.ok) throw new Error();
       let data = await res.json();
-      if (!data.length) data = [{ name: "default", parent_folder: null, order: 0 }];
+      if (!data.length) {
+        const defaultFolder = foldersData.find(f => f.name === "default");
+        if (defaultFolder) {
+          data = [defaultFolder];
+        } else {
+          data = [{ id: "default", name: "default", parent_folder_id: null, order: 0 }];
+        }
+      }
       
-      // Сохраняем полную структуру папок с parent_folder
-      const foldersData = data.map(f => typeof f === 'string' ? { name: f, parent_folder: null, order: 0 } : f);
+      // Сохраняем полную структуру папок с id и parent_folder_id
+      const foldersData = data.map(f => typeof f === 'string' ? { id: f, name: f, parent_folder_id: null, order: 0 } : f);
       
       // Сортируем: сначала default, потом корневые папки, потом подпапки
-      const defaultFolder = foldersData.find(f => f.name === "default") || { name: "default", parent_folder: null, order: 0 };
-      const rootFolders = foldersData.filter(f => f.name !== "default" && !f.parent_folder).sort((a, b) => (a.order || 0) - (b.order || 0));
-      const subFolders = foldersData.filter(f => f.name !== "default" && f.parent_folder).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const defaultFolder = foldersData.find(f => f.name === "default") || { id: "default", name: "default", parent_folder_id: null, order: 0 };
+      const rootFolders = foldersData.filter(f => f.name !== "default" && !f.parent_folder_id).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const subFolders = foldersData.filter(f => f.name !== "default" && f.parent_folder_id).sort((a, b) => (a.order || 0) - (b.order || 0));
       
       // Формируем плоский список: default, корневые, подпапки (с отступом)
       const sorted = [
@@ -928,38 +926,32 @@ export default function App() {
       // Сохраняем полные данные папок для использования в форме
       setFoldersData(foldersData);
       // Проверяем, существует ли сохраненная папка в списке
-      const savedFolder = localStorage.getItem("mockl-selected-folder") || "default|";
-      const savedFolderData = parseFolderKey(savedFolder);
-      const folderExists = foldersData.some(f => 
-        f.name === savedFolderData.name && 
-        (f.parent_folder || '') === (savedFolderData.parent_folder || '')
-      );
+      const savedFolderId = localStorage.getItem("mockl-selected-folder");
+      const folderExists = savedFolderId && foldersData.some(f => f.id === savedFolderId);
       if (folderExists) {
         // Восстанавливаем сохраненную папку, если она существует
-        setSelectedFolder(savedFolder);
+        setSelectedFolder(savedFolderId);
       } else {
-        // Если текущая папка не существует, выбираем первую доступную
-        const firstFolder = foldersData[0];
-        if (firstFolder) {
-          setSelectedFolder(getFolderKey(firstFolder.name, firstFolder.parent_folder));
-        } else {
-          setSelectedFolder("default|");
-        }
+        // Если текущая папка не существует, выбираем default
+        setSelectedFolder(defaultFolder.id);
       }
     } catch {
       setFolders(["default"]);
-      setFoldersData([{ name: "default", parent_folder: null, order: 0 }]);
-      setSelectedFolder("default|");
+      const defaultFolder = { id: "default", name: "default", parent_folder_id: null, order: 0 };
+      setFoldersData([defaultFolder]);
+      setSelectedFolder(defaultFolder.id);
       message.error("Ошибка получения папок");
     }
   };
 
   const fetchMocks = async () => {
     try {
-      const { name, parent_folder } = parseFolderKey(selectedFolder);
-      // Для запроса используем только имя папки, бэкенд сам определит по parent_folder
-      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const res = await fetch(`${host}/api/mocks?folder=${encodeURIComponent(folderParam)}`);
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      if (!folderId) {
+        setMocks([]);
+        return;
+      }
+      const res = await fetch(`${host}/api/mocks?folder_id=${encodeURIComponent(folderId)}`);
       if (!res.ok) throw new Error();
       setMocks(await res.json());
     } catch {
@@ -970,7 +962,9 @@ export default function App() {
 
   const openFolderSettings = async () => {
     try {
-      const res = await fetch(`${host}/api/folders/${encodeURIComponent(selectedFolder)}`);
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      if (!folderId) return;
+      const res = await fetch(`${host}/api/folders/${encodeURIComponent(folderId)}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
       folderSettingsForm.setFieldsValue({
@@ -985,7 +979,9 @@ export default function App() {
 
   const saveFolderSettings = async vals => {
     try {
-      const res = await fetch(`${host}/api/folders/${encodeURIComponent(selectedFolder)}/settings`, {
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      if (!folderId) return;
+      const res = await fetch(`${host}/api/folders/${encodeURIComponent(folderId)}/settings`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1687,7 +1683,7 @@ export default function App() {
     try {
       const payload = {
         name: name,
-        parent_folder: vals.parent_folder || null
+        parent_folder_id: vals.parent_folder_id || null
       };
       const res = await fetch(`${host}/api/folders`, {
         method: "POST",
@@ -1702,40 +1698,39 @@ export default function App() {
       setFolderModalOpen(false);
       folderForm.resetFields();
       await fetchFolders();
-      const newFolderKey = getFolderKey(name, vals.parent_folder || null);
-      setSelectedFolder(newFolderKey);
+      // Находим созданную папку по имени и parent_folder_id
+      const newFolder = foldersData.find(f => f.name === name && f.parent_folder_id === (vals.parent_folder_id || null));
+      if (newFolder) {
+        setSelectedFolder(newFolder.id);
+      }
       await fetchMocks();
     } catch (e) {
       message.error("Ошибка: " + (e.message || "Не удалось создать папку"));
     }
   };
 
-  const deleteFolder = (name, parentFolder = null) => {
-    if (name === "default") return message.warning("Нельзя удалить Главная");
-    const folderKey = getFolderKey(name, parentFolder);
+  const deleteFolder = (folder) => {
+    const folderId = folder?.id || folder;
+    const folderName = folder?.name || folder;
+    if (folderName === "default") return message.warning("Нельзя удалить Главная");
     Modal.confirm({
-      title: `Удалить страницу ${name === "default" ? "Главная" : name}?`,
+      title: `Удалить страницу ${folderName === "default" ? "Главная" : folderName}?`,
       icon: <ExclamationCircleOutlined />,
       okText: "Удалить",
       okType: "danger",
       cancelText: "Отмена",
       onOk: async () => {
         try {
-          // Передаем составной ключ для правильной идентификации папки/подпапки
-          // Для корневых папок (parentFolder = null или '') передаем только name
-          // Для подпапок передаем формат "name|parentFolder"
-          const folderParam = parentFolder ? `${name}|${parentFolder}` : name;
-          const res = await fetch(`${host}/api/folders?name=${encodeURIComponent(folderParam)}`, { method: "DELETE" });
+          const res = await fetch(`${host}/api/folders?folder_id=${encodeURIComponent(folderId)}`, { method: "DELETE" });
           if (!res.ok) {
             const errorData = await res.json().catch(() => ({}));
             throw new Error(errorData.detail || "Ошибка удаления");
           }
           message.success("Удалено");
           // Если удаляем выбранную папку, переключаемся на default
-          // Проверяем оба формата: с getFolderKey и просто имя
-          const { name: selectedName, parent_folder: selectedParent } = parseFolderKey(selectedFolder);
-          if ((selectedName === name && (selectedParent || '') === (parentFolder || '')) || selectedFolder === name) {
-            setSelectedFolder("default");
+          if (selectedFolder === folderId) {
+            const defaultFolder = foldersData.find(f => f.name === "default");
+            setSelectedFolder(defaultFolder?.id || null);
           }
           fetchFolders();
           fetchMocks();
@@ -1760,10 +1755,11 @@ export default function App() {
     }
   };
 
-  const startDuplicateFolder = name => {
-    setFolderToDuplicate(name);
-    // Извлекаем только имя папки (без parent_folder, если есть формат "name|parent_folder")
-    const { name: folderName } = parseFolderKey(name);
+  const startDuplicateFolder = (folder) => {
+    const folderId = folder?.id || folder;
+    setFolderToDuplicate(folderId);
+    const folderObj = findFolderById(folderId);
+    const folderName = folderObj?.name || folder;
     duplicateForm.setFieldsValue({
       new_name: `${folderName}-copy`
     });
@@ -1776,16 +1772,17 @@ export default function App() {
       setDuplicateModalOpen(false);
       return;
     }
-    // Проверяем, не существует ли уже корневая папка с таким именем
-    const existingFolder = foldersData.find(f => f.name === newName && !f.parent_folder);
+    // Проверяем, не существует ли уже папка с таким именем
+    const folderObj = findFolderById(folderToDuplicate);
+    const existingFolder = foldersData.find(f => f.name === newName && f.parent_folder_id === folderObj?.parent_folder_id);
     if (existingFolder) {
-      return message.error("Корневая папка с таким именем уже существует");
+      return message.error("Папка с таким именем уже существует");
     }
     try {
       const res = await fetch(`${host}/api/folders/duplicate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ old_name: folderToDuplicate, new_name: newName })
+        body: JSON.stringify({ folder_id: folderToDuplicate, new_name: newName })
       });
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
@@ -1795,18 +1792,21 @@ export default function App() {
       setDuplicateModalOpen(false);
       await fetchFolders();
       // Устанавливаем выбранную папку на новую (дублированную) папку
-      // Дублирование создает только корневую папку, поэтому используем только имя
-      setSelectedFolder(newName);
+      const newFolder = foldersData.find(f => f.name === newName && f.parent_folder_id === folderObj?.parent_folder_id);
+      if (newFolder) {
+        setSelectedFolder(newFolder.id);
+      }
       await fetchMocks();
     } catch (e) {
       message.error(e.message || "Ошибка дублирования страницы");
     }
   };
 
-  const startRenameFolder = name => {
-    setFolderToRename(name);
-    // Извлекаем только имя папки для отображения в форме
-    const { name: folderName } = parseFolderKey(name);
+  const startRenameFolder = (folder) => {
+    const folderId = folder?.id || folder;
+    setFolderToRename(folderId);
+    const folderObj = findFolderById(folderId);
+    const folderName = folderObj?.name || folder;
     renameForm.setFieldsValue({
       new_name: folderName
     });
@@ -1819,15 +1819,15 @@ export default function App() {
       setRenameModalOpen(false);
       return;
     }
-    // Проверяем, не существует ли уже корневая папка с таким именем
-    const { name: oldName, parent_folder } = parseFolderKey(folderToRename);
-    if (oldName === newName) {
+    const folderObj = findFolderById(folderToRename);
+    if (folderObj?.name === newName) {
       setRenameModalOpen(false);
       return;
     }
-    const existingFolder = foldersData.find(f => f.name === newName && !f.parent_folder);
+    // Проверяем, не существует ли уже папка с таким именем в той же родительской папке
+    const existingFolder = foldersData.find(f => f.name === newName && f.parent_folder_id === folderObj?.parent_folder_id);
     if (existingFolder) {
-      return message.error("Корневая папка с таким именем уже существует");
+      return message.error("Папка с таким именем уже существует");
     }
     try {
       const res = await fetch(`${host}/api/folders/${encodeURIComponent(folderToRename)}/rename`, {
@@ -2112,8 +2112,8 @@ export default function App() {
                         // Для default папки показываем без сворачивания
                         return (
                     <DraggableFolder
-                            key={rootFolder.name}
-                            folder={rootFolder.name}
+                            key={rootFolder.id}
+                            folder={rootFolder}
                             index={rootIndex}
                       moveFolder={moveFolder}
                       selectedFolder={selectedFolder}
@@ -2122,7 +2122,6 @@ export default function App() {
                       theme={theme}
                             isSubfolder={false}
                             parentFolder={null}
-                            getFolderKey={getFolderKey}
                           />
                         );
                       }
@@ -2131,7 +2130,7 @@ export default function App() {
                       if (hasSubfolders) {
                         return (
                           <FolderWithSubfolders
-                            key={rootFolder.name}
+                            key={rootFolder.id}
                             rootFolder={rootFolder}
                             subFolders={subFolders}
                             rootIndex={rootIndex}
@@ -2141,14 +2140,13 @@ export default function App() {
                             deleteFolder={deleteFolder}
                             theme={theme}
                             foldersData={foldersData}
-                            getFolderKey={getFolderKey}
                           />
                         );
                       } else {
                         return (
                           <DraggableFolder
-                            key={rootFolder.name}
-                            folder={rootFolder.name}
+                            key={rootFolder.id}
+                            folder={rootFolder}
                             index={rootIndex}
                             moveFolder={moveFolder}
                             selectedFolder={selectedFolder}
@@ -2157,7 +2155,6 @@ export default function App() {
                             theme={theme}
                             isSubfolder={false}
                             parentFolder={null}
-                            getFolderKey={getFolderKey}
                           />
                         );
                       }
