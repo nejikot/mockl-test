@@ -598,17 +598,22 @@ def ensure_migrations():
                 """)
             ).fetchall()
             
+            existing_set = {(row[0], row[1]) for row in existing_columns}
+            
             # Добавляем parent_folder в mocks, если его нет
             if ('mocks', 'parent_folder') not in existing_set:
                 try:
-                    conn.execute(text("ALTER TABLE mocks ADD COLUMN parent_folder VARCHAR NOT NULL DEFAULT ''"))
-                    logger.info("Added column mocks.parent_folder")
+                    # Сначала добавляем колонку как NULL (для безопасности)
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN parent_folder VARCHAR NULL"))
+                    logger.info("Added column mocks.parent_folder (nullable)")
                     # Обновляем существующие записи: устанавливаем parent_folder = '' для всех существующих моков
                     conn.execute(text("UPDATE mocks SET parent_folder = '' WHERE parent_folder IS NULL"))
+                    # Теперь делаем колонку NOT NULL с DEFAULT
+                    conn.execute(text("ALTER TABLE mocks ALTER COLUMN parent_folder SET NOT NULL"))
+                    conn.execute(text("ALTER TABLE mocks ALTER COLUMN parent_folder SET DEFAULT ''"))
+                    logger.info("Set mocks.parent_folder to NOT NULL with default ''")
                 except Exception as e:
                     logger.warning(f"Error adding mocks.parent_folder: {e}")
-            
-            existing_set = {(row[0], row[1]) for row in existing_columns}
             
         # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
@@ -4236,12 +4241,26 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
     # Определяем parent_folder для поиска моков
+    # Если folder не найден, используем default
+    if not folder:
+        folder_name = "default"
+        folder = db.query(Folder).filter(
+            Folder.name == "default",
+            Folder.parent_folder == ''
+        ).first()
+    
     parent_folder_for_mocks = folder.parent_folder if folder else ''
     
     # Ищем подходящий мок только в выбранной папке с учетом parent_folder
+    # Учитываем, что старые моки могут иметь parent_folder = NULL (до миграции)
+    from sqlalchemy import or_
     mocks = db.query(Mock).filter(
         Mock.folder_name == folder_name,
-        Mock.parent_folder == parent_folder_for_mocks,
+        or_(
+            Mock.parent_folder == parent_folder_for_mocks,
+            Mock.parent_folder == None,  # Для старых моков без parent_folder (до миграции)
+            Mock.parent_folder == ''  # Для совместимости
+        ),
         Mock.active == True
     ).all()
     logger.info(f"Searching for mock: folder={folder_name}, parent_folder={parent_folder_for_mocks}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
