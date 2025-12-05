@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, ForeignKeyConstraint, text
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, ForeignKeyConstraint, text, or_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -1111,7 +1111,8 @@ def delete_folder(
                 
                 # Сначала удаляем моки подпапки через прямой SQL, чтобы разорвать связи
                 # Удаляем все моки подпапки (с учетом parent_folder)
-                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
+                # Для обратной совместимости также удаляем моки, где folder_parent может быть NULL
+                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND (folder_parent = :parent_folder OR folder_parent IS NULL)"), 
                           {"folder_name": subfolder.name, "parent_folder": subfolder.parent_folder})
                 db.flush()
                 
@@ -1128,8 +1129,14 @@ def delete_folder(
         delete_subfolders_recursive(folder_name, parent_folder if parent_folder else '')
         
         # Удаляем моки самой папки через прямой SQL (с учетом parent_folder)
-        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
-                  {"folder_name": folder_name, "parent_folder": parent_folder if parent_folder else ''})
+        # Для обратной совместимости также удаляем моки, где folder_parent может быть NULL
+        parent_folder_value = parent_folder if parent_folder else ''
+        if parent_folder_value == '':
+            db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND (folder_parent = '' OR folder_parent IS NULL)"), 
+                      {"folder_name": folder_name})
+        else:
+            db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name AND folder_parent = :parent_folder"), 
+                      {"folder_name": folder_name, "parent_folder": parent_folder_value})
         db.flush()
         
         # Удаляем саму папку через прямой SQL
@@ -1657,6 +1664,9 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
         folder_name = parts[0]
         parent_folder = parts[1] if parts[1] else None
     
+    # Нормализуем parent_folder: None -> '' для корневых папок
+    normalized_parent = parent_folder if parent_folder else ''
+    
     # Ищем папку с учетом parent_folder
     if parent_folder:
         # Ищем подпапку
@@ -1673,7 +1683,6 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     
     if not folder:
         # Автоматически создаем папку, если её нет
-        normalized_parent = parent_folder if parent_folder else ''
         folder = Folder(name=folder_name, parent_folder=normalized_parent)
         db.add(folder)
         db.flush()
@@ -2604,13 +2613,22 @@ def list_mocks(
             # Поддерживаем формат "name|parent_folder" для подпапок
             folder = folder.strip()
             folder_name = folder
+            folder_parent = None
             if '|' in folder:
                 parts = folder.split('|', 1)
                 folder_name = parts[0]
-                # parent_folder игнорируем, так как моки хранят только folder_name
-                # и бэкенд должен найти папку по составному ключу если нужно
-            logger.debug(f"Filtering mocks by folder_name='{folder_name}'")
-            q = q.filter_by(folder_name=folder_name)
+                folder_parent = parts[1] if parts[1] else None
+            # Нормализуем parent_folder
+            normalized_parent = folder_parent if folder_parent else ''
+            logger.debug(f"Filtering mocks by folder_name='{folder_name}', folder_parent='{normalized_parent}'")
+            # Для обратной совместимости также ищем моки, где folder_parent может быть NULL
+            if normalized_parent == '':
+                q = q.filter(
+                    Mock.folder_name == folder_name,
+                    (Mock.folder_parent == '') | (Mock.folder_parent.is_(None))
+                )
+            else:
+                q = q.filter_by(folder_name=folder_name, folder_parent=normalized_parent)
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
@@ -4346,7 +4364,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
     # Ищем подходящий мок только в выбранной папке (с учетом parent_folder)
-    mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name, folder_parent=folder_parent).all()
+    # Для обратной совместимости также ищем моки, где folder_parent может быть NULL или пустой строкой
+    # если folder_parent = '' (корневая папка)
+    if folder_parent == '':
+        mocks = db.query(Mock).filter(
+            Mock.active == True,
+            Mock.folder_name == folder_name,
+            (Mock.folder_parent == '') | (Mock.folder_parent.is_(None))
+        ).all()
+    else:
+        mocks = db.query(Mock).filter_by(active=True, folder_name=folder_name, folder_parent=folder_parent).all()
     logger.info(f"Searching for mock: folder={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
