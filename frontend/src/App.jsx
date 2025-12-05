@@ -2754,8 +2754,8 @@ export default function App() {
             ) : (() => {
               // Парсим метрики и извлекаем полезную информацию
               const parseMetrics = (text) => {
-                const methodStats = {}; // {method: {total: 0, byOutcome: {}, byPath: {}}}
-                const pathStats = {}; // {path: {total: 0, byMethod: {}}}
+                // Детальная статистика по методам и путям
+                const detailedStats = {}; // {method_path: {method, path, mock_hits, proxied, errors, responseTimes: [], statusCodes: {}}}
                 let totalRequests = 0;
                 let totalResponseTime = 0;
                 let responseTimeCount = 0;
@@ -2764,74 +2764,156 @@ export default function App() {
                 for (const line of lines) {
                   if (!line.trim() || line.startsWith('#')) continue;
                   
-                  // Парсим mockl_requests_total{method="GET",path="/api",folder="test",outcome="mock_hit"} 123
-                  // Более гибкий парсер, который работает с любым порядком labels
-                  const requestsMatch = line.match(/^mockl_requests_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (requestsMatch) {
-                    const labelsStr = requestsMatch[1];
-                    const count = parseFloat(requestsMatch[2]);
+                  // Парсим mockl_requests_detailed_total{method="GET",path="/api",folder="test",outcome="mock_hit",status_code="200"} 123
+                  const detailedMatch = line.match(/^mockl_requests_detailed_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (detailedMatch) {
+                    const labelsStr = detailedMatch[1];
+                    const count = parseFloat(detailedMatch[2]);
                     
-                    // Извлекаем labels
                     const methodMatch = labelsStr.match(/method="([^"]+)"/);
                     const pathMatch = labelsStr.match(/path="([^"]+)"/);
                     const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
-                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
+                    const statusMatch = labelsStr.match(/status_code="([^"]+)"/);
                     
-                    if (methodMatch && pathMatch && outcomeMatch && folderMatch) {
+                    if (methodMatch && pathMatch && outcomeMatch) {
                       const method = methodMatch[1];
                       const path = pathMatch[1];
                       const outcome = outcomeMatch[1];
+                      const statusCode = statusMatch ? statusMatch[1] : 'unknown';
+                      const key = `${method}:${path}`;
+                      
+                      if (!detailedStats[key]) {
+                        detailedStats[key] = {
+                          method,
+                          path,
+                          mock_hits: 0,
+                          proxied: 0,
+                          errors: 0,
+                          not_found: 0,
+                          responseTimes: [],
+                          statusCodes: {}
+                        };
+                      }
                       
                       totalRequests += count;
                       
-                      if (!methodStats[method]) {
-                        methodStats[method] = { total: 0, byOutcome: {}, byPath: {} };
+                      if (outcome === 'mock_hit') {
+                        detailedStats[key].mock_hits += count;
+                      } else if (outcome === 'proxied') {
+                        detailedStats[key].proxied += count;
+                      } else if (outcome === 'not_found') {
+                        detailedStats[key].not_found += count;
+                        detailedStats[key].errors += count;
+                      } else {
+                        detailedStats[key].errors += count;
                       }
-                      methodStats[method].total += count;
-                      if (!methodStats[method].byOutcome[outcome]) {
-                        methodStats[method].byOutcome[outcome] = 0;
-                      }
-                      methodStats[method].byOutcome[outcome] += count;
                       
-                      if (!methodStats[method].byPath[path]) {
-                        methodStats[method].byPath[path] = 0;
+                      if (!detailedStats[key].statusCodes[statusCode]) {
+                        detailedStats[key].statusCodes[statusCode] = 0;
                       }
-                      methodStats[method].byPath[path] += count;
-                      
-                      if (!pathStats[path]) {
-                        pathStats[path] = { total: 0, byMethod: {} };
-                      }
-                      pathStats[path].total += count;
-                      if (!pathStats[path].byMethod[method]) {
-                        pathStats[path].byMethod[method] = 0;
-                      }
-                      pathStats[path].byMethod[method] += count;
+                      detailedStats[key].statusCodes[statusCode] += count;
                     }
                   }
                   
-                  // Парсим mockl_response_time_seconds_sum{folder="test"} 0.123
-                  const responseTimeSumMatch = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  // Парсим mockl_response_time_detailed_seconds_sum и count для вычисления среднего времени
+                  const responseTimeSumMatch = line.match(/^mockl_response_time_detailed_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
                   if (responseTimeSumMatch) {
-                    totalResponseTime += parseFloat(responseTimeSumMatch[1]);
+                    const labelsStr = responseTimeSumMatch[1];
+                    const sum = parseFloat(responseTimeSumMatch[2]);
+                    
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch && outcomeMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const outcome = outcomeMatch[1];
+                      const key = `${method}:${path}`;
+                      
+                      if (detailedStats[key]) {
+                        // Ищем соответствующую count метрику в тексте
+                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const countPattern = new RegExp(`mockl_response_time_detailed_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*outcome="${outcome}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
+                        const countMatch = text.match(countPattern);
+                        if (countMatch) {
+                          const count = parseFloat(countMatch[1]);
+                          const avg = count > 0 ? sum / count : 0;
+                          if (!detailedStats[key].responseTimes) {
+                            detailedStats[key].responseTimes = [];
+                          }
+                          detailedStats[key].responseTimes.push({ outcome, avg, count, sum });
+                        }
+                      }
+                    }
                   }
                   
-                  // Парсим mockl_response_time_seconds_count{folder="test"} 10
-                  const responseTimeCountMatch = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeCountMatch) {
-                    responseTimeCount += parseFloat(responseTimeCountMatch[1]);
+                  // Парсим mockl_proxy_response_time_seconds для проксированных запросов
+                  const proxyTimeSumMatch = line.match(/^mockl_proxy_response_time_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
+                  if (proxyTimeSumMatch) {
+                    const labelsStr = proxyTimeSumMatch[1];
+                    const sum = parseFloat(proxyTimeSumMatch[2]);
+                    
+                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
+                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
+                    
+                    if (methodMatch && pathMatch) {
+                      const method = methodMatch[1];
+                      const path = pathMatch[1];
+                      const key = `${method}:${path}`;
+                      
+                      if (detailedStats[key]) {
+                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const countPattern = new RegExp(`mockl_proxy_response_time_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
+                        const countMatch = text.match(countPattern);
+                        if (countMatch) {
+                          const count = parseFloat(countMatch[1]);
+                          const avg = count > 0 ? sum / count : 0;
+                          detailedStats[key].proxyAvgTime = avg;
+                          detailedStats[key].proxyCount = count;
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Старые метрики для обратной совместимости
+                  const responseTimeSumMatchOld = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeSumMatchOld) {
+                    totalResponseTime += parseFloat(responseTimeSumMatchOld[1]);
+                  }
+                  
+                  const responseTimeCountMatchOld = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
+                  if (responseTimeCountMatchOld) {
+                    responseTimeCount += parseFloat(responseTimeCountMatchOld[1]);
                   }
                 }
                 
+                // Вычисляем средние времена ответа для каждого метода/пути
+                const detailedArray = Object.values(detailedStats).map(stat => {
+                  const allTimes = stat.responseTimes.map(rt => rt.avg);
+                  const avgTime = allTimes.length > 0 
+                    ? allTimes.reduce((a, b) => a + b, 0) / allTimes.length 
+                    : (stat.proxyAvgTime || 0);
+                  const minTime = allTimes.length > 0 ? Math.min(...allTimes) : (stat.proxyAvgTime || 0);
+                  const maxTime = allTimes.length > 0 ? Math.max(...allTimes) : (stat.proxyAvgTime || 0);
+                  
+                  return {
+                    ...stat,
+                    avgResponseTime: avgTime,
+                    minResponseTime: minTime,
+                    maxResponseTime: maxTime,
+                    total: stat.mock_hits + stat.proxied + stat.errors
+                  };
+                }).sort((a, b) => b.total - a.total);
+                
                 return { 
-                  methodStats, 
-                  pathStats, 
+                  detailedStats: detailedArray,
                   totalRequests, 
                   avgResponseTime: responseTimeCount > 0 ? totalResponseTime / responseTimeCount : 0 
                 };
               };
               
               const parsed = parseMetrics(metricsData);
-              const methods = Object.keys(parsed.methodStats).sort();
               
               return (
                 <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
@@ -2860,10 +2942,10 @@ export default function App() {
                       <Col span={8}>
                         <div style={{ textAlign: 'center' }}>
                           <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-                            Методов
+                            Методов/Путей
                           </Typography.Text>
                           <Typography.Text style={{ fontSize: 24, fontWeight: 600, display: 'block', marginTop: 4 }}>
-                            {methods.length}
+                            {parsed.detailedStats.length}
                           </Typography.Text>
                         </div>
                       </Col>
@@ -2880,130 +2962,53 @@ export default function App() {
                     </Row>
                   </div>
                   
-                  {/* Статистика по методам */}
-                  <div style={{ 
-                    background: theme === "dark" ? "#262626" : "#fff",
-                    borderRadius: 8,
-                    padding: 16,
-                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
-                  }}>
-                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
-                      Статистика по методам
-                    </Typography.Title>
-                    <Table
-                      dataSource={methods.map(method => ({
-                        key: method,
-                        method,
-                        ...parsed.methodStats[method]
-                      }))}
-                      pagination={false}
-                      size="small"
-                      columns={[
-                        {
-                          title: 'Метод',
-                          dataIndex: 'method',
-                          key: 'method',
-                          width: 100,
-                          render: (method) => (
-                            <Typography.Text strong style={{ 
-                              color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
-                            }}>
-                              {method}
-                            </Typography.Text>
-                          )
-                        },
-                        {
-                          title: 'Всего запросов',
-                          dataIndex: 'total',
-                          key: 'total',
-                          width: 120,
-                          align: 'right',
-                          render: (total) => (
-                            <Typography.Text style={{ fontWeight: 600 }}>
-                              {total}
-                            </Typography.Text>
-                          )
-                        },
-                        {
-                          title: 'Успешные (mock_hit)',
-                          key: 'mock_hit',
-                          width: 150,
-                          align: 'right',
-                          render: (_, record) => (
-                            <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
-                              {record.byOutcome.mock_hit || 0}
-                            </Typography.Text>
-                          )
-                        },
-                        {
-                          title: 'Проксированные',
-                          key: 'proxied',
-                          width: 130,
-                          align: 'right',
-                          render: (_, record) => (
-                            <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
-                              {record.byOutcome.proxied || 0}
-                            </Typography.Text>
-                          )
-                        },
-                        {
-                          title: 'Ошибки',
-                          key: 'errors',
-                          width: 100,
-                          align: 'right',
-                          render: (_, record) => {
-                            const errors = (record.byOutcome.not_found || 0) + 
-                                         (record.byOutcome.error_simulated || 0) +
-                                         (record.byOutcome.rate_limited || 0);
-                            return (
-                              <Typography.Text style={{ color: errors > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
-                                {errors}
-                              </Typography.Text>
-                            );
-                          }
-                        }
-                      ]}
-                    />
-                  </div>
-                  
-                  {/* Детальная информация по путям */}
-                  {Object.keys(parsed.pathStats).length > 0 && (
+                  {/* Детальная статистика по методам и путям */}
+                  {parsed.detailedStats.length > 0 ? (
                     <div style={{ 
                       background: theme === "dark" ? "#262626" : "#fff",
                       borderRadius: 8,
                       padding: 16,
-                      marginTop: 16,
                       border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
                     }}>
                       <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
-                        Статистика по путям
+                        Детальная статистика по методам и путям
                       </Typography.Title>
                       <Table
-                        dataSource={Object.entries(parsed.pathStats)
-                          .map(([path, stats]) => ({
-                            key: path,
-                            path,
-                            ...stats
-                          }))
-                          .sort((a, b) => b.total - a.total)}
-                        pagination={false}
+                        dataSource={parsed.detailedStats}
+                        pagination={{ pageSize: 10 }}
                         size="small"
+                        scroll={{ x: 'max-content' }}
                         columns={[
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
+                            fixed: 'left',
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
                           {
                             title: 'Путь',
                             dataIndex: 'path',
                             key: 'path',
+                            width: 200,
                             render: (path) => (
-                              <Typography.Text code style={{ fontSize: 12 }}>
+                              <Typography.Text code style={{ fontSize: 11 }}>
                                 {path}
                               </Typography.Text>
                             )
                           },
                           {
-                            title: 'Всего запросов',
+                            title: 'Всего',
                             dataIndex: 'total',
                             key: 'total',
-                            width: 120,
+                            width: 80,
                             align: 'right',
                             render: (total) => (
                               <Typography.Text style={{ fontWeight: 600 }}>
@@ -3012,14 +3017,96 @@ export default function App() {
                             )
                           },
                           {
-                            title: 'По методам',
-                            key: 'byMethod',
+                            title: 'Моки',
+                            dataIndex: 'mock_hits',
+                            key: 'mock_hits',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'proxied',
+                            key: 'proxied',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Ошибки',
+                            dataIndex: 'errors',
+                            key: 'errors',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: count > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Среднее время',
+                            dataIndex: 'avgResponseTime',
+                            key: 'avgResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text>
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Мин. время',
+                            dataIndex: 'minResponseTime',
+                            key: 'minResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Макс. время',
+                            dataIndex: 'maxResponseTime',
+                            key: 'maxResponseTime',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Статус коды',
+                            key: 'statusCodes',
+                            width: 200,
                             render: (_, record) => (
-                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                {Object.entries(record.byMethod).map(([method, count]) => (
-                                  <Typography.Text key={method} style={{ fontSize: 12 }}>
-                                    <Typography.Text strong style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff" }}>
-                                      {method}
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {Object.entries(record.statusCodes || {}).map(([code, count]) => (
+                                  <Typography.Text key={code} style={{ fontSize: 11 }}>
+                                    <Typography.Text 
+                                      strong 
+                                      style={{ 
+                                        color: code.startsWith('2') 
+                                          ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                          : code.startsWith('4') || code.startsWith('5')
+                                          ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                          : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                      }}
+                                    >
+                                      {code}
                                     </Typography.Text>
                                     {' '}
                                     <Typography.Text type="secondary">
@@ -3032,6 +3119,18 @@ export default function App() {
                           }
                         ]}
                       />
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 40,
+                      textAlign: 'center',
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Text type="secondary">
+                        Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                      </Typography.Text>
                     </div>
                   )}
                 </div>

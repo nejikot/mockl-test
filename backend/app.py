@@ -120,6 +120,24 @@ RESPONSE_TIME = Histogram(
     "Response time for mock handler",
     ["folder"],
 )
+# Детальные метрики по методам и путям
+REQUEST_DETAILED = Counter(
+    "mockl_requests_detailed_total",
+    "Detailed request metrics by method, path, folder, outcome, and status",
+    ["method", "path", "folder", "outcome", "status_code"],
+)
+RESPONSE_TIME_DETAILED = Histogram(
+    "mockl_response_time_detailed_seconds",
+    "Detailed response time by method, path, folder, and outcome",
+    ["method", "path", "folder", "outcome"],
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+)
+PROXY_RESPONSE_TIME = Histogram(
+    "mockl_proxy_response_time_seconds",
+    "Response time for proxied requests by method, path, and folder",
+    ["method", "path", "folder"],
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+)
 
 
 # Создаём движок с SSL
@@ -3034,11 +3052,53 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     pass
             resp.headers[k] = v
 
+        response_time = time.time() - start_time
+        status_code = proxied.status_code
+        
         PROXY_REQUESTS.labels(folder=folder_name).inc()
-        RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+        RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
         REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="proxied").inc()
+        
+        # Детальные метрики для проксированных запросов
+        REQUEST_DETAILED.labels(
+            method=request.method,
+            path=full_inner.split('?')[0],
+            folder=folder_name,
+            outcome="proxied",
+            status_code=str(status_code)
+        ).inc()
+        RESPONSE_TIME_DETAILED.labels(
+            method=request.method,
+            path=full_inner.split('?')[0],
+            folder=folder_name,
+            outcome="proxied"
+        ).observe(response_time)
+        PROXY_RESPONSE_TIME.labels(
+            method=request.method,
+            path=full_inner.split('?')[0],
+            folder=folder_name
+        ).observe(response_time)
+        
         return resp
 
-    RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+    response_time = time.time() - start_time
+    
+    RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
     REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="not_found").inc()
+    
+    # Детальные метрики для не найденных запросов
+    REQUEST_DETAILED.labels(
+        method=request.method,
+        path=full_inner.split('?')[0],
+        folder=folder_name,
+        outcome="not_found",
+        status_code="404"
+    ).inc()
+    RESPONSE_TIME_DETAILED.labels(
+        method=request.method,
+        path=full_inner.split('?')[0],
+        folder=folder_name,
+        outcome="not_found"
+    ).observe(response_time)
+    
     raise HTTPException(404, "No matching mock found")
