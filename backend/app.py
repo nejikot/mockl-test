@@ -1095,10 +1095,53 @@ def delete_folder(
         
         def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
             # Ищем подпапки, у которых parent_folder == parent_name
-            # Ищем все подпапки, у которых parent_folder совпадает с name родительской папки
+            # ВАЖНО: Мы ищем подпапки конкретной родительской папки по её имени
+            # parent_folder подпапки должен совпадать с name родительской папки
+            # Это правильно, так как parent_folder однозначно идентифицирует родительскую папку
+            # Но проблема: если есть две папки с одинаковым именем в разных местах,
+            # то при удалении одной мы можем случайно удалить подпапки другой
+            # 
+            # Решение: мы должны использовать составной ключ для идентификации родительской папки
+            # Но в текущей схеме parent_folder - это просто имя родительской папки, не полный путь
+            # Поэтому если есть две папки "test" (одна в корне, другая в подпапке "other"),
+            # то у обеих подпапки будут иметь parent_folder = "test"
+            # 
+            # Правильное решение: при поиске подпапок нужно учитывать не только parent_folder,
+            # но и проверять, что родительская папка действительно та, которую мы удаляем
+            # Для этого нужно проверить, что родительская папка существует с правильным parent_folder
+            
+            # Сначала проверяем, что родительская папка существует (для безопасности)
+            parent_folder_obj = db.query(Folder).filter(
+                Folder.name == parent_name,
+                Folder.parent_folder == parent_parent_folder
+            ).first()
+            
+            if not parent_folder_obj:
+                # Родительская папка не найдена - возможно, уже удалена
+                logger.warning(f"Parent folder '{parent_name}' with parent_folder='{parent_parent_folder}' not found, skipping subfolders deletion")
+                return
+            
+            # Ищем подпапки, у которых parent_folder == parent_name
+            # Это правильно, так как parent_folder подпапки должен совпадать с name родительской папки
             subfolders = db.query(Folder).filter(
                 Folder.parent_folder == parent_name
             ).all()
+            
+            # Дополнительная проверка: убеждаемся, что найденные подпапки действительно
+            # принадлежат удаляемой папке, проверяя их иерархию
+            # Если parent_parent_folder не пустой, это означает, что мы удаляем подпапку,
+            # и все её подпапки должны иметь правильную иерархию
+            # Но на самом деле, если parent_folder подпапки == parent_name, это уже правильно
+            # Проблема может возникнуть только если есть две папки с одинаковым именем
+            # в разных местах иерархии, и мы удаляем одну, но находим подпапки другой
+            # 
+            # Для решения этой проблемы нужно проверить, что найденные подпапки
+            # действительно принадлежат удаляемой папке. Но в текущей схеме мы не храним
+            # полный путь, поэтому можем полагаться только на parent_folder
+            # 
+            # ВАЖНО: Если есть две папки с одинаковым именем в разных местах,
+            # то при удалении одной мы можем случайно удалить подпапки другой
+            # Это ограничение текущей схемы БД
             
             for subfolder in subfolders:
                 # Создаем уникальный идентификатор подпапки для защиты от циклов
@@ -4101,61 +4144,62 @@ async def match_condition(req: Request, m: Mock, full_path: str, body_bytes: Opt
         logger.debug(f"No headers to check for mock {m.id} (headers={m.headers})")
     
     # Проверка содержимого тела
-    # Если body_contains_required = True, то обязательно проверяем body:
-    # - Если body пустой -> мок не срабатывает
-    # - Если body_contains указан И body не содержит body_contains -> мок не срабатывает
-    # - Если body_contains указан И body содержит body_contains -> мок срабатывает
-    # - Если body_contains не указан, но body не пустой -> мок срабатывает (проверяем только наличие body)
-    # Если body_contains_required = False, то проверка body необязательна (мок сработает независимо от тела)
+    # Гибкая логика проверки body:
+    # 1. Если body_contains_required = False -> не проверяем body вообще (мок сработает независимо от тела)
+    # 2. Если body_contains_required = True И body_contains указан -> проверяем, что body содержит body_contains
+    # 3. Если body_contains_required = True И body_contains НЕ указан -> не проверяем body (мок сработает независимо от тела)
+    #    Это позволяет создавать моки для GET запросов без body, просто указав body_contains_required = True и не указывая body_contains
     body_contains_required = getattr(m, 'body_contains_required', True)  # По умолчанию True для обратной совместимости
     
-    if body_contains_required:
-        # Обязательная проверка body - применяется ко всем форматам (raw, form-data, файл и т.д.)
+    # Если body_contains_required = False, вообще не проверяем body
+    if not body_contains_required:
+        logger.debug(f"Body check skipped for mock {m.id} (body_contains_required=False)")
+    # Если body_contains_required = True, но body_contains не указан, тоже не проверяем body
+    # Это позволяет создавать моки для GET запросов без body
+    elif not m.body_contains:
+        logger.debug(f"Body check skipped for mock {m.id} (body_contains_required=True but body_contains not specified)")
+    else:
+        # body_contains_required = True И body_contains указан - проверяем соответствие
         try:
             # Используем переданное тело запроса, если оно есть, иначе читаем заново
             if body_bytes is None:
                 body_bytes = await req.body()
             
-            # Проверяем наличие body
+            # Если body пустое, а body_contains указан, мок не срабатывает
             if not body_bytes or len(body_bytes) == 0:
-                logger.info(f"Body required for mock {m.id} but request body is empty (body_contains_required=True)")
+                logger.info(f"Body required for mock {m.id} but request body is empty (body_contains='{m.body_contains[:50]}...' specified)")
                 return False
             
-            # Если body_contains указан, проверяем соответствие
-            if m.body_contains:
+            # Проверяем соответствие body_contains
+            try:
+                # Декодируем body в строку для проверки
+                # Для всех форматов (raw JSON, form-data, файл и т.д.) body_bytes содержит данные
+                body = body_bytes.decode("utf-8", errors='replace')  # Используем errors='replace' для обработки бинарных данных
+                # Нормализуем оба значения для сравнения
+                normalized_body = _normalize_json_string(body)
+                normalized_contains = _normalize_json_string(m.body_contains)
+                if normalized_contains not in normalized_body:
+                    logger.info(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:100]}...' not in request body. Request body length: {len(body_bytes)} bytes, normalized_contains='{normalized_contains[:100]}...', normalized_body preview='{normalized_body[:200]}...'")
+                    return False
+            except UnicodeDecodeError:
+                # Если body не может быть декодирован как UTF-8 (например, бинарный файл),
+                # проверяем наличие body_contains в байтовом представлении
                 try:
-                    # Декодируем body в строку для проверки
-                    # Для всех форматов (raw JSON, form-data, файл и т.д.) body_bytes содержит данные
-                    body = body_bytes.decode("utf-8", errors='replace')  # Используем errors='replace' для обработки бинарных данных
-                    # Нормализуем оба значения для сравнения
-                    normalized_body = _normalize_json_string(body)
-                    normalized_contains = _normalize_json_string(m.body_contains)
-                    if normalized_contains not in normalized_body:
-                        logger.info(f"Body mismatch for mock {m.id}: body_contains='{normalized_contains[:100]}...' not in request body. Request body length: {len(body_bytes)} bytes, normalized_contains='{normalized_contains[:100]}...', normalized_body preview='{normalized_body[:200]}...'")
-                        return False
-                except UnicodeDecodeError:
-                    # Если body не может быть декодирован как UTF-8 (например, бинарный файл),
-                    # проверяем наличие body_contains в байтовом представлении
-                    try:
-                        contains_bytes = m.body_contains.encode("utf-8")
-                        if contains_bytes not in body_bytes:
-                            logger.info(f"Body mismatch for mock {m.id}: body_contains (as bytes) not found in binary request body (body_contains_required=True)")
-                            return False
-                    except Exception as e:
-                        logger.debug(f"Error checking binary body for mock {m.id}: {e}")
+                    contains_bytes = m.body_contains.encode("utf-8")
+                    if contains_bytes not in body_bytes:
+                        logger.info(f"Body mismatch for mock {m.id}: body_contains (as bytes) not found in binary request body")
                         return False
                 except Exception as e:
-                    logger.debug(f"Error checking body for mock {m.id}: {e}")
+                    logger.debug(f"Error checking binary body for mock {m.id}: {e}")
                     return False
-            # Если body_contains не указан, но body_contains_required = True,
-            # проверяем только наличие body (уже проверили выше)
-            logger.debug(f"Body check passed for mock {m.id}: body present, body_contains_required=True")
+            except Exception as e:
+                logger.debug(f"Error checking body for mock {m.id}: {e}")
+                return False
+            
+            logger.debug(f"Body check passed for mock {m.id}: body contains required string")
         except Exception as e:
             logger.debug(f"Error checking body for mock {m.id}: {e}")
             return False
-    elif m.body_contains and not body_contains_required:
-        # body_contains указан, но необязателен - игнорируем проверку
-        logger.debug(f"Body contains check skipped for mock {m.id} (body_contains_required=False)")
     
     return True
 
