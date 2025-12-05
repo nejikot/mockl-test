@@ -798,7 +798,9 @@ export default function App() {
 
   const deactivateAllMocks = (folderKey = null) => {
     const isCurrentFolder = folderKey === selectedFolder || folderKey === null;
-    const { name, parent_folder } = folderKey ? parseFolderKey(folderKey) : { name: null, parent_folder: null };
+    const folderObj = folderKey ? findFolderById(folderKey) : null;
+    const name = folderObj?.name || null;
+    const parent_folder = folderObj?.parent_folder_id || null;
     Modal.confirm({
       title: name ? `Отключить все моки в папке "${name}"?` : 'Отключить все моки во всех папках?',
       content: name ? 'Будут отключены все моки в этой папке и всех её вложенных папках.' : 'Будут отключены все моки во всех папках.',
@@ -807,9 +809,9 @@ export default function App() {
       cancelText: 'Отмена',
       onOk: async () => {
         try {
-          const folderParam = name ? (parent_folder ? `${name}|${parent_folder}` : name) : null;
-          const url = folderParam 
-            ? `${host}/api/mocks/deactivate-all?folder=${encodeURIComponent(folderParam)}`
+          const folderId = folderKey || null;
+          const url = folderId 
+            ? `${host}/api/mocks/deactivate-all?folder_id=${encodeURIComponent(folderId)}`
             : `${host}/api/mocks/deactivate-all`;
           const res = await fetch(url, { method: "POST" });
           if (!res.ok) throw new Error();
@@ -879,9 +881,8 @@ export default function App() {
     // Сохраняем новый порядок на сервере
     try {
       const mockIds = arr.map(m => m.id);
-      const { name, parent_folder } = parseFolderKey(selectedFolder);
-      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      await fetch(`${host}/api/mocks/reorder?folder=${encodeURIComponent(folderParam)}`, {
+      const folderId = selectedFolder || foldersData.find(f => f.name === "default")?.id;
+      await fetch(`${host}/api/mocks/reorder?folder_id=${encodeURIComponent(folderId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(mockIds)
@@ -1854,7 +1855,7 @@ export default function App() {
 
   const isDesktop = screens.md ?? false;
   const stickyTopOffset = isDesktop ? 88 : 64;
-  const selectedFolderData = parseFolderKey(selectedFolder);
+  const selectedFolderData = findFolderById(selectedFolder) || { name: "default", parent_folder_id: null };
   const isDefaultFolder = selectedFolderData.name === "default";
   const folderTitle = isDefaultFolder ? "Главная" : selectedFolderData.name;
   // Находим информацию о выбранной папке для получения родительской папки

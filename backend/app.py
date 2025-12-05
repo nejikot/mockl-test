@@ -1230,14 +1230,18 @@ def rename_folder(
             folder_type = "подпапка" if folder.parent_folder_id else "папка"
             raise HTTPException(400, f"{folder_type.capitalize()} с именем '{new_name}' уже существует")
         
+        old_folder_id = folder.id
         old_folder_name = folder.name
         
         # Очищаем метрики Prometheus для старого имени перед переименованием
-        _clear_prometheus_metrics_for_folder(old_folder_name, db)
+        _clear_prometheus_metrics_for_folder(old_folder_id, db)
         
         # Обновляем имя папки
         folder.name = new_name
         db.commit()
+        folder.name = new_name
+        db.commit()
+        db.refresh(folder)
         
         folder_type = "подпапка" if folder.parent_folder_id else "папка"
         return {
@@ -2480,35 +2484,29 @@ def toggle_mock(
     description="Массово отключает все моки, опционально только в указанной папке (включая вложенные папки).",
 )
 def deactivate_all(
-    folder: Optional[str] = Query(
+    folder_id: Optional[str] = Query(
         None,
-        description="Имя папки. Если не указано — будут отключены все активные моки во всех папках.",
+        description="ID папки. Если не указано — будут отключены все активные моки во всех папках.",
     ),
     db: Session = Depends(get_db),
 ):
-    if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок
-        folder_name = folder.strip()
-        if '|' in folder_name:
-            parts = folder_name.split('|', 1)
-            folder_name = parts[0]
-        
+    if folder_id:
         # Отключаем моки в указанной папке и всех её вложенных папках
         # Сначала получаем все вложенные папки рекурсивно
-        def get_all_subfolders(parent_name: str, visited: set = None) -> List[str]:
+        def get_all_subfolder_ids(parent_id: str, visited: set = None) -> List[str]:
             if visited is None:
                 visited = set()
-            if parent_name in visited:
+            if parent_id in visited:
                 return []
-            visited.add(parent_name)
-            result = [parent_name]
-            subfolders = db.query(Folder).filter(Folder.parent_folder == parent_name).all()
+            visited.add(parent_id)
+            result = [parent_id]
+            subfolders = db.query(Folder).filter(Folder.parent_folder_id == parent_id).all()
             for subfolder in subfolders:
-                result.extend(get_all_subfolders(subfolder.name, visited))
+                result.extend(get_all_subfolder_ids(subfolder.id, visited))
             return result
         
-        all_folders = get_all_subfolders(folder_name)
-        mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
+        all_folder_ids = get_all_subfolder_ids(folder_id)
+        mocks_in_folders = db.query(Mock).filter(Mock.folder_id.in_(all_folder_ids), Mock.active == True).all()
         if not mocks_in_folders:
             raise HTTPException(404, "No matching mock found")
     
@@ -2526,7 +2524,7 @@ def deactivate_all(
             mock.active = False
     
     db.commit()
-    return {"message": f"All mocks{' in folder '+folder if folder else ''} deactivated", "count": count}
+    return {"message": f"All mocks{' in folder '+folder_id if folder_id else ''} deactivated", "count": count}
 
 
 @app.patch(
@@ -2535,21 +2533,15 @@ def deactivate_all(
     description="Изменяет порядок моков в папке. Принимает список ID моков в новом порядке.",
 )
 def reorder_mocks(
-    folder: str = Query(..., description="Имя папки (может быть в формате name|parent_folder)"),
+    folder_id: str = Query(..., description="ID папки"),
     mock_ids: List[str] = Body(..., description="Список ID моков в новом порядке"),
     db: Session = Depends(get_db),
 ):
     """Изменяет порядок моков в указанной папке."""
-    # Поддерживаем формат "name|parent_folder" для подпапок
-    folder_name = folder.strip()
-    if '|' in folder_name:
-        parts = folder_name.split('|', 1)
-        folder_name = parts[0]
-    
     # Проверяем, что все моки принадлежат указанной папке
     mocks = db.query(Mock).filter(
         Mock.id.in_(mock_ids),
-        Mock.folder_name == folder_name
+        Mock.folder_id == folder_id
     ).all()
     
     if len(mocks) != len(mock_ids):
@@ -3440,20 +3432,15 @@ async def get_global_metrics():
     description="Возвращает детальную историю всех вызовов методов с информацией о методе, пути, времени ответа, статусе, проксировании и кэше.",
 )
 def get_request_logs(
-    folder: Optional[str] = Query(None, description="Имя папки для фильтрации. Если не указано, возвращаются все вызовы."),
+    folder_id: Optional[str] = Query(None, description="ID папки для фильтрации. Если не указано, возвращаются все вызовы."),
     limit: int = Query(1000, description="Максимальное количество записей для возврата", ge=1, le=10000),
     offset: int = Query(0, description="Смещение для пагинации", ge=0),
     db: Session = Depends(get_db),
 ):
     """Возвращает историю вызовов с возможностью фильтрации по папке."""
     query = db.query(RequestLog)
-    if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок
-        folder_name = folder.strip()
-        if '|' in folder_name:
-            parts = folder_name.split('|', 1)
-            folder_name = parts[0]
-        query = query.filter_by(folder_id=folder_name)
+    if folder_id:
+        query = query.filter_by(folder_id=folder_id)
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
@@ -3480,15 +3467,19 @@ def get_request_logs(
     }
 
 
-def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
+def _clear_prometheus_metrics_for_folder(folder_id: str, db: Session):
     """Очищает метрики Prometheus для конкретной папки.
     
     Использует данные из request_logs для определения всех комбинаций методов и путей,
     затем обнуляет соответствующие метрики Prometheus.
     """
     try:
+        # Получаем имя папки для метрик
+        folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+        folder_name = folder_obj.name if folder_obj else folder_id
+        
         # Получаем все уникальные комбинации method/path из request_logs для этой папки
-        logs = db.query(RequestLog).filter_by(folder_id=folder_name).all()
+        logs = db.query(RequestLog).filter_by(folder_id=folder_id).all()
         
         # Собираем уникальные комбинации method/path
         method_path_combinations = set()
@@ -3599,24 +3590,43 @@ def clear_request_logs(
     """Очищает историю вызовов и метрики Prometheus."""
     query = db.query(RequestLog)
     folder_name = None
+    folder_id = None
     if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок
-        # В request_logs хранится только folder_name (без parent_folder)
-        folder_name = folder.strip()
-        if '|' in folder_name:
-            parts = folder_name.split('|', 1)
+        # Поддерживаем формат "name|parent_folder" для подпапок (для обратной совместимости)
+        # Но теперь используем folder_id
+        folder_id = folder.strip()
+        if '|' in folder_id:
+            # Старый формат - пытаемся найти папку по имени
+            parts = folder_id.split('|', 1)
             folder_name = parts[0]
-        query = query.filter_by(folder_id=folder_name)
+            folder_obj = db.query(Folder).filter(Folder.name == folder_name).first()
+            if folder_obj:
+                folder_id = folder_obj.id
+            else:
+                folder_id = None
+        else:
+            # Проверяем, это ID или имя
+            folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+            if not folder_obj:
+                folder_obj = db.query(Folder).filter(Folder.name == folder_id).first()
+                if folder_obj:
+                    folder_id = folder_obj.id
+        query = query.filter_by(folder_id=folder_id) if folder_id else query
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
-    if folder_name:
-        _clear_prometheus_metrics_for_folder(folder_name, db)
+    if folder_id:
+        # Получаем имя папки для метрик
+        folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+        folder_name = folder_obj.name if folder_obj else None
+        if folder_name:
+            _clear_prometheus_metrics_for_folder(folder_id, db)
     else:
         # Если папка не указана, очищаем метрики для всех папок
         # Получаем список всех уникальных папок из request_logs
-        all_folders = db.query(RequestLog.folder_name).distinct().all()
-        for (fname,) in all_folders:
-            _clear_prometheus_metrics_for_folder(fname, db)
+        all_folder_ids = db.query(RequestLog.folder_id).distinct().all()
+        for (fid,) in all_folder_ids:
+            if fid:
+                _clear_prometheus_metrics_for_folder(fid, db)
     
     count = query.count()
     query.delete()
@@ -4420,19 +4430,21 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     
     # Логируем не найденный запрос в БД
     try:
-        request_log = RequestLog(
-            timestamp=datetime.utcnow().isoformat() + "Z",
-            folder_name=folder_name,
-            method=request.method,
-            path=full_inner.split('?')[0],
-            is_proxied=False,
-            response_time_ms=int(response_time * 1000),
-            status_code=404,
-            cache_ttl_seconds=None,
-            cache_key=None
-        )
-        db.add(request_log)
-        db.commit()
+        folder_id = folder.id if folder else None
+        if folder_id:
+            request_log = RequestLog(
+                timestamp=datetime.utcnow().isoformat() + "Z",
+                folder_id=folder_id,
+                method=request.method,
+                path=full_inner.split('?')[0],
+                is_proxied=False,
+                response_time_ms=int(response_time * 1000),
+                status_code=404,
+                cache_ttl_seconds=None,
+                cache_key=None
+            )
+            db.add(request_log)
+            db.commit()
     except Exception as e:
         logger.error(f"Error logging not found request: {e}", exc_info=True)
         db.rollback()
