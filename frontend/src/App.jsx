@@ -9,7 +9,8 @@ import {
   ExclamationCircleOutlined, CopyOutlined,
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
   SnippetsOutlined, BgColorsOutlined, DownloadOutlined,
-  DownOutlined, RightOutlined, SearchOutlined
+  DownOutlined, RightOutlined, SearchOutlined,
+  BarChartOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -1996,6 +1997,16 @@ export default function App() {
                               onClick={() => startDuplicateFolder(selectedFolder)}
                             >
                               Дублировать страницу
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={<BarChartOutlined />}
+                              onClick={() => {
+                                const metricsUrl = `${host}/metrics`;
+                                window.open(metricsUrl, '_blank');
+                              }}
+                            >
+                              Получить метрики
                             </Button>
                           </div>
                         )}
