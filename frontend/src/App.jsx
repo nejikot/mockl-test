@@ -294,7 +294,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
   const [isExpanded, setIsExpanded] = useState(false);
   
   return (
-    <div style={{ marginBottom: 8 }}>
+    <div style={{ marginBottom: 8, width: "100%" }}>
       <div
         style={{
           display: "flex",
@@ -304,23 +304,26 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
           borderRadius: 8,
           background: theme === "dark" ? "#262626" : "#fafafa",
           cursor: "pointer",
+          width: "100%",
         }}
         onClick={() => setIsExpanded(!isExpanded)}
       >
         {isExpanded ? <DownOutlined /> : <RightOutlined />}
-        <DraggableFolder
-          folder={rootFolder.name}
-          index={rootIndex}
-          moveFolder={moveFolder}
-          selectedFolder={selectedFolder}
-          setSelectedFolder={setSelectedFolder}
-          deleteFolder={deleteFolder}
-          startRename={startRename}
-          theme={theme}
-          isSubfolder={false}
-          parentFolder={null}
-          showExpandIcon={false}
-        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <DraggableFolder
+            folder={rootFolder.name}
+            index={rootIndex}
+            moveFolder={moveFolder}
+            selectedFolder={selectedFolder}
+            setSelectedFolder={setSelectedFolder}
+            deleteFolder={deleteFolder}
+            startRename={startRename}
+            theme={theme}
+            isSubfolder={false}
+            parentFolder={null}
+            showExpandIcon={false}
+          />
+        </div>
       </div>
       {isExpanded && (
         <div style={{ marginLeft: 24, marginTop: 4 }}>
@@ -389,6 +392,8 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
         marginLeft: isSubfolder ? 24 : 0,
         borderLeft: isSubfolder ? `3px solid ${theme === "dark" ? "#1890ff" : "#1890ff"}` : "none",
         paddingLeft: isSubfolder ? 16 : 12,
+        width: "100%",
+        minWidth: 0,
       }}
       onMouseEnter={e => {
         if (!isActive) e.currentTarget.style.background = hoverBgColor;
