@@ -2169,7 +2169,7 @@ export default function App() {
               </Sider>
 
               <Content style={{ width: "100%", flex: 1, minHeight: 0, overflowY: "auto" }}>
-                {!isDefaultFolder && (
+                {isDefaultFolder && (
                   <div style={{
                     background: theme === "light" ? "#fff" : "#1f1f1f",
                     borderRadius: 12,
