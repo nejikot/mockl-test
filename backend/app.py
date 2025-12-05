@@ -1891,7 +1891,7 @@ def deactivate_all(
         all_folders = get_all_subfolders(folder)
         mocks_in_folders = db.query(Mock).filter(Mock.folder_name.in_(all_folders), Mock.active == True).all()
         if not mocks_in_folders:
-          raise HTTPException(404, "No matching mock found")
+            raise HTTPException(404, "No matching mock found")
     
         count = len(mocks_in_folders)
         for mock in mocks_in_folders:

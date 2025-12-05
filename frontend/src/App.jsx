@@ -3114,168 +3114,43 @@ export default function App() {
                 <Typography.Text>Загрузка метрик...</Typography.Text>
               </div>
             ) : (() => {
-              // Используем ту же функцию парсинга метрик, но с учетом папок
-              const parseMetrics = (text) => {
-                const detailedStats = {};
-                let totalRequests = 0;
-                let totalResponseTime = 0;
-                let responseTimeCount = 0;
-                
-                const lines = text.split('\n');
-                for (const line of lines) {
-                  if (!line.trim() || line.startsWith('#')) continue;
-                  
-                  const detailedMatch = line.match(/^mockl_requests_detailed_total\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (detailedMatch) {
-                    const labelsStr = detailedMatch[1];
-                    const count = parseFloat(detailedMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
-                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
-                    const statusMatch = labelsStr.match(/status_code="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch && folderMatch && outcomeMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const folder = folderMatch[1];
-                      const outcome = outcomeMatch[1];
-                      const statusCode = statusMatch ? statusMatch[1] : 'unknown';
-                      const key = `${folder}:${method}:${path}`;
-                      
-                      if (!detailedStats[key]) {
-                        detailedStats[key] = {
-                          folder,
-                          method,
-                          path,
-                          mock_hits: 0,
-                          proxied: 0,
-                          errors: 0,
-                          not_found: 0,
-                          responseTimes: [],
-                          statusCodes: {}
-                        };
-                      }
-                      
-                      totalRequests += count;
-                      
-                      if (outcome === 'mock_hit') {
-                        detailedStats[key].mock_hits += count;
-                      } else if (outcome === 'proxied') {
-                        detailedStats[key].proxied += count;
-                      } else if (outcome === 'not_found') {
-                        detailedStats[key].not_found += count;
-                        detailedStats[key].errors += count;
-                      } else {
-                        detailedStats[key].errors += count;
-                      }
-                      
-                      if (!detailedStats[key].statusCodes[statusCode]) {
-                        detailedStats[key].statusCodes[statusCode] = 0;
-                      }
-                      detailedStats[key].statusCodes[statusCode] += count;
-                    }
-                  }
-                  
-                  const responseTimeSumMatch = line.match(/^mockl_response_time_detailed_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeSumMatch) {
-                    const labelsStr = responseTimeSumMatch[1];
-                    const sum = parseFloat(responseTimeSumMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
-                    const outcomeMatch = labelsStr.match(/outcome="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch && folderMatch && outcomeMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const folder = folderMatch[1];
-                      const outcome = outcomeMatch[1];
-                      const key = `${folder}:${method}:${path}`;
-                      
-                      if (detailedStats[key]) {
-                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const countPattern = new RegExp(`mockl_response_time_detailed_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*folder="${folder}"[^}]*outcome="${outcome}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
-                        const countMatch = text.match(countPattern);
-                        if (countMatch) {
-                          const count = parseFloat(countMatch[1]);
-                          const avg = count > 0 ? sum / count : 0;
-                          if (!detailedStats[key].responseTimes) {
-                            detailedStats[key].responseTimes = [];
-                          }
-                          detailedStats[key].responseTimes.push({ outcome, avg, count, sum });
-                        }
-                      }
-                    }
-                  }
-                  
-                  const proxyTimeSumMatch = line.match(/^mockl_proxy_response_time_seconds_sum\{([^}]+)\}\s+([0-9.eE+-]+)$/);
-                  if (proxyTimeSumMatch) {
-                    const labelsStr = proxyTimeSumMatch[1];
-                    const sum = parseFloat(proxyTimeSumMatch[2]);
-                    
-                    const methodMatch = labelsStr.match(/method="([^"]+)"/);
-                    const pathMatch = labelsStr.match(/path="([^"]+)"/);
-                    const folderMatch = labelsStr.match(/folder="([^"]+)"/);
-                    
-                    if (methodMatch && pathMatch && folderMatch) {
-                      const method = methodMatch[1];
-                      const path = pathMatch[1];
-                      const folder = folderMatch[1];
-                      const key = `${folder}:${method}:${path}`;
-                      
-                      if (detailedStats[key]) {
-                        const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                        const countPattern = new RegExp(`mockl_proxy_response_time_seconds_count\\{[^}]*method="${method}"[^}]*path="${escapedPath}"[^}]*folder="${folder}"[^}]*\\}\\s+([0-9.eE+-]+)`, 'm');
-                        const countMatch = text.match(countPattern);
-                        if (countMatch) {
-                          const count = parseFloat(countMatch[1]);
-                          const avg = count > 0 ? sum / count : 0;
-                          detailedStats[key].proxyAvgTime = avg;
-                          detailedStats[key].proxyCount = count;
-                        }
-                      }
-                    }
-                  }
-                  
-                  const responseTimeSumMatchOld = line.match(/^mockl_response_time_seconds_sum\{[^}]*\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeSumMatchOld) {
-                    totalResponseTime += parseFloat(responseTimeSumMatchOld[1]);
-                  }
-                  
-                  const responseTimeCountMatchOld = line.match(/^mockl_response_time_seconds_count\{[^}]*\}\s+([0-9.eE+-]+)$/);
-                  if (responseTimeCountMatchOld) {
-                    responseTimeCount += parseFloat(responseTimeCountMatchOld[1]);
-                  }
-                }
-                
-                const detailedArray = Object.values(detailedStats).map(stat => {
-                  const allTimes = stat.responseTimes.map(rt => rt.avg);
-                  const avgTime = allTimes.length > 0 
-                    ? allTimes.reduce((a, b) => a + b, 0) / allTimes.length 
-                    : (stat.proxyAvgTime || 0);
-                  const minTime = allTimes.length > 0 ? Math.min(...allTimes) : (stat.proxyAvgTime || 0);
-                  const maxTime = allTimes.length > 0 ? Math.max(...allTimes) : (stat.proxyAvgTime || 0);
-                  
-                  return {
-                    ...stat,
-                    avgResponseTime: avgTime,
-                    minResponseTime: minTime,
-                    maxResponseTime: maxTime,
-                    total: stat.mock_hits + stat.proxied + stat.errors
-                  };
-                }).sort((a, b) => b.total - a.total);
-                
-                return { 
-                  detailedStats: detailedArray,
-                  totalRequests, 
-                  avgResponseTime: responseTimeCount > 0 ? totalResponseTime / responseTimeCount : 0 
-                };
-              };
+              // Проверяем, есть ли ошибка
+              if (globalMetricsData && globalMetricsData.error) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <Typography.Text type="danger">{globalMetricsData.error}</Typography.Text>
+                  </div>
+                );
+              }
               
-              const parsed = parseMetrics(globalMetricsData);
+              // Если данные еще не загружены или это старый формат (строка)
+              if (!globalMetricsData || typeof globalMetricsData === 'string') {
+                return (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <Typography.Text type="secondary">
+                      Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                    </Typography.Text>
+                  </div>
+                );
+              }
+              
+              // Используем структурированные данные из API
+              const data = globalMetricsData;
+              
+              // Преобразуем структуру folders в плоский список для таблицы
+              const allMethodsPaths = [];
+              if (data.folders) {
+                Object.values(data.folders).forEach(folderData => {
+                  if (folderData.methods_paths) {
+                    folderData.methods_paths.forEach(mp => {
+                      allMethodsPaths.push({
+                        ...mp,
+                        folder: folderData.folder
+                      });
+                    });
+                  }
+                });
+              }
               
               return (
                 <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
@@ -3355,7 +3230,7 @@ export default function App() {
                     </Row>
                   </div>
                   
-                  {data.methods_paths && data.methods_paths.length > 0 ? (
+                  {allMethodsPaths.length > 0 ? (
                     <div style={{ 
                       background: theme === "dark" ? "#262626" : "#fff",
                       borderRadius: 8,
@@ -3366,7 +3241,7 @@ export default function App() {
                         Детальная статистика по всем папкам, методам и путям
                       </Typography.Title>
                       <Table
-                        dataSource={parsed.detailedStats}
+                        dataSource={allMethodsPaths.map((mp, idx) => ({ ...mp, key: idx }))}
                         pagination={{ pageSize: 10 }}
                         size="small"
                         scroll={{ x: 'max-content' }}
@@ -3411,13 +3286,13 @@ export default function App() {
                           },
                           {
                             title: 'Всего',
-                            dataIndex: 'total',
-                            key: 'total',
+                            dataIndex: 'total_requests',
+                            key: 'total_requests',
                             width: 80,
                             align: 'right',
                             render: (total) => (
                               <Typography.Text style={{ fontWeight: 600 }}>
-                                {total}
+                                {total || 0}
                               </Typography.Text>
                             )
                           },
@@ -3459,47 +3334,47 @@ export default function App() {
                           },
                           {
                             title: 'Среднее время',
-                            dataIndex: 'avgResponseTime',
-                            key: 'avgResponseTime',
+                            dataIndex: 'avg_response_time_ms',
+                            key: 'avg_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text>
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Мин. время',
-                            dataIndex: 'minResponseTime',
-                            key: 'minResponseTime',
+                            dataIndex: 'min_response_time_ms',
+                            key: 'min_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text type="secondary">
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Макс. время',
-                            dataIndex: 'maxResponseTime',
-                            key: 'maxResponseTime',
+                            dataIndex: 'max_response_time_ms',
+                            key: 'max_response_time_ms',
                             width: 120,
                             align: 'right',
                             render: (time) => (
                               <Typography.Text type="secondary">
-                                {time > 0 ? `${(time * 1000).toFixed(2)} мс` : '—'}
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
                               </Typography.Text>
                             )
                           },
                           {
                             title: 'Статус коды',
-                            key: 'statusCodes',
+                            key: 'status_codes',
                             width: 200,
                             render: (_, record) => (
                               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                                {Object.entries(record.statusCodes || {}).map(([code, count]) => (
+                                {Object.entries(record.status_codes || {}).map(([code, count]) => (
                                   <Typography.Text key={code} style={{ fontSize: 11 }}>
                                     <Typography.Text 
                                       strong 
