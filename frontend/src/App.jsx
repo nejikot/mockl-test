@@ -1584,16 +1584,19 @@ export default function App() {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     const url = `${normalizedHost}${normalizedPath}`;
 
-    const parts = [`curl -X ${method}`];
+    // Используем формат Postman: --location вместо -X, --header вместо -H
+    const parts = [`curl --location '${url}'`];
 
     let contentType = "";
+    let hasContentType = false;
     Object.entries(headers).forEach(([key, value]) => {
       const headerValue = getHeaderValue(value);
       if (key.toLowerCase() === "content-type") {
         contentType = headerValue || "";
+        hasContentType = true;
       }
       // Для необязательных заголовков всё равно показываем их в curl (со значением, если оно есть)
-      parts.push(`-H '${key}: ${headerValue}'`);
+      parts.push(`\\\n--header '${key}: ${headerValue}'`);
     });
 
     // Для GET, HEAD, OPTIONS запросов не добавляем тело (даже если оно указано в моке)
@@ -1622,43 +1625,47 @@ export default function App() {
       const isMultipartHeader = /multipart\/form-data/i.test(contentType);
       const isJsonHeader = /application\/json/i.test(contentType);
 
+      // Если это JSON и нет Content-Type, добавляем его
+      if ((isJsonContent || isJsonHeader) && !hasContentType) {
+        parts.push(`\\\n--header 'Content-Type: application/json'`);
+      }
+
       // ПРИОРИТЕТ 1: Если содержимое - JSON (начинается с { или [), ВСЕГДА используем --data
       // Это важно, даже если заголовок говорит application/x-www-form-urlencoded
       if (isJsonContent || isJsonHeader) {
         // Экранируем кавычки для JSON
         const escapedBody = bodyContains.replace(/'/g, "'\\''");
-        parts.push(`--data '${escapedBody}'`);
+        parts.push(`\\\n--data '${escapedBody}'`);
       }
       // ПРИОРИТЕТ 2: Если заголовок form-urlencoded И содержимое в формате key=value, используем --data-urlencode
       else if (isFormUrlencodedHeader && isUrlEncodedFormat) {
         const pairs = bodyContains.split("&").filter(Boolean);
         if (pairs.length) {
           pairs.forEach(p => {
-            parts.push(`--data-urlencode '${p}'`);
+            parts.push(`\\\n--data-urlencode '${p}'`);
           });
         } else {
-          parts.push(`--data-urlencode '${bodyContains}'`);
+          parts.push(`\\\n--data-urlencode '${bodyContains}'`);
         }
       }
       // ПРИОРИТЕТ 3: Если это multipart/form-data
       else if (isMultipartHeader) {
         // Для multipart лучше использовать --form, но это требует парсинга
         // Пока используем --data
-        parts.push(`--data '${bodyContains.replace(/'/g, "'\\''")}'`);
+        parts.push(`\\\n--data '${bodyContains.replace(/'/g, "'\\''")}'`);
       }
       // ПРИОРИТЕТ 4: Если это base64 (файл)
       else if (isBase64) {
-        parts.push(`--data-binary '${bodyContains}'`);
+        parts.push(`\\\n--data-binary '${bodyContains}'`);
       }
       // ПРИОРИТЕТ 5: Для остальных случаев используем --data (raw)
       else {
         const escapedBody = bodyContains.replace(/'/g, "'\\''");
-        parts.push(`--data '${escapedBody}'`);
+        parts.push(`\\\n--data '${escapedBody}'`);
       }
     }
 
-    parts.push(`'${url}'`);
-    return parts.join(" ");
+    return parts.join("");
   };
 
   const openAddFolder = () => {
