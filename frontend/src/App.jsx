@@ -438,6 +438,7 @@ export default function App() {
   const [foldersData, setFoldersData] = useState([{ name: "default", parent_folder: null, order: 0 }]);
   const [selectedFolder, setSelectedFolder] = useState("default");
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
+  const [mockSearchQuery, setMockSearchQuery] = useState("");
   const [mocks, setMocks] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
@@ -1945,12 +1946,29 @@ export default function App() {
                     alignItems: "center",
                     marginBottom: 16
                   }}>
-                    <Typography.Title level={4} style={{ margin: 0 }}>
-                      {folderTitle}
-                    </Typography.Title>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+                      <Typography.Title level={4} style={{ margin: 0 }}>
+                        {folderTitle}
+                      </Typography.Title>
+                      <Input
+                        placeholder="Поиск мока по наименованию..."
+                        prefix={<SearchOutlined />}
+                        value={mockSearchQuery}
+                        onChange={(e) => setMockSearchQuery(e.target.value)}
+                        style={{ width: 300 }}
+                        allowClear
+                      />
+                    </div>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                       <Typography.Text type="secondary">
-                        {mocks.length ? `${mocks.length} мок(ов)` : "Пока нет моков"}
+                        {(() => {
+                          const filteredMocks = mockSearchQuery
+                            ? mocks.filter(m => 
+                                (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
+                              )
+                            : mocks;
+                          return filteredMocks.length ? `${filteredMocks.length} мок(ов)` : "Пока нет моков";
+                        })()}
                       </Typography.Text>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1986,7 +2004,11 @@ export default function App() {
                   </div>
 
                   <Table
-                    dataSource={mocks}
+                    dataSource={mockSearchQuery
+                      ? mocks.filter(m => 
+                          (m.name || "").toLowerCase().includes(mockSearchQuery.toLowerCase())
+                        )
+                      : mocks}
                     rowKey="id"
                     size="middle"
                     pagination={false}
