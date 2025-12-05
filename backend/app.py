@@ -519,6 +519,60 @@ def ensure_migrations():
     Render уже создал таблицы по старой схеме, create_all не добавляет новые столбцы,
     поэтому выполняем ALTER TABLE IF NOT EXISTS вручную.
     """
+    
+    # ============================================================================
+    # ВРЕМЕННАЯ МИГРАЦИЯ: ПОЛНАЯ ОЧИСТКА БД
+    # УДАЛИТЬ ЭТОТ БЛОК ПОСЛЕ ПЕРВОГО УСПЕШНОГО ЗАПУСКА!
+    # ============================================================================
+    try:
+        logger.warning("=" * 80)
+        logger.warning("ВНИМАНИЕ: Выполняется полная очистка базы данных!")
+        logger.warning("Все таблицы будут удалены и созданы заново.")
+        logger.warning("=" * 80)
+        
+        with engine.begin() as conn:
+            # Получаем список всех таблиц в текущей схеме
+            tables = conn.execute(text("""
+                SELECT tablename 
+                FROM pg_tables 
+                WHERE schemaname = 'public'
+            """)).fetchall()
+            
+            if tables:
+                logger.info(f"Найдено таблиц для удаления: {len(tables)}")
+                
+                # Отключаем проверку внешних ключей временно
+                conn.execute(text("SET session_replication_role = 'replica'"))
+                
+                # Удаляем все таблицы с CASCADE для автоматического удаления зависимостей
+                for (table_name,) in tables:
+                    try:
+                        conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+                        logger.info(f"Удалена таблица: {table_name}")
+                    except Exception as e:
+                        logger.warning(f"Ошибка при удалении таблицы {table_name}: {e}")
+                
+                # Включаем обратно проверку внешних ключей
+                conn.execute(text("SET session_replication_role = 'origin'"))
+                
+                logger.info("Все таблицы успешно удалены")
+        
+        # Создаем все таблицы заново с правильной схемой (после завершения транзакции)
+        logger.info("Создание всех таблиц заново...")
+        Base.metadata.create_all(bind=engine)
+        logger.info("Все таблицы успешно созданы")
+        
+        logger.warning("=" * 80)
+        logger.warning("Полная очистка БД завершена. УДАЛИТЕ ЭТОТ БЛОК ИЗ КОДА!")
+        logger.warning("=" * 80)
+        return  # Выходим из функции, так как БД уже полностью пересоздана
+    except Exception as e:
+        logger.error(f"Ошибка при полной очистке БД: {e}", exc_info=True)
+        raise
+    # ============================================================================
+    # КОНЕЦ ВРЕМЕННОЙ МИГРАЦИИ - УДАЛИТЬ ВЫШЕ
+    # ============================================================================
+    
     try:
         with engine.begin() as conn:
             # Проверяем, нужно ли мигрировать первичный ключ folders
