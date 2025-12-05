@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
