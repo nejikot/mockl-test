@@ -2792,6 +2792,11 @@ export default function App() {
                 let totalResponseTime = 0;
                 let responseTimeCount = 0;
                 
+                // Отладочная информация
+                if (text && text.length > 0) {
+                  console.log('Parsing metrics, total lines:', text.split('\n').length);
+                }
+                
                 const lines = text.split('\n');
                 for (const line of lines) {
                   if (!line.trim() || line.startsWith('#')) continue;

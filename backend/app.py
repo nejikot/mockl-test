@@ -2999,9 +2999,28 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             elif not cache_key:
                 logger.debug(f"Cache SKIPPED for mock {m.id}: cache_key not generated")
 
+            response_time = time.time() - start_time
+            status_code = resp.status_code
+            
             MOCK_HITS.labels(folder=folder_name).inc()
-            RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+            RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
             REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="mock_hit").inc()
+            
+            # Детальные метрики для успешных моков
+            REQUEST_DETAILED.labels(
+                method=request.method,
+                path=full_inner.split('?')[0],
+                folder=folder_name,
+                outcome="mock_hit",
+                status_code=str(status_code)
+            ).inc()
+            RESPONSE_TIME_DETAILED.labels(
+                method=request.method,
+                path=full_inner.split('?')[0],
+                folder=folder_name,
+                outcome="mock_hit"
+            ).observe(response_time)
+            
             return resp
 
 
