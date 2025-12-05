@@ -235,6 +235,9 @@ class RequestLog(Base):
     status_code = Column(Integer, nullable=False, index=True)
     cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
+    
+    # Relationship к папке
+    folder_obj = relationship("Folder", back_populates="request_logs")
 
 
 
@@ -746,6 +749,52 @@ def ensure_migrations():
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_folders_parent_folder_id ON folders (parent_folder_id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mocks_folder_id ON mocks (folder_id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_request_logs_folder_id ON request_logs (folder_id)"))
+                    
+                    # Шаг 12: Удаляем старые колонки folder_name и parent_folder
+                    try:
+                        # Удаляем folder_name из mocks
+                        folder_name_exists = conn.execute(
+                            text("""
+                                SELECT column_name
+                                FROM information_schema.columns
+                                WHERE table_name = 'mocks' AND column_name = 'folder_name'
+                            """)
+                        ).fetchone()
+                        if folder_name_exists:
+                            conn.execute(text("ALTER TABLE mocks DROP COLUMN folder_name"))
+                            logger.info("Dropped column mocks.folder_name")
+                    except Exception as e:
+                        logger.warning(f"Error dropping mocks.folder_name: {e}")
+                    
+                    try:
+                        # Удаляем folder_name из request_logs
+                        folder_name_exists = conn.execute(
+                            text("""
+                                SELECT column_name
+                                FROM information_schema.columns
+                                WHERE table_name = 'request_logs' AND column_name = 'folder_name'
+                            """)
+                        ).fetchone()
+                        if folder_name_exists:
+                            conn.execute(text("ALTER TABLE request_logs DROP COLUMN folder_name"))
+                            logger.info("Dropped column request_logs.folder_name")
+                    except Exception as e:
+                        logger.warning(f"Error dropping request_logs.folder_name: {e}")
+                    
+                    try:
+                        # Удаляем parent_folder из folders
+                        parent_folder_exists = conn.execute(
+                            text("""
+                                SELECT column_name
+                                FROM information_schema.columns
+                                WHERE table_name = 'folders' AND column_name = 'parent_folder'
+                            """)
+                        ).fetchone()
+                        if parent_folder_exists:
+                            conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder"))
+                            logger.info("Dropped column folders.parent_folder")
+                    except Exception as e:
+                        logger.warning(f"Error dropping folders.parent_folder: {e}")
                     
                     logger.info("Migration completed: switched from folder name to folder id")
                 except Exception as e:
@@ -2382,16 +2431,19 @@ def list_mocks(
         logger.debug(f"list_mocks called with folder='{folder}'")
         q = db.query(Mock)
         if folder:
-            # Поддерживаем формат "name|parent_folder" для подпапок
+            # folder может быть ID или именем папки
             folder = folder.strip()
-            folder_name = folder
-            if '|' in folder:
-                parts = folder.split('|', 1)
-                folder_name = parts[0]
-                # parent_folder игнорируем, так как моки хранят только folder_name
-                # и бэкенд должен найти папку по составному ключу если нужно
-            logger.debug(f"Filtering mocks by folder_name='{folder_name}'")
-            q = q.filter_by(folder_id=folder_name)
+            # Сначала пытаемся найти по ID
+            folder_obj = db.query(Folder).filter(Folder.id == folder).first()
+            if not folder_obj:
+                # Если не найдено по ID, ищем по имени
+                folder_obj = db.query(Folder).filter(Folder.name == folder).first()
+            if folder_obj:
+                logger.debug(f"Filtering mocks by folder_id='{folder_obj.id}'")
+                q = q.filter_by(folder_id=folder_obj.id)
+            else:
+                # Если папка не найдена, возвращаем пустой список
+                return []
         
         # Сортируем по order, затем по id для стабильности
         q = q.order_by(Mock.order.asc(), Mock.id.asc())
@@ -2399,10 +2451,13 @@ def list_mocks(
         results = []
         for m in q.all():
             try:
+                # Получаем имя папки через связь
+                folder_name = m.folder_obj.name if m.folder_obj else m.folder_id
                 results.append(
                     MockEntry(
                         id=m.id,
-                        folder=m.folder_name,
+                        folder_id=m.folder_id,
+                        folder=folder_name,
                         name=m.name,
                         request_condition=MockRequestCondition(
                             method=m.method,
@@ -2622,12 +2677,15 @@ async def import_postman_collection(
         folder_name = coll.get("info", {}).get("name", "postman")
         folder_name = folder_name.strip() or "postman"
 
-        if not db.query(Folder).filter(
+        folder = db.query(Folder).filter(
             Folder.name == folder_name,
-            Folder.parent_folder == ''
-        ).first():
-            db.add(Folder(name=folder_name, parent_folder=''))
+            Folder.parent_folder_id == None
+        ).first()
+        if not folder:
+            folder = Folder(name=folder_name, parent_folder_id=None)
+            db.add(folder)
             db.flush()
+        folder_id = folder.id
 
         items = coll.get("item", [])
         imported = []
@@ -2812,7 +2870,8 @@ async def import_postman_collection(
             # Логируем сохраненный мок для отладки
             saved_mock = db.query(Mock).filter_by(id=entry.id).first()
             if saved_mock:
-                logger.info(f"Saved mock from Postman: id={saved_mock.id}, folder={saved_mock.folder_name}, method={saved_mock.method}, path='{saved_mock.path}', headers={saved_mock.headers}, active={saved_mock.active}")
+                folder_name = saved_mock.folder_obj.name if saved_mock.folder_obj else saved_mock.folder_id
+                logger.info(f"Saved mock from Postman: id={saved_mock.id}, folder={folder_name}, method={saved_mock.method}, path='{saved_mock.path}', headers={saved_mock.headers}, active={saved_mock.active}")
             imported.append(entry.id)
 
         # Обрабатываем все элементы коллекции
@@ -3453,7 +3512,8 @@ def get_request_logs(
             {
                 "id": log.id,
                 "timestamp": log.timestamp,
-                "folder_name": log.folder_name,
+                "folder_id": log.folder_id,
+                "folder_name": log.folder_obj.name if log.folder_obj else log.folder_id,
                 "method": log.method,
                 "path": log.path,
                 "is_proxied": log.is_proxied,
