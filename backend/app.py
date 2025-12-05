@@ -164,6 +164,7 @@ class Folder(Base):
     # Ссылка на родительскую папку через id
     parent_folder_id = Column(String, ForeignKey("folders.id"), nullable=True, index=True)
     mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
+    request_logs = relationship("RequestLog", back_populates="folder", cascade="all, delete")
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
     proxy_base_url = Column(String, nullable=True)
@@ -237,7 +238,7 @@ class RequestLog(Base):
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
     
     # Relationship к папке
-    folder_obj = relationship("Folder", back_populates="request_logs")
+    folder = relationship("Folder", back_populates="request_logs")
 
 
 
@@ -3513,7 +3514,7 @@ def get_request_logs(
                 "id": log.id,
                 "timestamp": log.timestamp,
                 "folder_id": log.folder_id,
-                "folder_name": log.folder_obj.name if log.folder_obj else log.folder_id,
+                "folder_name": log.folder.name if log.folder else log.folder_id,
                 "method": log.method,
                 "path": log.path,
                 "is_proxied": log.is_proxied,
