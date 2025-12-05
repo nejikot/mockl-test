@@ -624,11 +624,11 @@ def ensure_migrations():
                     
                     # Шаг 6: Создаем новый первичный ключ на id
                     # Проверяем, может быть PK уже создан
-                    pk_check = conn.execute(
-                        text("""
+            pk_check = conn.execute(
+                text("""
                             SELECT constraint_name
-                            FROM information_schema.table_constraints
-                            WHERE table_name = 'folders'
+                    FROM information_schema.table_constraints
+                    WHERE table_name = 'folders'
                             AND constraint_type = 'PRIMARY KEY'
                             AND constraint_name = 'folders_pkey'
                         """)
@@ -646,7 +646,7 @@ def ensure_migrations():
                     
                     # Шаг 7: Добавляем parent_folder_id и обновляем данные
                     parent_folder_id_exists = conn.execute(
-                        text("""
+                text("""
                             SELECT column_name
                             FROM information_schema.columns
                             WHERE table_name = 'folders' AND column_name = 'parent_folder_id'
@@ -795,13 +795,13 @@ def ensure_migrations():
                     
                     try:
                         # Удаляем parent_folder из folders
-                        parent_folder_exists = conn.execute(
-                            text("""
-                                SELECT column_name
-                                FROM information_schema.columns
-                                WHERE table_name = 'folders' AND column_name = 'parent_folder'
-                            """)
-                        ).fetchone()
+                    parent_folder_exists = conn.execute(
+                        text("""
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_name = 'folders' AND column_name = 'parent_folder'
+                        """)
+                    ).fetchone()
                         if parent_folder_exists:
                             # Сначала удаляем NOT NULL constraint, если он есть
                             try:
@@ -877,7 +877,7 @@ def ensure_migrations():
                         pass
                     conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder CASCADE"))
                     logger.info("Dropped column folders.parent_folder")
-            except Exception as e:
+                except Exception as e:
                 logger.warning(f"Error dropping folders.parent_folder: {e}")
             
             # Проверяем существование колонок одним запросом для оптимизации
@@ -892,96 +892,96 @@ def ensure_migrations():
             
             # Если миграция на id выполнена, проверяем только дополнительные колонки
             if id_column_exists:
-                existing_columns = conn.execute(
-                    text("""
-                        SELECT table_name, column_name 
-                        FROM information_schema.columns 
-                        WHERE table_name IN ('folders', 'mocks')
-                        AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
-                                            'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
-                                            'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
-                                            'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms',
+            existing_columns = conn.execute(
+                text("""
+                    SELECT table_name, column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name IN ('folders', 'mocks')
+                    AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
+                                        'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
+                                        'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
+                                        'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms',
                                             'body_contains_required')
-                    """)
-                ).fetchall()
-                
-                existing_set = {(row[0], row[1]) for row in existing_columns}
-                
-                # Новые поля в folders
-                if ('folders', 'proxy_enabled') not in existing_set:
+                """)
+            ).fetchall()
+            
+            existing_set = {(row[0], row[1]) for row in existing_columns}
+            
+        # Новые поля в folders
+            if ('folders', 'proxy_enabled') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
+                    logger.info("Added column folders.proxy_enabled")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.proxy_enabled: {e}")
+            
+            if ('folders', 'proxy_base_url') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_base_url VARCHAR NULL"))
+                    logger.info("Added column folders.proxy_base_url")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.proxy_base_url: {e}")
+            
+            # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
+            if ('folders', 'order') not in existing_set:
+                try:
+                    conn.execute(text('ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0'))
+                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'))
+                    logger.info("Added column folders.order")
+                except Exception as e:
+                    logger.warning(f"Error adding folders.order: {e}")
+            
+        # Новые поля в mocks
+            if ('mocks', 'delay_ms') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
+                    logger.info("Added column mocks.delay_ms")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.delay_ms: {e}")
+            
+            if ('mocks', 'name') not in existing_set:
+                try:
+                    conn.execute(text("ALTER TABLE mocks ADD COLUMN name VARCHAR NULL"))
+                    logger.info("Added column mocks.name")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.name: {e}")
+            
+            # Добавляем колонку order в mocks
+            if ('mocks', 'order') not in existing_set:
+                try:
+                    conn.execute(text('ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0'))
+                    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'))
+                    logger.info("Added column mocks.order")
+                except Exception as e:
+                    logger.warning(f"Error adding mocks.order: {e}")
+            
+            # Добавляем поля для кэширования, задержки и имитации ошибок
+            new_mock_columns = [
+                ('delay_range_min_ms', 'INTEGER NULL'),
+                ('delay_range_max_ms', 'INTEGER NULL'),
+                ('cache_enabled', 'BOOLEAN DEFAULT FALSE'),
+                ('cache_ttl_seconds', 'INTEGER NULL'),
+                ('error_simulation_enabled', 'BOOLEAN DEFAULT FALSE'),
+                ('error_simulation_probability', 'JSON NULL'),
+                ('error_simulation_status_code', 'INTEGER NULL'),
+                ('error_simulation_body', 'JSON NULL'),
+                ('error_simulation_delay_ms', 'INTEGER NULL'),
+                ('body_contains_required', 'BOOLEAN DEFAULT TRUE NOT NULL'),
+            ]
+            
+            for col_name, col_def in new_mock_columns:
+                if ('mocks', col_name) not in existing_set:
                     try:
-                        conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_enabled BOOLEAN DEFAULT FALSE"))
-                        logger.info("Added column folders.proxy_enabled")
+                        conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
+                        logger.info(f"Added column mocks.{col_name}")
                     except Exception as e:
-                        logger.warning(f"Error adding folders.proxy_enabled: {e}")
-                
-                if ('folders', 'proxy_base_url') not in existing_set:
-                    try:
-                        conn.execute(text("ALTER TABLE folders ADD COLUMN proxy_base_url VARCHAR NULL"))
-                        logger.info("Added column folders.proxy_base_url")
-                    except Exception as e:
-                        logger.warning(f"Error adding folders.proxy_base_url: {e}")
-                
-                # Добавляем колонку order в folders (order - зарезервированное слово в PostgreSQL)
-                if ('folders', 'order') not in existing_set:
-                    try:
-                        conn.execute(text('ALTER TABLE folders ADD COLUMN "order" INTEGER DEFAULT 0'))
-                        conn.execute(text('CREATE INDEX IF NOT EXISTS ix_folders_order ON folders ("order")'))
-                        logger.info("Added column folders.order")
-                    except Exception as e:
-                        logger.warning(f"Error adding folders.order: {e}")
-                
-                # Новые поля в mocks
-                if ('mocks', 'delay_ms') not in existing_set:
-                    try:
-                        conn.execute(text("ALTER TABLE mocks ADD COLUMN delay_ms INTEGER DEFAULT 0"))
-                        logger.info("Added column mocks.delay_ms")
-                    except Exception as e:
-                        logger.warning(f"Error adding mocks.delay_ms: {e}")
-                
-                if ('mocks', 'name') not in existing_set:
-                    try:
-                        conn.execute(text("ALTER TABLE mocks ADD COLUMN name VARCHAR NULL"))
-                        logger.info("Added column mocks.name")
-                    except Exception as e:
-                        logger.warning(f"Error adding mocks.name: {e}")
-                
-                # Добавляем колонку order в mocks
-                if ('mocks', 'order') not in existing_set:
-                    try:
-                        conn.execute(text('ALTER TABLE mocks ADD COLUMN "order" INTEGER DEFAULT 0'))
-                        conn.execute(text('CREATE INDEX IF NOT EXISTS ix_mocks_order ON mocks ("order")'))
-                        logger.info("Added column mocks.order")
-                    except Exception as e:
-                        logger.warning(f"Error adding mocks.order: {e}")
-                
-                # Добавляем поля для кэширования, задержки и имитации ошибок
-                new_mock_columns = [
-                    ('delay_range_min_ms', 'INTEGER NULL'),
-                    ('delay_range_max_ms', 'INTEGER NULL'),
-                    ('cache_enabled', 'BOOLEAN DEFAULT FALSE'),
-                    ('cache_ttl_seconds', 'INTEGER NULL'),
-                    ('error_simulation_enabled', 'BOOLEAN DEFAULT FALSE'),
-                    ('error_simulation_probability', 'JSON NULL'),
-                    ('error_simulation_status_code', 'INTEGER NULL'),
-                    ('error_simulation_body', 'JSON NULL'),
-                    ('error_simulation_delay_ms', 'INTEGER NULL'),
-                    ('body_contains_required', 'BOOLEAN DEFAULT TRUE NOT NULL'),
-                ]
-                
-                for col_name, col_def in new_mock_columns:
-                    if ('mocks', col_name) not in existing_set:
-                        try:
-                            conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
-                            logger.info(f"Added column mocks.{col_name}")
-                        except Exception as e:
-                            # Если колонка уже существует (возможно, была добавлена вручную), это не критично
-                            if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                                logger.info(f"Column mocks.{col_name} already exists, skipping")
-                            else:
-                                logger.warning(f"Error adding mocks.{col_name}: {e}")
-                    else:
-                        logger.debug(f"Column mocks.{col_name} already exists, skipping")
+                        # Если колонка уже существует (возможно, была добавлена вручную), это не критично
+                        if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                            logger.info(f"Column mocks.{col_name} already exists, skipping")
+                        else:
+                            logger.warning(f"Error adding mocks.{col_name}: {e}")
+                else:
+                    logger.debug(f"Column mocks.{col_name} already exists, skipping")
         
         logger.info("Migrations completed successfully")
     except Exception as e:
@@ -1350,9 +1350,9 @@ def rename_folder(
         
         # Проверяем, не существует ли уже папка с новым именем в той же родительской папке
         existing_folder = db.query(Folder).filter(
-            Folder.name == new_name,
+                Folder.name == new_name,
             Folder.parent_folder_id == folder.parent_folder_id
-        ).first()
+            ).first()
         
         if existing_folder:
             folder_type = "подпапка" if folder.parent_folder_id else "папка"
@@ -2308,7 +2308,7 @@ def update_folder_settings(
     if not folder:
         raise HTTPException(404, "Папка не найдена")
 
-    folder.proxy_enabled = payload.proxy_enabled
+    folder.proxy_enabled = payload.proxy_enabled if payload.proxy_enabled is not None else False
     folder.proxy_base_url = (payload.proxy_base_url or "").strip() or None
 
     db.commit()
@@ -2922,7 +2922,7 @@ async def import_postman_collection(
             logger.debug(f"Importing mock: folder={folder_name}, method={req.get('method', 'GET')}, path={path}, headers={request_headers}, body_contains={'yes' if body_contains else 'no'}")
 
             entry = MockEntry(
-                folder=folder_name,
+                folder_id=folder_id,
                 name=item.get("name"),
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
@@ -3471,15 +3471,16 @@ def _parse_prometheus_metrics(text: str, folder_filter: Optional[str] = None) ->
     }
 
 
-@app.get("/api/metrics/folder/{folder}", response_model=FolderMetricsResponse)
-async def get_folder_metrics(folder: str = Path(..., description="Имя папки (может быть в формате name|parent_folder)")):
+@app.get("/api/metrics/folder/{folder_id}", response_model=FolderMetricsResponse)
+async def get_folder_metrics(folder_id: str = Path(..., description="ID папки"), db: Session = Depends(get_db)):
     """Получить структурированные метрики для конкретной папки."""
     try:
-        # Поддерживаем формат "name|parent_folder" для подпапок
-        folder_name = folder.strip()
-        if '|' in folder_name:
-            parts = folder_name.split('|', 1)
-            folder_name = parts[0]
+        # Ищем папку по ID
+        folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+        if not folder_obj:
+            raise HTTPException(404, f"Папка с ID '{folder_id}' не найдена")
+        
+        folder_name = folder_obj.name
         
         all_metrics = generate_latest().decode('utf-8')
         parsed = _parse_prometheus_metrics(all_metrics, folder_filter=folder_name)
@@ -3717,34 +3718,17 @@ def _clear_prometheus_metrics_for_folder(folder_id: str, db: Session):
     description="Удаляет все записи истории вызовов, опционально только для указанной папки. Также очищает метрики Prometheus для указанной папки.",
 )
 def clear_request_logs(
-    folder: Optional[str] = Query(None, description="Имя папки (может быть в формате name|parent_folder для подпапок). Если не указано, удаляются все записи."),
+    folder_id: Optional[str] = Query(None, description="ID папки. Если не указано, удаляются все записи."),
     db: Session = Depends(get_db),
 ):
     """Очищает историю вызовов и метрики Prometheus."""
     query = db.query(RequestLog)
-    folder_name = None
-    folder_id = None
-    if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок (для обратной совместимости)
-        # Но теперь используем folder_id
-        folder_id = folder.strip()
-        if '|' in folder_id:
-            # Старый формат - пытаемся найти папку по имени
-            parts = folder_id.split('|', 1)
-            folder_name = parts[0]
-            folder_obj = db.query(Folder).filter(Folder.name == folder_name).first()
-            if folder_obj:
-                folder_id = folder_obj.id
-            else:
-                folder_id = None
-        else:
-            # Проверяем, это ID или имя
-            folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
-            if not folder_obj:
-                folder_obj = db.query(Folder).filter(Folder.name == folder_id).first()
-                if folder_obj:
-                    folder_id = folder_obj.id
-        query = query.filter_by(folder_id=folder_id) if folder_id else query
+    if folder_id:
+        # Проверяем, что папка существует
+        folder_obj = db.query(Folder).filter(Folder.id == folder_id).first()
+        if not folder_obj:
+            raise HTTPException(404, f"Папка с ID '{folder_id}' не найдена")
+        query = query.filter_by(folder_id=folder_id)
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
     if folder_id:
@@ -4201,8 +4185,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     segments = [seg for seg in path.split("/") if seg]
 
     inner_path = path
-    # Ищем корневую папку default (parent_folder_id = NULL)
-    folder = db.query(Folder).filter(
+    folder = None
+    
+    # Ищем корневую папку default (parent_folder_id = NULL) как fallback
+    default_folder = db.query(Folder).filter(
         Folder.name == "default",
         Folder.parent_folder_id == None
     ).first()
@@ -4238,14 +4224,13 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 folder = root_folder
                 inner_path = "/"
         else:
-            # Первый сегмент не корневая папка - используем default
-            folder = db.query(Folder).filter(
-                Folder.name == "default",
-                Folder.parent_folder_id == None
-            ).first()
+            # Первый сегмент не корневая папка - используем default и весь путь как inner_path
+            folder = default_folder
+            inner_path = path
     else:
-        # Пустой путь - используем default (уже установлено выше)
-        pass
+        # Пустой путь - используем default
+        folder = default_folder
+        inner_path = "/"
     
     # Получаем имя папки для метрик
     folder_name = folder.name if folder else "default"
@@ -4265,11 +4250,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
     # Ищем подходящий мок только в выбранной папке
     if not folder_id:
         logger.warning(f"Folder not found for path '{path}', using default")
-        # Пытаемся найти default папку
-        folder = db.query(Folder).filter(
-            Folder.name == "default",
-            Folder.parent_folder_id == None
-        ).first()
+        folder = default_folder
         if folder:
             folder_id = folder.id
             folder_name = folder.name
@@ -4277,8 +4258,15 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             logger.error("Default folder not found in database!")
             raise HTTPException(500, "Default folder not found")
     
+    # Ищем моки в выбранной папке
     mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).all()
     logger.info(f"Searching for mock: folder_id={folder_id}, folder_name={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
+    
+    # Если моки не найдены в определенной папке и путь пустой, ищем во всех папках
+    if not mocks and inner_path == "/":
+        logger.info(f"No mocks found in folder {folder_name}, searching in all folders for path '{inner_path}'")
+        mocks = db.query(Mock).filter_by(active=True).all()
+        logger.info(f"Found {len(mocks)} active mocks in all folders")
     
     # Логируем все заголовки запроса для отладки
     request_headers_dict = {k: v for k, v in request.headers.items()}

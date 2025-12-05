@@ -1176,7 +1176,7 @@ export default function App() {
     setOriginalFileBody(null);
     form.resetFields();
     form.setFieldsValue({
-      folder: selectedFolder,
+      folder: selectedFolder || foldersData.find(f => f.name === "default")?.id,
       method: "GET",
       status_code: 200,
       active: true,
@@ -1263,11 +1263,7 @@ export default function App() {
     // Устанавливаем значения формы
     form.setFieldsValue({
       id: m.id,
-      folder: (() => {
-        // Преобразуем имя папки в составной ключ, если это подпапка
-        const folderData = foldersData.find(f => f.name === m.folder);
-        return folderData ? getFolderKey(m.folder, folderData.parent_folder) : getFolderKey(m.folder, null);
-      })(),
+      folder: m.folder_id || selectedFolder,
       name: m.name || "",
       method: m.request_condition.method,
       path: m.request_condition.path,
@@ -1509,7 +1505,7 @@ export default function App() {
   const duplicateMock = async mock => {
     try {
       const copy = {
-        folder: mock.folder,
+        folder_id: mock.folder_id || selectedFolder,
         active: mock.active !== false,
         name: mock.name ? `${mock.name} copy` : "copy",
         request_condition: {
@@ -3177,7 +3173,7 @@ export default function App() {
                 <Input placeholder="Например lost" />
               </Form.Item>
               <Form.Item
-                name="parent_folder"
+                name="parent_folder_id"
                 label="Родительская папка (опционально)"
                 tooltip="Выберите родительскую папку для создания вложенной папки. Если не указано, создаётся корневая папка."
               >
@@ -3185,8 +3181,8 @@ export default function App() {
                   placeholder="Выберите родительскую папку (необязательно)"
                   allowClear
                   options={foldersData
-                    .filter(f => f.name !== "default" && !f.parent_folder)
-                    .map(f => ({ label: f.name, value: f.name }))}
+                    .filter(f => f.name !== "default" && !f.parent_folder_id)
+                    .map(f => ({ label: f.name, value: f.id }))}
                 />
               </Form.Item>
               <Form.Item>
