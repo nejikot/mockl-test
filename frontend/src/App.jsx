@@ -466,6 +466,8 @@ export default function App() {
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [requestLogs, setRequestLogs] = useState([]);
   const [requestLogsLoading, setRequestLogsLoading] = useState(false);
+  const [globalRequestLogs, setGlobalRequestLogs] = useState([]);
+  const [globalRequestLogsLoading, setGlobalRequestLogsLoading] = useState(false);
   const [isGlobalMetricsModalOpen, setIsGlobalMetricsModalOpen] = useState(false);
   const [globalMetricsData, setGlobalMetricsData] = useState("");
   const [globalMetricsLoading, setGlobalMetricsLoading] = useState(false);
@@ -530,7 +532,7 @@ export default function App() {
     }
   };
 
-  const clearCacheByKey = async (cacheKey) => {
+  const clearCacheByKey = async (cacheKey, isGlobal = false) => {
     try {
       const response = await fetch(`${host}/api/cache/clear?cache_key=${encodeURIComponent(cacheKey)}`, {
         method: 'DELETE'
@@ -539,9 +541,49 @@ export default function App() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       message.success('Кэш очищен');
-      loadRequestLogs(false);
+      if (isGlobal) {
+        loadGlobalRequestLogs(false);
+      } else {
+        loadRequestLogs(false);
+      }
     } catch (error) {
       message.error(`Ошибка очистки кэша: ${error.message}`);
+    }
+  };
+
+  const loadGlobalRequestLogs = async (showLoading = true) => {
+    if (showLoading) {
+      setGlobalRequestLogsLoading(true);
+    }
+    try {
+      const response = await fetch(`${host}/api/request-logs?limit=10000`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      setGlobalRequestLogs(data.logs || []);
+    } catch (error) {
+      console.error("Error loading global request logs:", error);
+      setGlobalRequestLogs([]);
+    } finally {
+      if (showLoading) {
+        setGlobalRequestLogsLoading(false);
+      }
+    }
+  };
+
+  const clearGlobalRequestLogs = async () => {
+    try {
+      const response = await fetch(`${host}/api/request-logs`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      message.success('История вызовов очищена');
+      loadGlobalRequestLogs(true);
+    } catch (error) {
+      message.error(`Ошибка очистки истории: ${error.message}`);
     }
   };
   
@@ -588,12 +630,14 @@ export default function App() {
   useEffect(() => {
     if (!isGlobalMetricsModalOpen) return;
     
-    // Загружаем метрики сразу при открытии (с индикатором)
+    // Загружаем метрики и историю вызовов сразу при открытии (с индикатором)
     loadGlobalMetrics(true);
+    loadGlobalRequestLogs(true);
     
     // Устанавливаем интервал для автоматического обновления (без индикатора)
     const interval = setInterval(() => {
       loadGlobalMetrics(false);
+      loadGlobalRequestLogs(false);
     }, 5000);
     
     return () => clearInterval(interval);
@@ -3253,17 +3297,31 @@ export default function App() {
             title="Метрики всего сервиса"
             open={isGlobalMetricsModalOpen}
             onCancel={() => setIsGlobalMetricsModalOpen(false)}
-            width={1000}
+            width="95%"
+            style={{ top: 10 }}
+            bodyStyle={{ maxHeight: 'calc(100vh - 120px)', overflow: 'auto' }}
             footer={[
-              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => loadGlobalMetrics(true)} loading={globalMetricsLoading}>
+              <Button key="clear" danger icon={<DeleteOutlined />} onClick={() => {
+                Modal.confirm({
+                  title: 'Очистить историю вызовов',
+                  content: 'Вы уверены, что хотите очистить всю историю вызовов для всего сервиса?',
+                  onOk: clearGlobalRequestLogs
+                });
+              }}>
+                Очистить историю
+              </Button>,
+              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => {
+                loadGlobalMetrics(true);
+                loadGlobalRequestLogs(true);
+              }} loading={globalMetricsLoading || globalRequestLogsLoading}>
                 Обновить
               </Button>,
               <Button key="download" icon={<DownloadOutlined />} onClick={() => {
-                const blob = new Blob([globalMetricsData], { type: 'text/plain' });
+                const blob = new Blob([JSON.stringify(globalMetricsData, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `metrics-all-${new Date().toISOString().split('T')[0]}.txt`;
+                link.download = `metrics-all-${new Date().toISOString().split('T')[0]}.json`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -3581,6 +3639,183 @@ export default function App() {
                       </Typography.Text>
                     </div>
                   )}
+                  
+                  {/* Детальная история вызовов */}
+                  <div style={{ 
+                    background: theme === "dark" ? "#262626" : "#fff",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginTop: 16,
+                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Детальная история вызовов (всего сервиса)
+                    </Typography.Title>
+                    {globalRequestLogsLoading ? (
+                      <div style={{ textAlign: 'center', padding: '20px' }}>
+                        <Typography.Text>Загрузка истории...</Typography.Text>
+                      </div>
+                    ) : globalRequestLogs.length > 0 ? (
+                      <Table
+                        dataSource={globalRequestLogs.map((log, idx) => ({ ...log, key: log.id || idx }))}
+                        pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `Всего ${total} записей` }}
+                        size="small"
+                        scroll={{ x: 'max-content', y: '400px' }}
+                        columns={[
+                          {
+                            title: 'Время',
+                            dataIndex: 'timestamp',
+                            key: 'timestamp',
+                            width: 180,
+                            render: (timestamp) => {
+                              try {
+                                const date = new Date(timestamp);
+                                return (
+                                  <Typography.Text style={{ fontSize: 11 }}>
+                                    {date.toLocaleString('ru-RU', { 
+                                      year: 'numeric', 
+                                      month: '2-digit', 
+                                      day: '2-digit', 
+                                      hour: '2-digit', 
+                                      minute: '2-digit', 
+                                      second: '2-digit',
+                                      fractionalSecondDigits: 3
+                                    })}
+                                  </Typography.Text>
+                                );
+                              } catch {
+                                return <Typography.Text style={{ fontSize: 11 }}>{timestamp}</Typography.Text>;
+                              }
+                            }
+                          },
+                          {
+                            title: 'Папка',
+                            dataIndex: 'folder_name',
+                            key: 'folder_name',
+                            width: 150,
+                            render: (folder) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {folder || 'default'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            width: 300,
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'is_proxied',
+                            key: 'is_proxied',
+                            width: 80,
+                            align: 'center',
+                            render: (isProxied) => (
+                              <Typography.Text style={{ 
+                                color: isProxied ? (theme === "dark" ? "#ffb74d" : "#fa8c16") : (theme === "dark" ? "#81c784" : "#52c41a")
+                              }}>
+                                {isProxied ? 'Да' : 'Нет'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Время ответа',
+                            dataIndex: 'response_time_ms',
+                            key: 'response_time_ms',
+                            width: 130,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text>
+                                {time} мс
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'TTL кэша',
+                            dataIndex: 'cache_ttl_seconds',
+                            key: 'cache_ttl_seconds',
+                            width: 150,
+                            align: 'right',
+                            render: (ttl, record) => {
+                              if (ttl) {
+                                return (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                                    <Typography.Text>{ttl} с</Typography.Text>
+                                    {record.cache_key && (
+                                      <Button 
+                                        size="small" 
+                                        type="link" 
+                                        danger
+                                        onClick={() => {
+                                          Modal.confirm({
+                                            title: 'Очистить кэш',
+                                            content: `Очистить кэш с ключом "${record.cache_key}"?`,
+                                            onOk: () => clearCacheByKey(record.cache_key, true)
+                                          });
+                                        }}
+                                      >
+                                        Сбросить
+                                      </Button>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return <Typography.Text type="secondary">—</Typography.Text>;
+                            }
+                          },
+                          {
+                            title: 'Статус код',
+                            dataIndex: 'status_code',
+                            key: 'status_code',
+                            width: 120,
+                            align: 'right',
+                            render: (code) => (
+                              <Typography.Text 
+                                strong 
+                                style={{ 
+                                  color: code >= 200 && code < 300
+                                    ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                    : code >= 400
+                                    ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                    : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                }}
+                              >
+                                {code}
+                              </Typography.Text>
+                            )
+                          }
+                        ]}
+                      />
+                    ) : (
+                      <div style={{ 
+                        padding: 40,
+                        textAlign: 'center',
+                      }}>
+                        <Typography.Text type="secondary">
+                          Нет данных о вызовах. Выполните запросы к мокам или прокси для получения истории.
+                        </Typography.Text>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })()}
