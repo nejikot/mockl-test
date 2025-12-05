@@ -2170,15 +2170,15 @@ export default function App() {
                 </div>
               </Sider>
 
-              <Content style={{ width: "100%", flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <Content style={{ width: "100%", flex: 1, minHeight: 0, overflowY: isDefaultFolder ? "hidden" : "auto", display: "flex", flexDirection: "column" }}>
                 {isDefaultFolder && (
                   <div style={{
                     background: theme === "light" ? "#fff" : "#1f1f1f",
                     borderRadius: 12,
                     padding: isDesktop ? 24 : 16,
                     boxShadow: "0 12px 30px rgba(15,23,42,0.05)",
-                    marginBottom: 16,
-                    maxHeight: "60vh",
+                    flex: 1,
+                    minHeight: 0,
                     overflowY: "auto",
                     overflowX: "hidden"
                   }}
