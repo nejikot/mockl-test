@@ -2670,6 +2670,31 @@ export default function App() {
                       />
                     </Form.Item>
 
+                    <Form.Item
+                      noStyle
+                      shouldUpdate={(prev, cur) =>
+                        prev.request_body_mode !== cur.request_body_mode
+                      }
+                    >
+                      {({ getFieldValue }) => {
+                        const mode = getFieldValue("request_body_mode") || "none";
+                        if (mode !== "none") {
+                          return (
+                            <Form.Item
+                              name="body_contains_required"
+                              valuePropName="checked"
+                              style={{ marginTop: 8 }}
+                            >
+                              <Checkbox>
+                                Обязательно проверять запрос
+                              </Checkbox>
+                            </Form.Item>
+                          );
+                        }
+                        return null;
+                      }}
+                    </Form.Item>
+
                     <Form.Item label="Тело запроса" style={{ marginTop: 16 }}>
                       <Form.Item
                         noStyle
@@ -2825,23 +2850,12 @@ export default function App() {
                           }
                           
                           return (
-                            <>
-                              <Form.Item
-                                name="request_body_raw"
-                                tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
-                              >
-                                <TextArea rows={3} placeholder='Например {{"user":"123"}}' />
-                              </Form.Item>
-                              <Form.Item
-                                name="body_contains_required"
-                                valuePropName="checked"
-                                style={{ marginTop: 8 }}
-                              >
-                                <Checkbox>
-                                  Обязательно проверять запрос
-                                </Checkbox>
-                              </Form.Item>
-                            </>
+                            <Form.Item
+                              name="request_body_raw"
+                              tooltip="Если заполнено, мок сработает только когда тело содержит эту строку / JSON"
+                            >
+                              <TextArea rows={3} placeholder='Например {{"user":"123"}}' />
+                            </Form.Item>
                           );
                         }}
                       </Form.Item>
