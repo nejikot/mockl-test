@@ -1293,8 +1293,9 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
             ).all()
             
             for subfolder in subfolders:
-                # Рекурсивно копируем подпапку
-                duplicate_folder_recursive(subfolder, subfolder.name, new_folder.id)
+                # Рекурсивно копируем подпапку и собираем все ID
+                subfolder_ids = duplicate_folder_recursive(subfolder, subfolder.name, new_folder.id)
+                copied_ids.extend(subfolder_ids)
             
             return copied_ids
         
@@ -4260,8 +4261,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             logger.error("Default folder not found in database!")
             raise HTTPException(500, "Default folder not found")
     
-    # Ищем моки в выбранной папке
-    mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).all()
+    # Ищем моки в выбранной папке, сортируем по order для правильного приоритета
+    mocks = db.query(Mock).filter_by(active=True, folder_id=folder_id).order_by(Mock.order).all()
     logger.info(f"Searching for mock: folder_id={folder_id}, folder_name={folder_name}, path={full_inner}, method={request.method}, found {len(mocks)} active mocks")
     
     # Логируем все заголовки запроса для отладки
@@ -4458,11 +4459,12 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
         try:
             async with httpx.AsyncClient() as client:
+                # Используем сохраненное body_bytes вместо повторного чтения request.body()
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-                    content=await request.body()
+                    content=body_bytes
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")

@@ -1512,7 +1512,8 @@ export default function App() {
           method: mock.request_condition.method,
           path: mock.request_condition.path,
           headers: mock.request_condition.headers || {},
-          body_contains: mock.request_condition.body_contains || null
+          body_contains: mock.request_condition.body_contains || null,
+          body_contains_required: mock.request_condition.body_contains_required !== undefined ? mock.request_condition.body_contains_required : true
         },
         response_config: {
           status_code: mock.response_config.status_code,
