@@ -193,9 +193,20 @@ class Mock(Base):
     active = Column(Boolean, default=True)
     # Задержка ответа в миллисекундах
     delay_ms = Column(Integer, default=0)
+    # Диапазон задержки (для случайной задержки)
+    delay_range_min_ms = Column(Integer, nullable=True)
+    delay_range_max_ms = Column(Integer, nullable=True)
     # Порядок отображения мока в папке
     order = Column(Integer, default=0, index=True)
-
+    # Настройки кэширования
+    cache_enabled = Column(Boolean, default=False)
+    cache_ttl_seconds = Column(Integer, nullable=True)
+    # Настройки имитации ошибок
+    error_simulation_enabled = Column(Boolean, default=False)
+    error_simulation_probability = Column(SAJSON, nullable=True)  # Float храним как JSON для точности
+    error_simulation_status_code = Column(Integer, nullable=True)
+    error_simulation_body = Column(SAJSON, nullable=True)
+    error_simulation_delay_ms = Column(Integer, nullable=True)
 
     folder_obj = relationship("Folder", back_populates="mocks")
 
@@ -375,6 +386,42 @@ class MockEntry(BaseModel):
         default=0,
         description="Искусственная задержка ответа в миллисекундах (например 500 = 0.5 секунды).",
     )
+    delay_range_min_ms: Optional[int] = Field(
+        default=None,
+        description="Минимальная задержка в миллисекундах для случайной задержки из диапазона.",
+    )
+    delay_range_max_ms: Optional[int] = Field(
+        default=None,
+        description="Максимальная задержка в миллисекундах для случайной задержки из диапазона.",
+    )
+    cache_enabled: Optional[bool] = Field(
+        default=False,
+        description="Включено ли кэширование ответа для этого мока.",
+    )
+    cache_ttl_seconds: Optional[int] = Field(
+        default=None,
+        description="TTL кэша в секундах. Используется только если cache_enabled=True.",
+    )
+    error_simulation_enabled: Optional[bool] = Field(
+        default=False,
+        description="Включена ли имитация ошибок для этого мока.",
+    )
+    error_simulation_probability: Optional[float] = Field(
+        default=None,
+        description="Вероятность имитации ошибки (от 0.0 до 1.0). Используется только если error_simulation_enabled=True.",
+    )
+    error_simulation_status_code: Optional[int] = Field(
+        default=None,
+        description="HTTP статус код для имитации ошибки.",
+    )
+    error_simulation_body: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Тело ответа при имитации ошибки.",
+    )
+    error_simulation_delay_ms: Optional[int] = Field(
+        default=None,
+        description="Задержка в миллисекундах перед возвратом ошибки.",
+    )
     order: Optional[int] = Field(
         default=None,
         description="Порядок отображения мока в папке. Если не указан, мок будет добавлен в конец.",
@@ -464,7 +511,10 @@ def ensure_migrations():
                     SELECT table_name, column_name 
                     FROM information_schema.columns 
                     WHERE table_name IN ('folders', 'mocks')
-                    AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name')
+                    AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
+                                        'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
+                                        'cache_ttl_seconds', 'error_simulation_enabled', 'error_simulation_probability',
+                                        'error_simulation_status_code', 'error_simulation_body', 'error_simulation_delay_ms')
                 """)
             ).fetchall()
             
@@ -526,6 +576,27 @@ def ensure_migrations():
                     logger.info("Added column mocks.order")
                 except Exception as e:
                     logger.warning(f"Error adding mocks.order: {e}")
+            
+            # Добавляем поля для кэширования, задержки и имитации ошибок
+            new_mock_columns = [
+                ('delay_range_min_ms', 'INTEGER NULL'),
+                ('delay_range_max_ms', 'INTEGER NULL'),
+                ('cache_enabled', 'BOOLEAN DEFAULT FALSE'),
+                ('cache_ttl_seconds', 'INTEGER NULL'),
+                ('error_simulation_enabled', 'BOOLEAN DEFAULT FALSE'),
+                ('error_simulation_probability', 'JSON NULL'),
+                ('error_simulation_status_code', 'INTEGER NULL'),
+                ('error_simulation_body', 'JSON NULL'),
+                ('error_simulation_delay_ms', 'INTEGER NULL'),
+            ]
+            
+            for col_name, col_def in new_mock_columns:
+                if ('mocks', col_name) not in existing_set:
+                    try:
+                        conn.execute(text(f'ALTER TABLE mocks ADD COLUMN {col_name} {col_def}'))
+                        logger.info(f"Added column mocks.{col_name}")
+                    except Exception as e:
+                        logger.warning(f"Error adding mocks.{col_name}: {e}")
     except Exception as e:
         logger.error(f"Error during migrations: {e}", exc_info=True)
 
@@ -1011,9 +1082,28 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     mock.body_contains = _normalize_json_string(entry.request_condition.body_contains) if entry.request_condition.body_contains else None
     mock.status_code = entry.response_config.status_code
     mock.response_headers = entry.response_config.headers or {}
-    mock.response_body = entry.response_config.body
+    # Очищаем служебные поля из тела ответа перед сохранением
+    response_body = entry.response_config.body
+    if isinstance(response_body, dict):
+        # Создаем копию, чтобы не изменять исходный объект
+        response_body = response_body.copy()
+        # Удаляем служебные поля
+        response_body.pop("__cache_ttl__", None)
+        response_body.pop("__delay_range_ms__", None)
+        response_body.pop("__error_simulation__", None)
+    mock.response_body = response_body
     mock.active = entry.active if entry.active is not None else True
     mock.delay_ms = entry.delay_ms or 0
+    mock.delay_range_min_ms = entry.delay_range_min_ms
+    mock.delay_range_max_ms = entry.delay_range_max_ms
+    mock.cache_enabled = entry.cache_enabled if entry.cache_enabled is not None else False
+    mock.cache_ttl_seconds = entry.cache_ttl_seconds
+    mock.error_simulation_enabled = entry.error_simulation_enabled if entry.error_simulation_enabled is not None else False
+    # Сохраняем вероятность как JSON (float)
+    mock.error_simulation_probability = entry.error_simulation_probability
+    mock.error_simulation_status_code = entry.error_simulation_status_code
+    mock.error_simulation_body = entry.error_simulation_body
+    mock.error_simulation_delay_ms = entry.error_simulation_delay_ms
 
 
 
@@ -1846,10 +1936,19 @@ def list_mocks(
                 response_config=MockResponseConfig(
                     status_code=m.status_code,
                     headers=m.response_headers if m.response_headers else None,
-                    body=m.response_body,
+                    body=_clean_response_body(m.response_body),
                 ),
                 active=m.active,
                 delay_ms=m.delay_ms or 0,
+                delay_range_min_ms=m.delay_range_min_ms,
+                delay_range_max_ms=m.delay_range_max_ms,
+                cache_enabled=m.cache_enabled if m.cache_enabled is not None else False,
+                cache_ttl_seconds=m.cache_ttl_seconds,
+                error_simulation_enabled=m.error_simulation_enabled if m.error_simulation_enabled is not None else False,
+                error_simulation_probability=m.error_simulation_probability,
+                error_simulation_status_code=m.error_simulation_status_code,
+                error_simulation_body=m.error_simulation_body,
+                error_simulation_delay_ms=m.error_simulation_delay_ms,
                 order=m.order if m.order is not None else 0,
             )
         )
@@ -3168,62 +3267,71 @@ def _cache_key_for_mock(m: Mock, method: str, full_inner: str) -> str:
     return f"{m.id}:{method.upper()}:{full_inner}"
 
 
-def _get_cache_ttl_from_body(body: Any) -> int:
-    """Извлекает TTL кэша (секунды) из спец‑поля в ответе или из дефолта."""
-    if isinstance(body, dict):
-        ttl = body.get("__cache_ttl__")
-        if isinstance(ttl, (int, float)) and ttl > 0:
-            logger.debug(f"Cache TTL found in body: {ttl} seconds")
-            return int(ttl)
-        else:
-            logger.debug(f"Cache TTL not found or invalid in body: {ttl}, using default: {DEFAULT_CACHE_TTL_SECONDS}")
-    else:
-        logger.debug(f"Body is not a dict, using default cache TTL: {DEFAULT_CACHE_TTL_SECONDS}")
+def _get_cache_ttl(m: Mock) -> int:
+    """Извлекает TTL кэша (секунды) из настроек мока."""
+    if m.cache_enabled and m.cache_ttl_seconds and m.cache_ttl_seconds > 0:
+        logger.debug(f"Cache TTL from mock settings: {m.cache_ttl_seconds} seconds")
+        return int(m.cache_ttl_seconds)
+    logger.debug(f"Cache disabled or no TTL set, using default: {DEFAULT_CACHE_TTL_SECONDS}")
     return DEFAULT_CACHE_TTL_SECONDS
 
 
-def _get_delay_ms(m: Mock, body: Any) -> int:
+def _get_delay_ms(m: Mock) -> int:
     """Возвращает задержку в мс — фиксированную или случайную из диапазона."""
     base = m.delay_ms or 0
-    if isinstance(body, dict):
-        rng = body.get("__delay_range_ms__")
-        if isinstance(rng, dict):
-            try:
-                mn = int(rng.get("min", base))
-                mx = int(rng.get("max", base))
-                if mn < 0:
-                    mn = 0
-                if mx < mn:
-                    mx = mn
-                if mn != mx:
-                    return random.randint(mn, mx)
-                return mn
-            except Exception:
-                return base
+    # Если задан диапазон, используем случайное значение из диапазона
+    if m.delay_range_min_ms is not None and m.delay_range_max_ms is not None:
+        try:
+            mn = max(0, int(m.delay_range_min_ms))
+            mx = max(mn, int(m.delay_range_max_ms))
+            if mn != mx:
+                return random.randint(mn, mx)
+            return mn
+        except Exception:
+            return base
     return base
 
 
-def _maybe_simulate_error(folder_name: str, body: Any) -> Optional[Dict[str, Any]]:
-    """Пытается сэмулировать ошибку согласно конфигу в теле."""
-    if not isinstance(body, dict):
+def _maybe_simulate_error(m: Mock, folder_name: str) -> Optional[Dict[str, Any]]:
+    """Пытается сэмулировать ошибку согласно настройкам мока."""
+    if not m.error_simulation_enabled:
         return None
-    cfg = body.get("__error_simulation__")
-    if not isinstance(cfg, dict):
+    # Вероятность может быть числом (float) или строкой
+    prob = m.error_simulation_probability
+    if isinstance(prob, str):
+        try:
+            prob = float(prob)
+        except (ValueError, TypeError):
+            return None
+    elif not isinstance(prob, (int, float)):
         return None
-    prob = float(cfg.get("probability", 0))
-    if prob <= 0:
+    
+    prob = float(prob)
+    if prob <= 0 or prob > 1:
         return None
+    
     if random.random() > prob:
         return None
+    
     ERRORS_SIMULATED.labels(folder=folder_name).inc()
-    status_code = int(cfg.get("status_code", 500))
-    delay_ms = int(cfg.get("delay_ms", 0))
-    err_body = cfg.get("body") or {"error": "simulated error"}
+    status_code = m.error_simulation_status_code or 500
+    delay_ms = m.error_simulation_delay_ms or 0
+    err_body = m.error_simulation_body or {"error": "simulated error"}
     return {
         "status_code": status_code,
         "delay_ms": delay_ms,
         "body": err_body,
     }
+
+
+def _clean_response_body(body: Any) -> Any:
+    """Очищает тело ответа от служебных полей."""
+    if isinstance(body, dict):
+        body = body.copy()
+        body.pop("__cache_ttl__", None)
+        body.pop("__delay_range_ms__", None)
+        body.pop("__error_simulation__", None)
+    return body
 
 
 def _apply_templates(value: Any, req: Request, full_inner: str) -> Any:
@@ -3372,10 +3480,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         matched = await match_condition(request, m, full_inner, body_bytes)
         logger.info(f"Mock {m.id} ({m.method} {m.path}): matched={matched}, mock_headers={m.headers}, mock_body_contains={'yes' if m.body_contains else 'no'}, request_path={full_inner}")
         if matched:
-            body = m.response_body
+            body = _clean_response_body(m.response_body)
 
             # Попытка отдать из кэша
-            ttl = _get_cache_ttl_from_body(body)
+            ttl = _get_cache_ttl(m)
             cache_key = None
             if ttl > 0:
                 cache_key = _cache_key_for_mock(m, request.method, full_inner)
@@ -3407,10 +3515,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
             # Задержка ответа при необходимости
             # (фиксированная или диапазон)
-            delay_ms = _get_delay_ms(m, body)
+            delay_ms = _get_delay_ms(m)
 
             # Имитация ошибок
-            err_cfg = _maybe_simulate_error(folder_name, body)
+            err_cfg = _maybe_simulate_error(m, folder_name)
             if err_cfg:
                 if err_cfg["delay_ms"] > 0:
                     await asyncio.sleep(err_cfg["delay_ms"] / 1000.0)

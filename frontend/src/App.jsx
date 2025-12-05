@@ -129,7 +129,7 @@ function buildFolderHost(baseHost, folder, parentFolder = null) {
     if (parentFolder) {
       url.pathname = `${basePath}/${parentFolder}/${folder}`;
     } else {
-      url.pathname = `${basePath}/${folder}`;
+    url.pathname = `${basePath}/${folder}`;
     }
     return url.toString().replace(/\/+$/, "");
   } catch {
@@ -1112,8 +1112,15 @@ export default function App() {
       responseHeaders: [{ key: "", value: "" }],
       response_type: "json",
       delay_ms: 0,
+      delay_range_min_ms: undefined,
+      delay_range_max_ms: undefined,
       cache_enabled: false,
       cache_ttl: undefined,
+      error_simulation_enabled: false,
+      error_simulation_probability: undefined,
+      error_simulation_status_code: undefined,
+      error_simulation_body: undefined,
+      error_simulation_delay_ms: undefined,
       response_body: JSON.stringify({ message: "success", data: {} }, null, 2)
     });
     setModalOpen(true);
@@ -1159,9 +1166,10 @@ export default function App() {
     let cache_enabled = false;
     let cache_ttl;
     try {
-      if (m.response_config.body && typeof m.response_config.body === "object" && m.response_config.body.__cache_ttl__) {
+      // Читаем настройки кэша из полей мока, а не из тела ответа
+      if (m.cache_enabled && m.cache_ttl_seconds) {
         cache_enabled = true;
-        cache_ttl = m.response_config.body.__cache_ttl__;
+        cache_ttl = m.cache_ttl_seconds;
       }
     } catch {
       cache_enabled = false;
@@ -1191,8 +1199,15 @@ export default function App() {
       responseHeaders: headersToFormList(m.response_config.headers),
       response_type: (m.response_config.body && m.response_config.body.__file__) ? "file" : "json",
       delay_ms: m.delay_ms || 0,
-      cache_enabled,
-      cache_ttl,
+      delay_range_min_ms: m.delay_range_min_ms || undefined,
+      delay_range_max_ms: m.delay_range_max_ms || undefined,
+      cache_enabled: m.cache_enabled || false,
+      cache_ttl: m.cache_ttl_seconds || undefined,
+      error_simulation_enabled: m.error_simulation_enabled || false,
+      error_simulation_probability: m.error_simulation_probability || undefined,
+      error_simulation_status_code: m.error_simulation_status_code || undefined,
+      error_simulation_body: m.error_simulation_body ? JSON.stringify(m.error_simulation_body, null, 2) : undefined,
+      error_simulation_delay_ms: m.error_simulation_delay_ms || undefined,
       response_body: JSON.stringify(m.response_config.body, null, 2)
     });
     
@@ -1300,13 +1315,9 @@ export default function App() {
         delete responseBodyObj.data_base64;
       }
 
+      // Настройки кэша больше не добавляются в тело ответа
       const cacheEnabled = !!vals.cache_enabled;
       const cacheTtl = Number(vals.cache_ttl || 0);
-      if (cacheEnabled && cacheTtl > 0 && typeof responseBodyObj === "object" && responseBodyObj !== null) {
-        responseBodyObj.__cache_ttl__ = cacheTtl;
-      } else if (responseBodyObj && typeof responseBodyObj === "object") {
-        delete responseBodyObj.__cache_ttl__;
-      }
 
       // Сохраняем order только если мок новый (не редактируется)
       const isEditing = vals.id && editing;
@@ -1328,7 +1339,16 @@ export default function App() {
           headers: responseHeadersObj,
           body: responseBodyObj
         },
-        delay_ms: Number(vals.delay_ms || 0) || 0
+        delay_ms: Number(vals.delay_ms || 0) || 0,
+        delay_range_min_ms: vals.delay_range_min_ms ? Number(vals.delay_range_min_ms) : null,
+        delay_range_max_ms: vals.delay_range_max_ms ? Number(vals.delay_range_max_ms) : null,
+        cache_enabled: cacheEnabled,
+        cache_ttl_seconds: cacheEnabled && cacheTtl > 0 ? cacheTtl : null,
+        error_simulation_enabled: !!vals.error_simulation_enabled,
+        error_simulation_probability: vals.error_simulation_enabled && vals.error_simulation_probability ? Number(vals.error_simulation_probability) : null,
+        error_simulation_status_code: vals.error_simulation_enabled && vals.error_simulation_status_code ? Number(vals.error_simulation_status_code) : null,
+        error_simulation_body: vals.error_simulation_enabled && vals.error_simulation_body ? (typeof vals.error_simulation_body === 'string' ? JSON.parse(vals.error_simulation_body) : vals.error_simulation_body) : null,
+        error_simulation_delay_ms: vals.error_simulation_enabled && vals.error_simulation_delay_ms ? Number(vals.error_simulation_delay_ms) : null
       };
       
       // При редактировании не меняем order, при создании он будет установлен автоматически
@@ -1418,7 +1438,17 @@ export default function App() {
           status_code: mock.response_config.status_code,
           headers: mock.response_config.headers || {},
           body: mock.response_config.body
-        }
+        },
+        delay_ms: mock.delay_ms || 0,
+        delay_range_min_ms: mock.delay_range_min_ms,
+        delay_range_max_ms: mock.delay_range_max_ms,
+        cache_enabled: mock.cache_enabled || false,
+        cache_ttl_seconds: mock.cache_ttl_seconds,
+        error_simulation_enabled: mock.error_simulation_enabled || false,
+        error_simulation_probability: mock.error_simulation_probability,
+        error_simulation_status_code: mock.error_simulation_status_code,
+        error_simulation_body: mock.error_simulation_body,
+        error_simulation_delay_ms: mock.error_simulation_delay_ms
       };
       const res = await fetch(`${host}/api/mocks`, {
         method: "POST",
@@ -2342,6 +2372,28 @@ export default function App() {
                       { title: "Путь", dataIndex: ["request_condition", "path"], ellipsis: true },
                       { title: "Код", dataIndex: ["response_config", "status_code"], width: 90 },
                       {
+                        title: "Настройки",
+                        width: 300,
+                        render: (_, r) => {
+                          const delayInfo = r.delay_range_min_ms != null && r.delay_range_max_ms != null 
+                            ? `${r.delay_range_min_ms}-${r.delay_range_max_ms} мс`
+                            : r.delay_ms ? `${r.delay_ms} мс` : '—';
+                          const cacheInfo = r.cache_enabled && r.cache_ttl_seconds 
+                            ? `Кэш: ${r.cache_ttl_seconds}с`
+                            : '—';
+                          const errorInfo = r.error_simulation_enabled && r.error_simulation_probability != null
+                            ? `Ошибка: ${(Number(r.error_simulation_probability) * 100).toFixed(0)}%`
+                            : '—';
+                          return (
+                            <div style={{ fontSize: 11, lineHeight: 1.6 }}>
+                              <div><strong>Задержка:</strong> {delayInfo}</div>
+                              <div><strong>Кэш:</strong> {cacheInfo}</div>
+                              <div><strong>Ошибки:</strong> {errorInfo}</div>
+                            </div>
+                          );
+                        }
+                      },
+                      {
                         title: "Действия",
                         width: 200,
                         render: (_, r) => (
@@ -2425,8 +2477,15 @@ export default function App() {
                 responseHeaders: [{ key: "", value: "" }],
                 response_type: "json",
                 delay_ms: 0,
+                delay_range_min_ms: undefined,
+                delay_range_max_ms: undefined,
                 cache_enabled: false,
-                cache_ttl: undefined
+                cache_ttl: undefined,
+                error_simulation_enabled: false,
+                error_simulation_probability: undefined,
+                error_simulation_status_code: undefined,
+                error_simulation_body: undefined,
+                error_simulation_delay_ms: undefined
               }}
             >
               <Form.Item name="id" hidden><Input /></Form.Item>
@@ -2753,9 +2812,31 @@ export default function App() {
                       )}
                     </Form.List>
 
+                    <Divider>Настройки задержки, кэша и имитации ошибок</Divider>
+
                     <Form.Item label="Задержка ответа (мс)" name="delay_ms" style={{ marginTop: 16 }}>
-                      <Input type="number" min={0} placeholder="Например 500 для 0.5 секунды" />
+                      <Input type="number" min={0} placeholder="Фиксированная задержка, например 500" />
                     </Form.Item>
+
+                    <Form.Item label="Диапазон задержки (мс)" style={{ marginTop: 16 }}>
+                      <Row gutter={8}>
+                        <Col span={12}>
+                          <Form.Item name="delay_range_min_ms" noStyle>
+                            <Input type="number" min={0} placeholder="Мин. (например 100)" />
+                          </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                          <Form.Item name="delay_range_max_ms" noStyle>
+                            <Input type="number" min={0} placeholder="Макс. (например 500)" />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Если указан диапазон, будет использоваться случайная задержка из диапазона вместо фиксированной
+                      </Typography.Text>
+                    </Form.Item>
+
+                    <Divider style={{ marginTop: 16 }}>Кэширование</Divider>
 
                     <Form.Item name="cache_enabled" valuePropName="checked" style={{ marginTop: 16 }}>
                       <Checkbox>Включить кэширование ответа</Checkbox>
@@ -2767,6 +2848,44 @@ export default function App() {
                       tooltip="Через сколько секунд кэш для этого мока будет считаться устаревшим"
                     >
                       <Input type="number" min={0} placeholder="Например 60" />
+                    </Form.Item>
+
+                    <Divider style={{ marginTop: 16 }}>Имитация ошибок</Divider>
+
+                    <Form.Item name="error_simulation_enabled" valuePropName="checked" style={{ marginTop: 16 }}>
+                      <Checkbox>Включить имитацию ошибок</Checkbox>
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Вероятность ошибки (0.0 - 1.0)"
+                      name="error_simulation_probability"
+                      tooltip="Вероятность возврата ошибки при каждом запросе (0.0 = никогда, 1.0 = всегда)"
+                    >
+                      <Input type="number" min={0} max={1} step={0.01} placeholder="Например 0.1 для 10%" />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Статус код ошибки"
+                      name="error_simulation_status_code"
+                    >
+                      <Input type="number" min={100} max={599} placeholder="Например 500" />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Тело ответа при ошибке (JSON)"
+                      name="error_simulation_body"
+                    >
+                      <TextArea 
+                        rows={4} 
+                        placeholder='{"error": "simulated error", "message": "Something went wrong"}' 
+                      />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Задержка перед ошибкой (мс)"
+                      name="error_simulation_delay_ms"
+                    >
+                      <Input type="number" min={0} placeholder="Например 1000" />
                     </Form.Item>
 
                     <Form.Item label="Тип ответа" name="response_type" style={{ marginTop: 16 }}>
