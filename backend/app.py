@@ -795,13 +795,13 @@ def ensure_migrations():
                     
                     try:
                         # Удаляем parent_folder из folders
-                    parent_folder_exists = conn.execute(
-                        text("""
-                            SELECT column_name
-                            FROM information_schema.columns
-                            WHERE table_name = 'folders' AND column_name = 'parent_folder'
-                        """)
-                    ).fetchone()
+                        parent_folder_exists = conn.execute(
+                            text("""
+                                SELECT column_name
+                                FROM information_schema.columns
+                                WHERE table_name = 'folders' AND column_name = 'parent_folder'
+                            """)
+                        ).fetchone()
                         if parent_folder_exists:
                             # Сначала удаляем NOT NULL constraint, если он есть
                             try:
