@@ -464,6 +464,8 @@ export default function App() {
   const [isMetricsModalOpen, setIsMetricsModalOpen] = useState(false);
   const [metricsData, setMetricsData] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
+  const [requestLogs, setRequestLogs] = useState([]);
+  const [requestLogsLoading, setRequestLogsLoading] = useState(false);
   const [isGlobalMetricsModalOpen, setIsGlobalMetricsModalOpen] = useState(false);
   const [globalMetricsData, setGlobalMetricsData] = useState("");
   const [globalMetricsLoading, setGlobalMetricsLoading] = useState(false);
@@ -487,6 +489,59 @@ export default function App() {
       if (showLoading) {
         setMetricsLoading(false);
       }
+    }
+  };
+
+  const loadRequestLogs = async (showLoading = true) => {
+    if (!selectedFolder) return;
+    if (showLoading) {
+      setRequestLogsLoading(true);
+    }
+    try {
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}&limit=10000`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      setRequestLogs(data.logs || []);
+    } catch (error) {
+      console.error("Error loading request logs:", error);
+      setRequestLogs([]);
+    } finally {
+      if (showLoading) {
+        setRequestLogsLoading(false);
+      }
+    }
+  };
+
+  const clearRequestLogs = async () => {
+    if (!selectedFolder) return;
+    try {
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      message.success('История вызовов очищена');
+      loadRequestLogs(true);
+    } catch (error) {
+      message.error(`Ошибка очистки истории: ${error.message}`);
+    }
+  };
+
+  const clearCacheByKey = async (cacheKey) => {
+    try {
+      const response = await fetch(`${host}/api/cache/clear?cache_key=${encodeURIComponent(cacheKey)}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      message.success('Кэш очищен');
+      loadRequestLogs(false);
+    } catch (error) {
+      message.error(`Ошибка очистки кэша: ${error.message}`);
     }
   };
   
@@ -516,12 +571,14 @@ export default function App() {
   useEffect(() => {
     if (!isMetricsModalOpen) return;
     
-    // Загружаем метрики сразу при открытии (с индикатором)
+    // Загружаем метрики и историю вызовов сразу при открытии (с индикатором)
     loadMetrics(true);
+    loadRequestLogs(true);
     
     // Устанавливаем интервал для автоматического обновления (без индикатора)
     const interval = setInterval(() => {
       loadMetrics(false);
+      loadRequestLogs(false);
     }, 5000);
     
     return () => clearInterval(interval);
@@ -2009,7 +2066,7 @@ export default function App() {
                       </ul>
                     </Typography.Paragraph>
 
-                    <Typography.Title level={4} style={{ marginTop: 16 }}>Кэш, метрики и ограничения</Typography.Title>
+                    <Typography.Title level={4} style={{ marginTop: 16 }}>Кэш, метрики и история вызовов</Typography.Title>
                     <Typography.Paragraph style={{ marginBottom: 0 }}>
                       <ul style={{ paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
                         <li><b>Кэш на уровне мока</b> вы включаете прямо в форме мока — это удобно для эндпоинтов,
@@ -2018,9 +2075,26 @@ export default function App() {
                         <li><b>Управление кэшем</b> — в таблице моков доступны действия, позволяющие очистить кэш
                             для конкретного пути (кнопка «Кэш» в строке мока). Также доступны API endpoints:
                             <code>GET /api/cache/status</code> для проверки состояния кэша и
-                            <code>DELETE /api/cache</code> для очистки (с опциональными фильтрами по папке и пути).</li>
+                            <code>DELETE /api/cache/clear</code> для очистки (с опциональными фильтрами по папке и ключу кэша).
+                            В детальной истории вызовов можно сбросить кэш для конкретного запроса прямо из таблицы.</li>
+                        <li><b>Детальная история вызовов</b> — система сохраняет информацию о каждом вызове метода в отдельную запись.
+                            В модальном окне метрик доступна таблица «Детальная история вызовов», которая показывает:
+                            <ul style={{ paddingLeft: 20, marginTop: 8 }}>
+                              <li>Время вызова (с точностью до миллисекунд)</li>
+                              <li>HTTP метод (GET, POST, PUT, DELETE и т.д.)</li>
+                              <li>Путь запроса</li>
+                              <li>Был ли запрос проксирован (Да/Нет)</li>
+                              <li>Время ответа в миллисекундах</li>
+                              <li>TTL кэша (если использовался) с возможностью сброса</li>
+                              <li>HTTP статус код ответа</li>
+                            </ul>
+                            Каждый вызов метода, даже если он один и тот же, отображается как отдельная строка с полной информацией.
+                            История вызовов можно очистить через кнопку «Очистить историю» в модальном окне метрик.</li>
                         <li><b>Метрики Prometheus</b> — сервер экспортирует метрики в формате Prometheus по адресу
-                            <code>/metrics</code>, включая количество запросов, попаданий в кэш, время ответа и другие.</li>
+                            <code>/metrics</code>, включая количество запросов, попаданий в кэш, время ответа и другие.
+                            Также доступны структурированные метрики через API endpoints:
+                            <code>GET /api/metrics/folder/{'{folder}'}</code> для метрик конкретной папки и
+                            <code>GET /api/metrics/global</code> для метрик всего сервиса.</li>
                         <li><b>Ограничения и нагрузка</b> — сервер следит за частотой запросов и размерами тела;
                             для повседневной работы об этом можно не думать, но при нагрузочном тестировании
                             эти ограничения помогут не «убить» окружение.</li>
@@ -2805,11 +2879,23 @@ export default function App() {
             title={`Метрики для папки "${selectedFolder}"`}
             open={isMetricsModalOpen}
             onCancel={() => setIsMetricsModalOpen(false)}
-            width={1400}
-            style={{ top: 20 }}
-            bodyStyle={{ maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}
+            width="95%"
+            style={{ top: 10 }}
+            bodyStyle={{ maxHeight: 'calc(100vh - 120px)', overflow: 'auto' }}
             footer={[
-              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => loadMetrics(true)} loading={metricsLoading}>
+              <Button key="clear" danger icon={<DeleteOutlined />} onClick={() => {
+                Modal.confirm({
+                  title: 'Очистить историю вызовов',
+                  content: 'Вы уверены, что хотите очистить всю историю вызовов для этой папки?',
+                  onOk: clearRequestLogs
+                });
+              }}>
+                Очистить историю
+              </Button>,
+              <Button key="refresh" icon={<ReloadOutlined />} onClick={() => {
+                loadMetrics(true);
+                loadRequestLogs(true);
+              }} loading={metricsLoading || requestLogsLoading}>
                 Обновить
               </Button>,
               <Button key="download" icon={<DownloadOutlined />} onClick={() => {

@@ -200,6 +200,22 @@ class Mock(Base):
     folder_obj = relationship("Folder", back_populates="mocks")
 
 
+class RequestLog(Base):
+    """Модель для хранения истории каждого вызова метода."""
+    __tablename__ = "request_logs"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    timestamp = Column(String, nullable=False, index=True)  # ISO format timestamp
+    folder_name = Column(String, ForeignKey("folders.name"), nullable=False, index=True)
+    method = Column(String, nullable=False, index=True)
+    path = Column(String, nullable=False, index=True)
+    is_proxied = Column(Boolean, default=False, index=True)
+    response_time_ms = Column(Integer, nullable=False)  # Время ответа в миллисекундах
+    status_code = Column(Integer, nullable=False, index=True)
+    cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
+    cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
+
+
 
 # Создаём таблицы
 Base.metadata.create_all(bind=engine)
@@ -207,6 +223,18 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="MocK — гибкий mock-сервер",
+    description=(
+        "MocK — это гибкий mock-сервер для создания и управления моками API.\n\n"
+        "Основные возможности:\n"
+        "- Создание и управление моками с настраиваемыми условиями запросов и ответов\n"
+        "- Импорт моков из Postman Collection и OpenAPI/Swagger спецификаций\n"
+        "- Поддержка проксирования запросов к реальным сервисам\n"
+        "- Кэширование ответов с настраиваемым TTL\n"
+        "- Подстановки в ответах и заголовках\n"
+        "- Задержки и имитация ошибок\n"
+        "- Детальная метрика по каждому вызову\n"
+        "- Иерархическая организация моков в папках и подпапках"
+    ),
     description=(
         "Сервис для создания и управления HTTP моками.\n\n"
         "Позволяет:\n"
@@ -247,7 +275,11 @@ async def readiness_check():
 
 
 
-@app.get("/info", summary="Информация о сервере и подключении к БД")
+@app.get(
+    "/info",
+    summary="Информация о сервере и подключении к БД",
+    description="Возвращает базовую информацию о работающем сервере и параметры подключения к базе данных."
+)
 async def server_info(request: Request):
   """
   Возвращает базовую информацию о работающем сервере и параметры подключения к БД.
@@ -1197,9 +1229,9 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             if not isinstance(path_item, dict):
                 continue
 
-            for method_name, operation in path_item.items():
-                if method_name.lower() not in allowed_methods:
-                    continue
+        for method_name, operation in path_item.items():
+            if method_name.lower() not in allowed_methods:
+                continue
 
             method_upper = method_name.upper()
 
@@ -1453,7 +1485,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
                 id=str(uuid4()),
                 folder_name=folder_name,
                 name=mock_name,
-                method=method_upper,
+                    method=method_upper,
                 path=normalized_path,
                 headers=request_headers if request_headers else {},
                 body_contains=_normalize_json_string(request_body_contains) if request_body_contains else None,
@@ -2795,6 +2827,97 @@ async def get_global_metrics():
         raise HTTPException(500, f"Ошибка получения метрик: {str(e)}")
 
 
+@app.get(
+    "/api/request-logs",
+    summary="Получить историю вызовов",
+    description="Возвращает детальную историю всех вызовов методов с информацией о методе, пути, времени ответа, статусе, проксировании и кэше.",
+)
+def get_request_logs(
+    folder: Optional[str] = Query(None, description="Имя папки для фильтрации. Если не указано, возвращаются все вызовы."),
+    limit: int = Query(1000, description="Максимальное количество записей для возврата", ge=1, le=10000),
+    offset: int = Query(0, description="Смещение для пагинации", ge=0),
+    db: Session = Depends(get_db),
+):
+    """Возвращает историю вызовов с возможностью фильтрации по папке."""
+    query = db.query(RequestLog)
+    if folder:
+        query = query.filter_by(folder_name=folder)
+    
+    total = query.count()
+    logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
+    
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "logs": [
+            {
+                "id": log.id,
+                "timestamp": log.timestamp,
+                "folder_name": log.folder_name,
+                "method": log.method,
+                "path": log.path,
+                "is_proxied": log.is_proxied,
+                "response_time_ms": log.response_time_ms,
+                "status_code": log.status_code,
+                "cache_ttl_seconds": log.cache_ttl_seconds,
+                "cache_key": log.cache_key
+            }
+            for log in logs
+        ]
+    }
+
+
+@app.delete(
+    "/api/request-logs",
+    summary="Очистить историю вызовов",
+    description="Удаляет все записи истории вызовов, опционально только для указанной папки.",
+)
+def clear_request_logs(
+    folder: Optional[str] = Query(None, description="Имя папки. Если не указано, удаляются все записи."),
+    db: Session = Depends(get_db),
+):
+    """Очищает историю вызовов."""
+    query = db.query(RequestLog)
+    if folder:
+        query = query.filter_by(folder_name=folder)
+    
+    count = query.count()
+    query.delete()
+    db.commit()
+    
+    return {"message": f"Удалено {count} записей", "deleted_count": count}
+
+
+@app.delete(
+    "/api/cache/clear",
+    summary="Очистить кэш",
+    description="Очищает кэш ответов, опционально по ключу или папке.",
+)
+def clear_cache(
+    cache_key: Optional[str] = Query(None, description="Ключ кэша для удаления конкретной записи"),
+    folder: Optional[str] = Query(None, description="Имя папки для удаления всех записей этой папки"),
+):
+    """Очищает кэш ответов."""
+    if cache_key:
+        if cache_key in RESPONSE_CACHE:
+            del RESPONSE_CACHE[cache_key]
+            return {"message": f"Кэш с ключом '{cache_key}' удалён", "deleted_count": 1}
+        else:
+            raise HTTPException(404, "Ключ кэша не найден")
+    elif folder:
+        # Удаляем все записи кэша для указанной папки
+        keys_to_delete = [k for k in RESPONSE_CACHE.keys() if f"folder={folder}" in k]
+        for key in keys_to_delete:
+            del RESPONSE_CACHE[key]
+        return {"message": f"Удалено {len(keys_to_delete)} записей кэша для папки '{folder}'", "deleted_count": len(keys_to_delete)}
+    else:
+        # Удаляем весь кэш
+        count = len(RESPONSE_CACHE)
+        RESPONSE_CACHE.clear()
+        return {"message": f"Весь кэш очищен ({count} записей)", "deleted_count": count}
+
+
 
 def extract_path_from_url(url) -> str:
     """Извлекает путь из URL, обрабатывая различные форматы Postman."""
@@ -3372,6 +3495,25 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 outcome="mock_hit"
             ).observe(response_time)
             
+            # Логируем вызов в БД
+            try:
+                request_log = RequestLog(
+                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    folder_name=folder_name,
+                    method=request.method,
+                    path=full_inner.split('?')[0],
+                    is_proxied=False,
+                    response_time_ms=int(response_time * 1000),
+                    status_code=status_code,
+                    cache_ttl_seconds=ttl if ttl > 0 else None,
+                    cache_key=cache_key
+                )
+                db.add(request_log)
+                db.commit()
+            except Exception as e:
+                logger.error(f"Error logging request: {e}", exc_info=True)
+                db.rollback()
+            
             return resp
 
 
@@ -3449,6 +3591,25 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             folder=folder_name
         ).observe(response_time)
         
+        # Логируем проксированный вызов в БД
+        try:
+            request_log = RequestLog(
+                timestamp=datetime.utcnow().isoformat() + "Z",
+                folder_name=folder_name,
+                method=request.method,
+                path=full_inner.split('?')[0],
+                is_proxied=True,
+                response_time_ms=int(response_time * 1000),
+                status_code=status_code,
+                cache_ttl_seconds=None,
+                cache_key=None
+            )
+            db.add(request_log)
+            db.commit()
+        except Exception as e:
+            logger.error(f"Error logging proxied request: {e}", exc_info=True)
+            db.rollback()
+        
         return resp
 
     response_time = time.time() - start_time
@@ -3470,5 +3631,24 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         folder=folder_name,
         outcome="not_found"
     ).observe(response_time)
+    
+    # Логируем не найденный запрос в БД
+    try:
+        request_log = RequestLog(
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            folder_name=folder_name,
+            method=request.method,
+            path=full_inner.split('?')[0],
+            is_proxied=False,
+            response_time_ms=int(response_time * 1000),
+            status_code=404,
+            cache_ttl_seconds=None,
+            cache_key=None
+        )
+        db.add(request_log)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error logging not found request: {e}", exc_info=True)
+        db.rollback()
     
     raise HTTPException(404, "No matching mock found")
