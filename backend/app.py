@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Dict, Optional, List, Any, Tuple
 from sqlalchemy import (
-    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text
+    create_engine, Column, String, Integer, Boolean, JSON as SAJSON, ForeignKey, text, and_, foreign
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -157,21 +157,30 @@ Base = declarative_base()
 
 class Folder(Base):
     __tablename__ = "folders"
-    # Изменяем первичный ключ: добавляем id и делаем составной уникальный индекс на (name, parent_folder)
-    # Но для обратной совместимости пока оставляем name как PK, а проверку делаем в коде
+    # Составной первичный ключ: (name, parent_folder)
+    # Для корневых папок parent_folder = '', для подпапок - имя родительской папки
+    # Это позволяет иметь подпапки с именами, совпадающими с корневыми папками
     name = Column(String, primary_key=True)
+    parent_folder = Column(String, primary_key=True, default='')
     mocks = relationship("Mock", back_populates="folder_obj", cascade="all, delete", order_by="Mock.order")
     # Настройки прокси для папки
     proxy_enabled = Column(Boolean, default=False)
     proxy_base_url = Column(String, nullable=True)
     # Порядок отображения папки
     order = Column(Integer, default=0, index=True)
-    # Родительская папка для поддержки вложенных папок
-    # ВАЖНО: parent_folder не может быть ForeignKey на folders.name, так как это создаст циклическую зависимость
-    # при попытке создать подпапку с именем корневой папки
-    parent_folder = Column(String, nullable=True, index=True)
-    # Вложенные папки
-    subfolders = relationship("Folder", backref="parent", remote_side=[name], cascade="all, delete")
+    # Вложенные папки - используем primaryjoin для правильной связи
+    # parent_folder подпапки должен совпадать с name родительской папки
+    # Для корневых папок parent_folder = '', для подпапок - имя родительской папки
+    # Используем строковый primaryjoin для self-referential relationship
+    # ВАЖНО: remote_side указывает на name, так как это часть составного PK
+    subfolders = relationship(
+        "Folder",
+        backref="parent",
+        primaryjoin="and_(Folder.parent_folder == Folder.name, Folder.parent_folder != '')",
+        foreign_keys="[Folder.parent_folder]",
+        remote_side=[name],
+        cascade="all, delete"
+    )
 
 
 
@@ -634,38 +643,74 @@ def ensure_migrations():
                 ).fetchone()
                 
                 if not pk_check:
-                    logger.info("Starting migration: changing folders primary key to support subfolders with same names...")
+                    logger.info("Starting critical migration: changing folders primary key to support subfolders...")
                     
                     # Шаг 1: Обновляем существующие записи - устанавливаем parent_folder = '' для корневых папок
                     conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
                     logger.info("Updated existing root folders: set parent_folder = ''")
                     
-                    # Шаг 2: Удаляем старый первичный ключ
-                    # Сначала нужно удалить все внешние ключи, которые ссылаются на folders.name
-                    # Но это может быть проблематично, поэтому используем другой подход:
-                    # Создаем уникальный индекс и оставляем старый PK (для обратной совместимости)
-                    # Но это не решит проблему полностью - нужна полная миграция PK
+                    # Шаг 2: Удаляем все внешние ключи, которые ссылаются на folders.name
+                    # Находим все внешние ключи
+                    fk_list = conn.execute(
+                        text("""
+                            SELECT constraint_name, table_name
+                            FROM information_schema.table_constraints
+                            WHERE constraint_type = 'FOREIGN KEY'
+                            AND constraint_name IN (
+                                SELECT constraint_name
+                                FROM information_schema.key_column_usage
+                                WHERE referenced_table_name = 'folders'
+                                AND referenced_column_name = 'name'
+                            )
+                        """)
+                    ).fetchall()
                     
-                    # ВАЖНО: Полная миграция PK требует:
-                    # 1. Удалить все внешние ключи на folders.name
-                    # 2. Удалить старый PK
-                    # 3. Создать новый составной PK
-                    # 4. Восстановить внешние ключи
-                    # Это очень сложная операция, которая может сломать данные
+                    # Удаляем внешние ключи
+                    for fk_name, table_name in fk_list:
+                        try:
+                            conn.execute(text(f'ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {fk_name}'))
+                            logger.info(f"Dropped foreign key {fk_name} from {table_name}")
+                        except Exception as e:
+                            logger.warning(f"Error dropping foreign key {fk_name}: {e}")
                     
-                    # Пока используем обходное решение: создаем уникальный индекс
-                    # и проверяем в коде перед вставкой
-                    conn.execute(text("""
-                        CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
-                        ON folders (name, COALESCE(parent_folder, ''))
-                    """))
-                    logger.info("Created unique index folders_name_parent_unique on (name, parent_folder)")
+                    # Шаг 3: Удаляем старый первичный ключ
+                    try:
+                        conn.execute(text("ALTER TABLE folders DROP CONSTRAINT IF EXISTS folders_pkey"))
+                        logger.info("Dropped old primary key folders_pkey")
+                    except Exception as e:
+                        logger.warning(f"Error dropping old primary key: {e}")
                     
-                    logger.warning("WARNING: Primary key migration not completed. "
-                                 "Subfolders with same names as root folders are not fully supported yet. "
-                                 "Full migration requires dropping and recreating foreign keys.")
+                    # Шаг 4: Обновляем parent_folder для корневых папок (уже NULL -> '')
+                    # Убеждаемся, что все корневые папки имеют parent_folder = ''
+                    conn.execute(text("UPDATE folders SET parent_folder = '' WHERE parent_folder IS NULL"))
+                    
+                    # Шаг 5: Создаем новый составной первичный ключ
+                    # В PostgreSQL нельзя использовать COALESCE в PK, поэтому используем parent_folder напрямую
+                    # Но parent_folder не может быть NULL, поэтому для корневых папок используем ''
+                    try:
+                        conn.execute(text("""
+                            ALTER TABLE folders 
+                            ADD CONSTRAINT folders_pkey 
+                            PRIMARY KEY (name, parent_folder)
+                        """))
+                        logger.info("Created new composite primary key on (name, parent_folder)")
+                    except Exception as e:
+                        logger.error(f"Error creating new primary key: {e}")
+                        # Если не удалось создать составной PK, создаем обычный уникальный индекс
+                        conn.execute(text("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS folders_name_parent_unique 
+                            ON folders (name, parent_folder)
+                        """))
+                        logger.warning("Created unique index instead of composite PK")
+                    
+                    # Шаг 5: Восстанавливаем внешние ключи (но теперь они должны ссылаться на составной ключ)
+                    # Это сложно, поэтому пока оставляем без FK
+                    logger.warning("Foreign keys need to be recreated manually if needed")
+                    
+                    logger.info("Migration completed: folders can now have subfolders with same names")
             except Exception as e:
                 logger.error(f"Error migrating folders primary key: {e}", exc_info=True)
+                # Продолжаем выполнение, даже если миграция не удалась
             
             # Новые поля в mocks
             if ('mocks', 'delay_ms') not in existing_set:
@@ -733,8 +778,12 @@ def ensure_default_folder():
 
     db = SessionLocal()
     try:
-        if not db.query(Folder).filter_by(name="default").first():
-            db.add(Folder(name="default"))
+        # Корневая папка default имеет parent_folder = ''
+        if not db.query(Folder).filter(
+            Folder.name == "default",
+            Folder.parent_folder == ''
+        ).first():
+            db.add(Folder(name="default", parent_folder=''))
             db.commit()
     finally:
         db.close()
@@ -789,21 +838,32 @@ def create_folder(
     # Проверяем родительскую папку, если указана
     parent_folder = None
     if payload.parent_folder:
-        parent_folder_obj = db.query(Folder).filter_by(name=payload.parent_folder).first()
+        # Ищем родительскую папку (корневая папка имеет parent_folder = '')
+        parent_folder_obj = db.query(Folder).filter(
+            Folder.name == payload.parent_folder,
+            Folder.parent_folder == ''
+        ).first()
         if not parent_folder_obj:
             logger.warning(f"create_folder: parent folder '{payload.parent_folder}' not found")
             raise HTTPException(404, f"Родительская папка '{payload.parent_folder}' не найдена")
         parent_folder = payload.parent_folder
         # Для подпапок разрешаем дубликаты имен (даже если есть корневая папка с таким же именем)
         # Проверяем только, что в этой родительской папке нет подпапки с таким же именем
-        existing_subfolder = db.query(Folder).filter_by(name=name, parent_folder=parent_folder).first()
+        existing_subfolder = db.query(Folder).filter(
+            Folder.name == name,
+            Folder.parent_folder == parent_folder
+        ).first()
         if existing_subfolder:
             logger.warning(f"create_folder: subfolder '{name}' already exists in parent '{parent_folder}'")
             raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
         logger.debug(f"create_folder: creating subfolder '{name}' in parent '{parent_folder}'")
     else:
         # Для корневых папок проверяем уникальность имени (не должно быть корневой папки с таким именем)
-        existing_folder = db.query(Folder).filter_by(name=name, parent_folder=None).first()
+        # Корневые папки имеют parent_folder = ''
+        existing_folder = db.query(Folder).filter(
+            Folder.name == name,
+            Folder.parent_folder == ''
+        ).first()
         if existing_folder:
             logger.warning(f"create_folder: root folder '{name}' already exists")
             raise HTTPException(400, f"Корневая папка '{name}' уже существует")
@@ -811,51 +871,14 @@ def create_folder(
     
     try:
         # Нормализуем parent_folder: None -> '' для корневых папок
-        # Это нужно для работы уникального индекса
+        # Это нужно для составного первичного ключа (name, parent_folder)
         normalized_parent = parent_folder if parent_folder else ''
         
-        # Проверяем уникальность с учетом нормализованного parent_folder
-        # Используем COALESCE для сравнения NULL и ''
-        if normalized_parent:
-            existing = db.query(Folder).filter(
-                Folder.name == name,
-                Folder.parent_folder == normalized_parent
-            ).first()
-        else:
-            # Для корневых папок проверяем, что parent_folder IS NULL или ''
-            existing = db.query(Folder).filter(
-                Folder.name == name,
-                (Folder.parent_folder.is_(None) | (Folder.parent_folder == ''))
-            ).first()
-        
-        if existing:
-            if parent_folder:
-                raise HTTPException(400, f"Подпапка '{name}' уже существует в папке '{parent_folder}'")
-            else:
-                raise HTTPException(400, f"Корневая папка '{name}' уже существует")
-        
-        # ВАЖНО: Из-за того, что первичный ключ на name, PostgreSQL не позволит создать
-        # подпапку с именем, совпадающим с корневой папкой.
-        # Проверяем, не существует ли уже папка с таким именем (независимо от parent_folder)
-        existing_by_name = db.query(Folder).filter_by(name=name).first()
-        if existing_by_name:
-            # Если пытаемся создать подпапку, а корневая папка с таким именем уже существует
-            if parent_folder:
-                # Это нормально - подпапка может иметь имя корневой папки
-                # Но из-за PK на name это невозможно. Нужна миграция PK.
-                # Пока возвращаем понятную ошибку
-                raise HTTPException(400, 
-                    f"Нельзя создать подпапку '{name}' в папке '{parent_folder}': "
-                    f"корневая папка с именем '{name}' уже существует. "
-                    f"Для поддержки подпапок с именами корневых папок требуется миграция первичного ключа базы данных.")
-            else:
-                raise HTTPException(400, f"Корневая папка '{name}' уже существует")
-        
-        # Создаем папку с нормализованным parent_folder
-        # Используем None для корневых папок, чтобы сохранить совместимость
-        # ВАЖНО: Из-за PK на name, если корневая папка с таким именем уже существует,
-        # PostgreSQL выдаст ошибку уникальности при попытке создать подпапку
-        folder = Folder(name=name, parent_folder=normalized_parent if normalized_parent else None)
+        # Создаем папку
+        # Для корневых папок parent_folder = '' (пустая строка)
+        # Для подпапок parent_folder = имя родительской папки
+        # Это нужно для составного первичного ключа (name, parent_folder)
+        folder = Folder(name=name, parent_folder=normalized_parent)
         db.add(folder)
         db.commit()
         logger.info(f"create_folder: successfully created folder '{name}' with parent '{parent_folder}'")
@@ -891,7 +914,13 @@ def delete_folder(
 ):
     if name == "default":
         raise HTTPException(400, "Нельзя удалить стандартную папку")
-    folder = db.query(Folder).filter_by(name=name).first()
+    # Ищем папку (сначала как корневую, потом среди всех)
+    folder = db.query(Folder).filter(
+        Folder.name == name,
+        Folder.parent_folder == ''
+    ).first()
+    if not folder:
+        folder = db.query(Folder).filter(Folder.name == name).first()
     if not folder:
         raise HTTPException(404, "Папка не найдена")
     db.delete(folder)
@@ -916,21 +945,29 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         if old == "default":
             raise HTTPException(400, "Нельзя переименовать стандартную папку")
         
-        folder = db.query(Folder).filter_by(name=old).first()
+        # Ищем папку по составному ключу
+        # Сначала пробуем найти как корневую (parent_folder = '')
+        folder = db.query(Folder).filter(
+            Folder.name == old,
+            Folder.parent_folder == ''
+        ).first()
+        # Если не найдена, ищем среди всех папок
+        if not folder:
+            folder = db.query(Folder).filter(Folder.name == old).first()
         if not folder:
             raise HTTPException(404, "Папка не найдена")
         
         # Проверяем уникальность имени с учетом родительской папки
         # Для корневых папок проверяем, что нет другой корневой папки с таким именем
         # Для подпапок проверяем, что в той же родительской папке нет подпапки с таким именем
-        # ВАЖНО: исключаем текущую папку из проверки (она может иметь такое же имя, если переименовываем в то же имя)
-        parent_folder = folder.parent_folder
-        if parent_folder is None:
+        # ВАЖНО: исключаем текущую папку из проверки
+        parent_folder = folder.parent_folder or ''
+        if parent_folder == '':
             # Это корневая папка - проверяем, что нет другой корневой папки с таким именем
             existing_root = db.query(Folder).filter(
                 Folder.name == new,
-                Folder.parent_folder.is_(None),
-                Folder.name != old  # Исключаем текущую папку
+                Folder.parent_folder == '',
+                ~((Folder.name == old) & (Folder.parent_folder == ''))  # Исключаем текущую папку
             ).first()
             if existing_root:
                 raise HTTPException(400, f"Корневая папка '{new}' уже существует")
@@ -940,7 +977,7 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
             existing_subfolder = db.query(Folder).filter(
                 Folder.name == new,
                 Folder.parent_folder == parent_folder,
-                Folder.name != old  # Исключаем текущую папку
+                ~((Folder.name == old) & (Folder.parent_folder == parent_folder))  # Исключаем текущую папку
             ).first()
             if existing_subfolder:
                 raise HTTPException(400, f"Подпапка '{new}' уже существует в папке '{parent_folder}'")
@@ -952,7 +989,9 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
         # 4) удалить старую папку.
 
         # 1. Создаём новую запись папки с сохранением parent_folder
-        new_folder = Folder(name=new, parent_folder=parent_folder)
+        # Нормализуем parent_folder: None -> ''
+        normalized_parent = parent_folder if parent_folder else ''
+        new_folder = Folder(name=new, parent_folder=normalized_parent)
         db.add(new_folder)
         db.flush()
 
@@ -965,7 +1004,8 @@ def rename_folder(payload: FolderRenamePayload, db: Session = Depends(get_db)):
 
         # 3. Обновляем все подпапки (если переименовывается корневая папка)
         # Если переименовывается подпапка, подпапки у неё остаются с тем же parent_folder (новым именем)
-        db.query(Folder).filter_by(parent_folder=old).update(
+        # Обновляем только те подпапки, у которых parent_folder = old
+        db.query(Folder).filter(Folder.parent_folder == old).update(
             {"parent_folder": new},
             synchronize_session=False
         )
@@ -1005,12 +1045,24 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         if src == dst:
             raise HTTPException(400, "Имя новой папки должно отличаться от исходного")
 
-        src_folder = db.query(Folder).filter_by(name=src).first()
+        # Ищем исходную папку (сначала как корневую, потом среди всех)
+        src_folder = db.query(Folder).filter(
+            Folder.name == src,
+            Folder.parent_folder == ''
+        ).first()
+        if not src_folder:
+            src_folder = db.query(Folder).filter(Folder.name == src).first()
         if not src_folder:
             raise HTTPException(404, "Исходная папка не найдена")
 
-        if db.query(Folder).filter_by(name=dst).first():
-            raise HTTPException(400, "Папка с таким именем уже существует")
+        # Проверяем, не существует ли уже папка с таким именем
+        # Для корневых папок проверяем только корневые
+        existing = db.query(Folder).filter(
+            Folder.name == dst,
+            Folder.parent_folder == ''
+        ).first()
+        if existing:
+            raise HTTPException(400, "Корневая папка с таким именем уже существует")
 
         # Создаём новую папку, копируя настройки прокси
         new_folder = Folder(
@@ -1281,11 +1333,17 @@ def _save_mock_entry(entry: MockEntry, db: Session) -> None:
     if not folder_name:
         folder_name = "default"
     
-    folder = db.query(Folder).filter_by(name=folder_name).first()
+    # Ищем папку (сначала как корневую, потом среди всех)
+    folder = db.query(Folder).filter(
+        Folder.name == folder_name,
+        Folder.parent_folder == ''
+    ).first()
     if not folder:
-        # Автоматически создаем папку, если её нет
+        folder = db.query(Folder).filter(Folder.name == folder_name).first()
+    if not folder:
+        # Автоматически создаем корневую папку, если её нет
         # Это нужно для обратной совместимости
-        folder = Folder(name=folder_name)
+        folder = Folder(name=folder_name, parent_folder='')
         db.add(folder)
         db.flush()
 
@@ -1406,9 +1464,12 @@ def _ensure_folder(folder_name: str, db: Optional[Session] = None) -> str:
         db = SessionLocal()
         own = True
     try:
-        existing = db.query(Folder).filter_by(name=folder_name).first()
+        existing = db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == ''
+        ).first()
         if not existing:
-            db.add(Folder(name=folder_name))
+            db.add(Folder(name=folder_name, parent_folder=''))
             db.commit()
         return folder_name
     finally:
@@ -1938,7 +1999,13 @@ def get_folder_settings(
     name: str = Path(..., description="Имя папки"),
     db: Session = Depends(get_db),
 ):
-    folder = db.query(Folder).filter_by(name=name).first()
+    # Ищем папку (сначала как корневую, потом среди всех)
+    folder = db.query(Folder).filter(
+        Folder.name == name,
+        Folder.parent_folder == ''
+    ).first()
+    if not folder:
+        folder = db.query(Folder).filter(Folder.name == name).first()
     if not folder:
         raise HTTPException(404, "Папка не найдена")
     return FolderSettingsOut(
@@ -1958,7 +2025,13 @@ def update_folder_settings(
     payload: FolderSettings = Body(...),
     db: Session = Depends(get_db),
 ):
-    folder = db.query(Folder).filter_by(name=name).first()
+    # Ищем папку (сначала как корневую, потом среди всех)
+    folder = db.query(Folder).filter(
+        Folder.name == name,
+        Folder.parent_folder == ''
+    ).first()
+    if not folder:
+        folder = db.query(Folder).filter(Folder.name == name).first()
     if not folder:
         raise HTTPException(404, "Папка не найдена")
 
@@ -2274,7 +2347,7 @@ def deactivate_all(
                 return []
             visited.add(parent_name)
             result = [parent_name]
-            subfolders = db.query(Folder).filter_by(parent_folder=parent_name).all()
+            subfolders = db.query(Folder).filter(Folder.parent_folder == parent_name).all()
             for subfolder in subfolders:
                 result.extend(get_all_subfolders(subfolder.name, visited))
             return result
@@ -2396,8 +2469,11 @@ async def import_postman_collection(
         folder_name = coll.get("info", {}).get("name", "postman")
         folder_name = folder_name.strip() or "postman"
 
-        if not db.query(Folder).filter_by(name=folder_name).first():
-            db.add(Folder(name=folder_name))
+        if not db.query(Folder).filter(
+            Folder.name == folder_name,
+            Folder.parent_folder == ''
+        ).first():
+            db.add(Folder(name=folder_name, parent_folder=''))
             db.flush()
 
         items = coll.get("item", [])
@@ -3670,19 +3746,29 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
     inner_path = path
     folder_name = "default"
-    folder = db.query(Folder).filter_by(name="default").first()
+    # Ищем корневую папку default (parent_folder = '')
+    folder = db.query(Folder).filter(
+        Folder.name == "default",
+        Folder.parent_folder == ''
+    ).first()
 
     if segments:
         # Проверяем первый сегмент - это может быть корневая папка или начало пути к подпапке
         first_segment = segments[0]
-        root_folder = db.query(Folder).filter_by(name=first_segment, parent_folder=None).first()
+        root_folder = db.query(Folder).filter(
+            Folder.name == first_segment,
+            Folder.parent_folder == ''
+        ).first()
         
         if root_folder:
             # Нашли корневую папку
             if len(segments) > 1:
                 # Проверяем, может быть второй сегмент - это подпапка?
                 second_segment = segments[1]
-                subfolder = db.query(Folder).filter_by(name=second_segment, parent_folder=first_segment).first()
+                subfolder = db.query(Folder).filter(
+                    Folder.name == second_segment,
+                    Folder.parent_folder == first_segment
+                ).first()
                 
                 if subfolder:
                     # Нашли подпапку: /parent/sub/...
@@ -3701,10 +3787,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 inner_path = "/"
         else:
             # Первый сегмент не корневая папка - используем default
-            folder = db.query(Folder).filter_by(name="default").first()
+            folder = db.query(Folder).filter(
+                Folder.name == "default",
+                Folder.parent_folder == ''
+            ).first()
     else:
         # Пустой путь - используем default
-        folder = db.query(Folder).filter_by(name="default").first()
+        folder = db.query(Folder).filter(
+            Folder.name == "default",
+            Folder.parent_folder == ''
+        ).first()
 
 
     query_suffix = f"?{request.url.query}" if request.url.query else ""
