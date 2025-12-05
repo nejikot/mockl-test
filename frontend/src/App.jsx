@@ -471,6 +471,7 @@ export default function App() {
   const [isGlobalMetricsModalOpen, setIsGlobalMetricsModalOpen] = useState(false);
   const [globalMetricsData, setGlobalMetricsData] = useState("");
   const [globalMetricsLoading, setGlobalMetricsLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
   
   // Функция для загрузки метрик (с индикатором загрузки)
   const loadMetrics = async (showLoading = true) => {
@@ -541,9 +542,27 @@ export default function App() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       message.success('Кэш очищен');
+      
+      // Обновляем записи в requestLogs, убирая TTL для записей с этим cache_key
       if (isGlobal) {
+        setGlobalRequestLogs(prevLogs => 
+          prevLogs.map(log => 
+            log.cache_key === cacheKey 
+              ? { ...log, cache_ttl_seconds: null, cache_key: null }
+              : log
+          )
+        );
+        // Также перезагружаем для синхронизации с сервером
         loadGlobalRequestLogs(false);
       } else {
+        setRequestLogs(prevLogs => 
+          prevLogs.map(log => 
+            log.cache_key === cacheKey 
+              ? { ...log, cache_ttl_seconds: null, cache_key: null }
+              : log
+          )
+        );
+        // Также перезагружаем для синхронизации с сервером
         loadRequestLogs(false);
       }
     } catch (error) {
@@ -625,6 +644,30 @@ export default function App() {
     
     return () => clearInterval(interval);
   }, [isMetricsModalOpen, selectedFolder]);
+
+  // Обновление времени каждую секунду для динамического TTL (когда открыто модальное окно метрик)
+  useEffect(() => {
+    if (!isMetricsModalOpen && !isGlobalMetricsModalOpen) return;
+    
+    const timeInterval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    
+    return () => clearInterval(timeInterval);
+  }, [isMetricsModalOpen, isGlobalMetricsModalOpen]);
+
+  // Функция для вычисления оставшегося TTL кэша
+  const getRemainingTTL = (timestamp, ttlSeconds) => {
+    if (!timestamp || !ttlSeconds) return null;
+    try {
+      const requestTime = new Date(timestamp);
+      const elapsed = Math.floor((currentTime - requestTime) / 1000);
+      const remaining = ttlSeconds - elapsed;
+      return remaining > 0 ? remaining : 0;
+    } catch {
+      return null;
+    }
+  };
   
   // Автоматическое обновление глобальных метрик каждые 5 секунд
   useEffect(() => {
@@ -3287,6 +3330,177 @@ export default function App() {
                       </Typography.Text>
                     </div>
                   )}
+
+                  {/* Детальная история вызовов */}
+                  <div style={{ 
+                    background: theme === "dark" ? "#262626" : "#fff",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginTop: 16,
+                    border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                  }}>
+                    <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                      Детальная история вызовов
+                    </Typography.Title>
+                    {requestLogsLoading ? (
+                      <div style={{ textAlign: 'center', padding: '20px' }}>
+                        <Typography.Text>Загрузка истории...</Typography.Text>
+                      </div>
+                    ) : requestLogs.length > 0 ? (
+                      <Table
+                        dataSource={requestLogs.map((log, idx) => ({ ...log, key: log.id || idx }))}
+                        pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `Всего ${total} записей` }}
+                        size="small"
+                        scroll={{ x: 'max-content', y: '400px' }}
+                        columns={[
+                          {
+                            title: 'Время',
+                            dataIndex: 'timestamp',
+                            key: 'timestamp',
+                            width: 180,
+                            render: (timestamp) => {
+                              try {
+                                const date = new Date(timestamp);
+                                return (
+                                  <Typography.Text style={{ fontSize: 11 }}>
+                                    {date.toLocaleString('ru-RU', { 
+                                      year: 'numeric', 
+                                      month: '2-digit', 
+                                      day: '2-digit', 
+                                      hour: '2-digit', 
+                                      minute: '2-digit', 
+                                      second: '2-digit',
+                                      fractionalSecondDigits: 3
+                                    })}
+                                  </Typography.Text>
+                                );
+                              } catch {
+                                return <Typography.Text style={{ fontSize: 11 }}>{timestamp}</Typography.Text>;
+                              }
+                            }
+                          },
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            width: 300,
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'is_proxied',
+                            key: 'is_proxied',
+                            width: 80,
+                            align: 'center',
+                            render: (isProxied) => (
+                              <Typography.Text style={{ 
+                                color: isProxied ? (theme === "dark" ? "#ffb74d" : "#fa8c16") : (theme === "dark" ? "#81c784" : "#52c41a")
+                              }}>
+                                {isProxied ? 'Да' : 'Нет'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Время ответа',
+                            dataIndex: 'response_time_ms',
+                            key: 'response_time_ms',
+                            width: 130,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text>
+                                {time} мс
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'TTL кэша',
+                            dataIndex: 'cache_ttl_seconds',
+                            key: 'cache_ttl_seconds',
+                            width: 150,
+                            align: 'right',
+                            render: (ttl, record) => {
+                              const remainingTTL = getRemainingTTL(record.timestamp, ttl);
+                              if (remainingTTL !== null && remainingTTL > 0) {
+                                return (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                                    <Typography.Text style={{ 
+                                      color: remainingTTL < 10 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined
+                                    }}>
+                                      {remainingTTL} с
+                                    </Typography.Text>
+                                    {record.cache_key && (
+                                      <Button 
+                                        size="small" 
+                                        type="link" 
+                                        danger
+                                        onClick={() => {
+                                          Modal.confirm({
+                                            title: 'Очистить кэш',
+                                            content: `Очистить кэш с ключом "${record.cache_key}"?`,
+                                            onOk: () => clearCacheByKey(record.cache_key, false)
+                                          });
+                                        }}
+                                      >
+                                        Сбросить
+                                      </Button>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return <Typography.Text type="secondary">—</Typography.Text>;
+                            }
+                          },
+                          {
+                            title: 'Статус код',
+                            dataIndex: 'status_code',
+                            key: 'status_code',
+                            width: 120,
+                            align: 'right',
+                            render: (code) => (
+                              <Typography.Text 
+                                strong 
+                                style={{ 
+                                  color: code >= 200 && code < 300
+                                    ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                    : code >= 400
+                                    ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                    : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                }}
+                              >
+                                {code}
+                              </Typography.Text>
+                            )
+                          }
+                        ]}
+                      />
+                    ) : (
+                      <div style={{ 
+                        padding: 40,
+                        textAlign: 'center',
+                      }}>
+                        <Typography.Text type="secondary">
+                          Нет данных о вызовах. Выполните запросы к мокам или прокси для получения истории.
+                        </Typography.Text>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })()}
@@ -3756,10 +3970,15 @@ export default function App() {
                             width: 150,
                             align: 'right',
                             render: (ttl, record) => {
-                              if (ttl) {
+                              const remainingTTL = getRemainingTTL(record.timestamp, ttl);
+                              if (remainingTTL !== null && remainingTTL > 0) {
                                 return (
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-                                    <Typography.Text>{ttl} с</Typography.Text>
+                                    <Typography.Text style={{ 
+                                      color: remainingTTL < 10 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined
+                                    }}>
+                                      {remainingTTL} с
+                                    </Typography.Text>
                                     {record.cache_key && (
                                       <Button 
                                         size="small" 
