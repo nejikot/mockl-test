@@ -946,6 +946,7 @@ def delete_folder(
         # Удаляем все подпапки рекурсивно перед удалением самой папки
         # Используем составной ключ для точной идентификации подпапок
         # Добавляем защиту от бесконечной рекурсии через множество посещенных папок
+        # ВАЖНО: Используем прямой SQL для удаления, чтобы обойти циклические зависимости SQLAlchemy
         visited_folders = set()
         
         def delete_subfolders_recursive(parent_name: str, parent_parent_folder: str):
@@ -964,32 +965,37 @@ def delete_folder(
                     continue
                 visited_folders.add(subfolder_key)
                 
-                # Удаляем моки подпапки
+                # Сначала удаляем моки подпапки через прямой SQL, чтобы разорвать связи
                 # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
                 # Это ограничение текущей схемы БД - моки не хранят parent_folder
-                subfolder_mocks = db.query(Mock).filter_by(folder_name=subfolder.name).all()
-                for mock in subfolder_mocks:
-                    db.delete(mock)
+                db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
+                          {"folder_name": subfolder.name})
+                db.flush()
+                
                 # Рекурсивно удаляем подпапки подпапки
                 delete_subfolders_recursive(subfolder.name, subfolder.parent_folder)
-                # Удаляем саму подпапку
-                db.delete(subfolder)
+                
+                # Удаляем саму подпапку через прямой SQL, чтобы обойти каскадные связи
+                db.execute(text("DELETE FROM folders WHERE name = :name AND parent_folder = :parent_folder"), 
+                          {"name": subfolder.name, "parent_folder": subfolder.parent_folder})
+                db.flush()
         
         # Удаляем подпапки текущей папки
         # Используем folder_name как parent_folder для поиска подпапок
         delete_subfolders_recursive(folder_name, parent_folder if parent_folder else '')
         
-        # Удаляем моки самой папки
+        # Удаляем моки самой папки через прямой SQL
         # ВАЖНО: Mock хранит только folder_name, поэтому удаляем все моки с таким именем
         # Это может удалить моки из других папок с таким же именем, если они существуют
         # Это ограничение текущей схемы БД - моки не хранят parent_folder
         # В будущем можно добавить parent_folder в Mock для точной идентификации
-        mocks_to_delete = db.query(Mock).filter_by(folder_name=folder_name).all()
-        for mock in mocks_to_delete:
-            db.delete(mock)
+        db.execute(text("DELETE FROM mocks WHERE folder_name = :folder_name"), 
+                  {"folder_name": folder_name})
+        db.flush()
         
-        # Удаляем саму папку
-        db.delete(folder)
+        # Удаляем саму папку через прямой SQL
+        db.execute(text("DELETE FROM folders WHERE name = :name AND parent_folder = :parent_folder"), 
+                  {"name": folder_name, "parent_folder": parent_folder if parent_folder else ''})
         db.commit()
     
         folder_type = "подпапка" if parent_folder else "папка"
