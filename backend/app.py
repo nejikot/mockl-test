@@ -752,6 +752,7 @@ def ensure_migrations():
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_request_logs_folder_id ON request_logs (folder_id)"))
                     
                     # Шаг 12: Удаляем старые колонки folder_name и parent_folder
+                    # Это должно выполняться всегда, если колонки еще существуют
                     try:
                         # Удаляем folder_name из mocks
                         folder_name_exists = conn.execute(
@@ -762,7 +763,12 @@ def ensure_migrations():
                             """)
                         ).fetchone()
                         if folder_name_exists:
-                            conn.execute(text("ALTER TABLE mocks DROP COLUMN folder_name"))
+                            # Сначала удаляем NOT NULL constraint, если он есть
+                            try:
+                                conn.execute(text("ALTER TABLE mocks ALTER COLUMN folder_name DROP NOT NULL"))
+                            except:
+                                pass
+                            conn.execute(text("ALTER TABLE mocks DROP COLUMN folder_name CASCADE"))
                             logger.info("Dropped column mocks.folder_name")
                     except Exception as e:
                         logger.warning(f"Error dropping mocks.folder_name: {e}")
@@ -777,7 +783,12 @@ def ensure_migrations():
                             """)
                         ).fetchone()
                         if folder_name_exists:
-                            conn.execute(text("ALTER TABLE request_logs DROP COLUMN folder_name"))
+                            # Сначала удаляем NOT NULL constraint, если он есть
+                            try:
+                                conn.execute(text("ALTER TABLE request_logs ALTER COLUMN folder_name DROP NOT NULL"))
+                            except:
+                                pass
+                            conn.execute(text("ALTER TABLE request_logs DROP COLUMN folder_name CASCADE"))
                             logger.info("Dropped column request_logs.folder_name")
                     except Exception as e:
                         logger.warning(f"Error dropping request_logs.folder_name: {e}")
@@ -792,7 +803,12 @@ def ensure_migrations():
                             """)
                         ).fetchone()
                         if parent_folder_exists:
-                            conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder"))
+                            # Сначала удаляем NOT NULL constraint, если он есть
+                            try:
+                                conn.execute(text("ALTER TABLE folders ALTER COLUMN parent_folder DROP NOT NULL"))
+                            except:
+                                pass
+                            conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder CASCADE"))
                             logger.info("Dropped column folders.parent_folder")
                     except Exception as e:
                         logger.warning(f"Error dropping folders.parent_folder: {e}")
@@ -801,6 +817,68 @@ def ensure_migrations():
                 except Exception as e:
                     logger.error(f"Error during folder id migration: {e}", exc_info=True)
                     raise
+            
+            # Всегда проверяем и удаляем старые колонки, если они еще существуют
+            # Это должно выполняться независимо от того, выполнена ли основная миграция
+            try:
+                # Удаляем folder_name из mocks
+                folder_name_exists = conn.execute(
+                    text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'mocks' AND column_name = 'folder_name'
+                    """)
+                ).fetchone()
+                if folder_name_exists:
+                    # Сначала удаляем NOT NULL constraint, если он есть
+                    try:
+                        conn.execute(text("ALTER TABLE mocks ALTER COLUMN folder_name DROP NOT NULL"))
+                    except:
+                        pass
+                    conn.execute(text("ALTER TABLE mocks DROP COLUMN folder_name CASCADE"))
+                    logger.info("Dropped column mocks.folder_name")
+            except Exception as e:
+                logger.warning(f"Error dropping mocks.folder_name: {e}")
+            
+            try:
+                # Удаляем folder_name из request_logs
+                folder_name_exists = conn.execute(
+                    text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'request_logs' AND column_name = 'folder_name'
+                    """)
+                ).fetchone()
+                if folder_name_exists:
+                    # Сначала удаляем NOT NULL constraint, если он есть
+                    try:
+                        conn.execute(text("ALTER TABLE request_logs ALTER COLUMN folder_name DROP NOT NULL"))
+                    except:
+                        pass
+                    conn.execute(text("ALTER TABLE request_logs DROP COLUMN folder_name CASCADE"))
+                    logger.info("Dropped column request_logs.folder_name")
+            except Exception as e:
+                logger.warning(f"Error dropping request_logs.folder_name: {e}")
+            
+            try:
+                # Удаляем parent_folder из folders
+                parent_folder_exists = conn.execute(
+                    text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'folders' AND column_name = 'parent_folder'
+                    """)
+                ).fetchone()
+                if parent_folder_exists:
+                    # Сначала удаляем NOT NULL constraint, если он есть
+                    try:
+                        conn.execute(text("ALTER TABLE folders ALTER COLUMN parent_folder DROP NOT NULL"))
+                    except:
+                        pass
+                    conn.execute(text("ALTER TABLE folders DROP COLUMN parent_folder CASCADE"))
+                    logger.info("Dropped column folders.parent_folder")
+            except Exception as e:
+                logger.warning(f"Error dropping folders.parent_folder: {e}")
             
             # Проверяем существование колонок одним запросом для оптимизации
             # Только если миграция на id уже выполнена (колонка id существует)
