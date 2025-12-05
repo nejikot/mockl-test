@@ -166,7 +166,7 @@ class Folder(Base):
     # foreign() аннотирует колонки как внешние ключи
     mocks = relationship(
         "Mock",
-        backref="folder_obj",
+        back_populates="folder_obj",
         cascade="all, delete",
         order_by="Mock.order",
         primaryjoin="and_(Mock.folder_name == Folder.name, Mock.parent_folder == Folder.parent_folder)"
@@ -240,6 +240,13 @@ class Mock(Base):
     error_simulation_body = Column(SAJSON, nullable=True)
     error_simulation_delay_ms = Column(Integer, nullable=True)
 
+    # Many-to-one relationship к Folder
+    folder_obj = relationship(
+        "Folder",
+        back_populates="mocks",
+        primaryjoin="and_(foreign(Mock.folder_name) == Folder.name, foreign(Mock.parent_folder) == Folder.parent_folder)",
+        foreign_keys="[Mock.folder_name, Mock.parent_folder]"
+    )
 
 
 class RequestLog(Base):
