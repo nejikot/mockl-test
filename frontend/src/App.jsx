@@ -10,7 +10,7 @@ import {
   MenuOutlined, PoweroffOutlined, UploadOutlined, EditOutlined,
   SnippetsOutlined, BgColorsOutlined, DownloadOutlined,
   DownOutlined, RightOutlined, SearchOutlined,
-  BarChartOutlined
+  BarChartOutlined, ReloadOutlined
 } from "@ant-design/icons";
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -444,6 +444,36 @@ export default function App() {
   const [isMetricsModalOpen, setIsMetricsModalOpen] = useState(false);
   const [metricsData, setMetricsData] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
+  
+  // Функция для загрузки метрик
+  const loadMetrics = async () => {
+    setMetricsLoading(true);
+    try {
+      const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
+      const response = await fetch(metricsUrl);
+      const text = await response.text();
+      setMetricsData(text);
+    } catch (error) {
+      setMetricsData(`Ошибка загрузки метрик: ${error.message}`);
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+  
+  // Автоматическое обновление метрик каждые 5 секунд, когда модальное окно открыто
+  useEffect(() => {
+    if (!isMetricsModalOpen) return;
+    
+    // Загружаем метрики сразу при открытии
+    loadMetrics();
+    
+    // Устанавливаем интервал для автоматического обновления
+    const interval = setInterval(() => {
+      loadMetrics();
+    }, 5000);
+    
+    return () => clearInterval(interval);
+  }, [isMetricsModalOpen, selectedFolder]);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
   const [isRenameModalOpen, setRenameModalOpen] = useState(false);
@@ -1648,16 +1678,16 @@ export default function App() {
                       if (rootFolder.name === "default") {
                         // Для default папки показываем без сворачивания
                         return (
-                          <DraggableFolder
+                    <DraggableFolder
                             key={rootFolder.name}
                             folder={rootFolder.name}
                             index={rootIndex}
-                            moveFolder={moveFolder}
-                            selectedFolder={selectedFolder}
-                            setSelectedFolder={setSelectedFolder}
-                            deleteFolder={deleteFolder}
-                            startRename={startRenameFolder}
-                            theme={theme}
+                      moveFolder={moveFolder}
+                      selectedFolder={selectedFolder}
+                      setSelectedFolder={setSelectedFolder}
+                      deleteFolder={deleteFolder}
+                      startRename={startRenameFolder}
+                      theme={theme}
                             isSubfolder={false}
                             parentFolder={null}
                           />
@@ -1951,9 +1981,9 @@ export default function App() {
                     marginBottom: 16
                   }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-                      <Typography.Title level={4} style={{ margin: 0 }}>
-                        {folderTitle}
-                      </Typography.Title>
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      {folderTitle}
+                    </Typography.Title>
                       <Input
                         placeholder="Поиск мока по наименованию..."
                         prefix={<SearchOutlined />}
@@ -2006,17 +2036,7 @@ export default function App() {
                               icon={<BarChartOutlined />}
                               onClick={async () => {
                                 setIsMetricsModalOpen(true);
-                                setMetricsLoading(true);
-                                try {
-                                  const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
-                                  const response = await fetch(metricsUrl);
-                                  const text = await response.text();
-                                  setMetricsData(text);
-                                } catch (error) {
-                                  setMetricsData(`Ошибка загрузки метрик: ${error.message}`);
-                                } finally {
-                                  setMetricsLoading(false);
-                                }
+                                await loadMetrics();
                               }}
                             >
                               Получить метрики
@@ -2705,6 +2725,9 @@ export default function App() {
             onCancel={() => setIsMetricsModalOpen(false)}
             width={900}
             footer={[
+              <Button key="refresh" icon={<ReloadOutlined />} onClick={loadMetrics} loading={metricsLoading}>
+                Обновить
+              </Button>,
               <Button key="download" icon={<DownloadOutlined />} onClick={() => {
                 const blob = new Blob([metricsData], { type: 'text/plain' });
                 const url = URL.createObjectURL(blob);
