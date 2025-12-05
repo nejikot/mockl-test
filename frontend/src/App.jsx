@@ -441,6 +441,9 @@ export default function App() {
   const [folderSearchQuery, setFolderSearchQuery] = useState("");
   const [mockSearchQuery, setMockSearchQuery] = useState("");
   const [mocks, setMocks] = useState([]);
+  const [isMetricsModalOpen, setIsMetricsModalOpen] = useState(false);
+  const [metricsData, setMetricsData] = useState("");
+  const [metricsLoading, setMetricsLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [isFolderModalOpen, setFolderModalOpen] = useState(false);
   const [isRenameModalOpen, setRenameModalOpen] = useState(false);
@@ -2001,9 +2004,19 @@ export default function App() {
                             <Button
                               size="small"
                               icon={<BarChartOutlined />}
-                              onClick={() => {
-                                const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
-                                window.open(metricsUrl, '_blank');
+                              onClick={async () => {
+                                setIsMetricsModalOpen(true);
+                                setMetricsLoading(true);
+                                try {
+                                  const metricsUrl = `${host}/metrics?folder=${encodeURIComponent(selectedFolder)}`;
+                                  const response = await fetch(metricsUrl);
+                                  const text = await response.text();
+                                  setMetricsData(text);
+                                } catch (error) {
+                                  setMetricsData(`Ошибка загрузки метрик: ${error.message}`);
+                                } finally {
+                                  setMetricsLoading(false);
+                                }
                               }}
                             >
                               Получить метрики
@@ -2684,6 +2697,109 @@ export default function App() {
                 </Button>
               </Form.Item>
             </Form>
+          </Modal>
+
+          <Modal
+            title={`Метрики для папки "${selectedFolder}"`}
+            open={isMetricsModalOpen}
+            onCancel={() => setIsMetricsModalOpen(false)}
+            width={900}
+            footer={[
+              <Button key="download" icon={<DownloadOutlined />} onClick={() => {
+                const blob = new Blob([metricsData], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `metrics-${selectedFolder}-${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+              }}>
+                Скачать метрики
+              </Button>,
+              <Button key="close" onClick={() => setIsMetricsModalOpen(false)}>
+                Закрыть
+              </Button>
+            ]}
+            destroyOnClose
+          >
+            {metricsLoading ? (
+              <div style={{ textAlign: 'center', padding: '40px' }}>
+                <Typography.Text>Загрузка метрик...</Typography.Text>
+              </div>
+            ) : (
+              <div style={{ 
+                background: theme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                borderRadius: 8,
+                padding: 16,
+                maxHeight: '70vh',
+                overflow: 'auto'
+              }}>
+                <pre style={{
+                  margin: 0,
+                  padding: 0,
+                  fontFamily: 'Monaco, Menlo, "Ubuntu Mono", Consolas, "source-code-pro", monospace',
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  color: theme === "dark" ? "#e8e8e8" : "#333",
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word'
+                }}>
+                  {metricsData.split('\n').map((line, index) => {
+                    // Комментарии
+                    if (line.startsWith('#')) {
+                      const isHelp = line.startsWith('# HELP');
+                      const isType = line.startsWith('# TYPE');
+                      return (
+                        <div key={index} style={{ 
+                          color: theme === "dark" ? "#888" : "#999", 
+                          fontStyle: 'italic',
+                          marginBottom: 4,
+                          fontWeight: (isHelp || isType) ? 500 : 400
+                        }}>
+                          {line}
+                        </div>
+                      );
+                    }
+                    
+                    // Пустые строки
+                    if (!line.trim()) {
+                      return <div key={index} style={{ marginBottom: 2 }}>&nbsp;</div>;
+                    }
+                    
+                    // Метрики Prometheus: metric_name{labels} value
+                    // Формат: metric_name{label1="value1",label2="value2"} 123.45
+                    const metricMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]*\})?\s+([0-9.eE+-]+)$/);
+                    if (metricMatch) {
+                      const [, metricName, labelsPart, value] = metricMatch;
+                      return (
+                        <div key={index} style={{ marginBottom: 2, lineHeight: 1.8 }}>
+                          <span style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff", fontWeight: 600 }}>
+                            {metricName}
+                          </span>
+                          {labelsPart && (
+                            <span style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                              {labelsPart}
+                            </span>
+                          )}
+                          <span style={{ 
+                            color: theme === "dark" ? "#ffb74d" : "#fa8c16", 
+                            marginLeft: 8,
+                            fontWeight: 500
+                          }}>
+                            {value}
+                          </span>
+                        </div>
+                      );
+                    }
+                    
+                    // Обычные строки (fallback)
+                    return <div key={index} style={{ marginBottom: 2 }}>{line}</div>;
+                  })}
+                </pre>
+              </div>
+            )}
           </Modal>
         </Layout>
       </ConfigProvider>
