@@ -21,6 +21,21 @@ const { useBreakpoint } = Grid;
 
 const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
 
+// Коды ошибок для имитации с примерами JSON-тел
+const ERROR_STATUS_CODES = [
+  { value: 400, label: "400 - Bad Request", body: { error: "Bad Request", message: "Invalid request parameters", code: "INVALID_REQUEST" } },
+  { value: 401, label: "401 - Unauthorized", body: { error: "Unauthorized", message: "Authentication required", code: "AUTH_REQUIRED" } },
+  { value: 403, label: "403 - Forbidden", body: { error: "Forbidden", message: "Access denied", code: "ACCESS_DENIED" } },
+  { value: 404, label: "404 - Not Found", body: { error: "Not Found", message: "Resource not found", code: "NOT_FOUND" } },
+  { value: 409, label: "409 - Conflict", body: { error: "Conflict", message: "Resource conflict occurred", code: "CONFLICT" } },
+  { value: 422, label: "422 - Unprocessable Entity", body: { error: "Unprocessable Entity", message: "Validation failed", code: "VALIDATION_ERROR", errors: [] } },
+  { value: 429, label: "429 - Too Many Requests", body: { error: "Too Many Requests", message: "Rate limit exceeded", code: "RATE_LIMIT", retry_after: 60 } },
+  { value: 500, label: "500 - Internal Server Error", body: { error: "Internal Server Error", message: "Something went wrong", code: "INTERNAL_ERROR" } },
+  { value: 502, label: "502 - Bad Gateway", body: { error: "Bad Gateway", message: "Gateway error occurred", code: "BAD_GATEWAY" } },
+  { value: 503, label: "503 - Service Unavailable", body: { error: "Service Unavailable", message: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE", retry_after: 30 } },
+  { value: 504, label: "504 - Gateway Timeout", body: { error: "Gateway Timeout", message: "Request timeout", code: "GATEWAY_TIMEOUT" } }
+];
+
 // Полный список HTTP статусов из RFC
 const HTTP_STATUSES = [
   // 1xx: Informational
@@ -3147,7 +3162,25 @@ export default function App() {
                       label="Статус код ошибки"
                       name="error_simulation_status_code"
                     >
-                      <Input type="number" min={100} max={599} placeholder="Например 500" />
+                      <Select
+                        placeholder="Выберите код ошибки"
+                        showSearch
+                        optionFilterProp="children"
+                        onChange={(value) => {
+                          const errorCode = ERROR_STATUS_CODES.find(e => e.value === value);
+                          if (errorCode) {
+                            form.setFieldsValue({
+                              error_simulation_body: JSON.stringify(errorCode.body, null, 2)
+                            });
+                          }
+                        }}
+                      >
+                        {ERROR_STATUS_CODES.map(code => (
+                          <Select.Option key={code.value} value={code.value}>
+                            {code.label}
+                          </Select.Option>
+                        ))}
+                      </Select>
                     </Form.Item>
 
                     <Form.Item
