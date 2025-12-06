@@ -2019,7 +2019,7 @@ export default function App() {
                   color: theme === "dark" ? "rgba(255, 255, 255, 0.85)" : "rgba(0, 0, 0, 0.85)"
                 }}
               >
-                FIX
+                FIX-price
               </Typography.Text>
             </div>
             <div style={{
