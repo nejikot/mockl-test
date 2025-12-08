@@ -1984,6 +1984,7 @@ export default function App() {
             icon={<BarChartOutlined />}
             onClick={() => setIsGlobalMetricsModalOpen(true)}
             style={primaryButtonStyle}
+            disabled={true}
           >
             Получить метрики
           </Button>
@@ -2550,6 +2551,7 @@ export default function App() {
                                 setIsMetricsModalOpen(true);
                                 await loadMetrics();
                               }}
+                              disabled={true}
                             >
                               Получить метрики
                             </Button>
