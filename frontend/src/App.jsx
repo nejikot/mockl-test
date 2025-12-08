@@ -753,6 +753,9 @@ export default function App() {
   const [isDuplicateModalOpen, setDuplicateModalOpen] = useState(false);
   const [duplicateForm] = Form.useForm();
   const [folderToDuplicate, setFolderToDuplicate] = useState(null);
+  const [isDuplicateMockModalOpen, setDuplicateMockModalOpen] = useState(false);
+  const [duplicateMockForm] = Form.useForm();
+  const [mockToDuplicate, setMockToDuplicate] = useState(null);
   const [isRenameModalOpen, setRenameModalOpen] = useState(false);
   const [renameForm] = Form.useForm();
   const [folderToRename, setFolderToRename] = useState(null);
@@ -1526,44 +1529,69 @@ export default function App() {
     }
   };
 
-  const duplicateMock = async mock => {
+  const startDuplicateMock = (mock) => {
+    setMockToDuplicate(mock);
+    duplicateMockForm.setFieldsValue({
+      target_folder: selectedFolder
+    });
+    setDuplicateMockModalOpen(true);
+  };
+
+  const duplicateMock = async (vals) => {
+    if (!mockToDuplicate) return;
+    
     try {
+      const targetFolderKey = vals.target_folder;
+      // Бэкенд поддерживает формат "name|parent_folder" в поле folder
+      // Если это корневая папка, передаем просто имя, иначе "name|parent_folder"
+      const { name: targetFolderName, parent_folder: targetParentFolder } = parseFolderKey(targetFolderKey);
+      const folderValue = targetParentFolder ? `${targetFolderName}|${targetParentFolder}` : targetFolderName;
+      
       const copy = {
-        folder: mock.folder,
-        active: mock.active !== false,
-        name: mock.name ? `${mock.name} copy` : "copy",
+        folder: folderValue,
+        active: mockToDuplicate.active !== false,
+        name: mockToDuplicate.name ? `${mockToDuplicate.name} copy` : "copy",
         request_condition: {
-          method: mock.request_condition.method,
-          path: mock.request_condition.path,
-          headers: mock.request_condition.headers || {},
-          body_contains: mock.request_condition.body_contains || null
+          method: mockToDuplicate.request_condition.method,
+          path: mockToDuplicate.request_condition.path,
+          headers: mockToDuplicate.request_condition.headers || {},
+          body_contains: mockToDuplicate.request_condition.body_contains || null,
+          body_contains_required: mockToDuplicate.request_condition.body_contains_required !== false,
+          request_body_params: mockToDuplicate.request_condition.request_body_params || [],
+          request_body_formdata: mockToDuplicate.request_condition.request_body_formdata || []
         },
         response_config: {
-          status_code: mock.response_config.status_code,
-          headers: mock.response_config.headers || {},
-          body: mock.response_config.body
+          status_code: mockToDuplicate.response_config.status_code,
+          headers: mockToDuplicate.response_config.headers || {},
+          body: mockToDuplicate.response_config.body
         },
-        delay_ms: mock.delay_ms || 0,
-        delay_range_min_ms: mock.delay_range_min_ms,
-        delay_range_max_ms: mock.delay_range_max_ms,
-        cache_enabled: mock.cache_enabled || false,
-        cache_ttl_seconds: mock.cache_ttl_seconds,
-        error_simulation_enabled: mock.error_simulation_enabled || false,
-        error_simulation_probability: mock.error_simulation_probability,
-        error_simulation_status_code: mock.error_simulation_status_code,
-        error_simulation_body: mock.error_simulation_body,
-        error_simulation_delay_ms: mock.error_simulation_delay_ms
+        delay_ms: mockToDuplicate.delay_ms || 0,
+        delay_range_min_ms: mockToDuplicate.delay_range_min_ms,
+        delay_range_max_ms: mockToDuplicate.delay_range_max_ms,
+        cache_enabled: mockToDuplicate.cache_enabled || false,
+        cache_ttl_seconds: mockToDuplicate.cache_ttl_seconds,
+        error_simulation_enabled: mockToDuplicate.error_simulation_enabled || false,
+        error_simulation_probability: mockToDuplicate.error_simulation_probability,
+        error_simulation_status_code: mockToDuplicate.error_simulation_status_code,
+        error_simulation_body: mockToDuplicate.error_simulation_body,
+        error_simulation_delay_ms: mockToDuplicate.error_simulation_delay_ms
       };
+      
       const res = await fetch(`${host}/api/mocks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(copy)
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Ошибка дублирования");
+      }
       message.success("Мок продублирован");
+      setDuplicateMockModalOpen(false);
+      setMockToDuplicate(null);
       fetchMocks();
-    } catch {
-      message.error("Не удалось продублировать мок");
+    } catch (e) {
+      message.error("Не удалось продублировать мок: " + (e.message || "Неизвестная ошибка"));
     }
   };
 
@@ -2613,7 +2641,7 @@ export default function App() {
                                   size="small"
                                   type="text"
                                   icon={<CopyOutlined />}
-                                  onClick={() => duplicateMock(r)}
+                                  onClick={() => startDuplicateMock(r)}
                                 />
                               </Tooltip>
                               <Tooltip title="Скопировать curl">
@@ -3298,6 +3326,71 @@ export default function App() {
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>
                   Продублировать
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Дублировать мок"
+            open={isDuplicateMockModalOpen}
+            onCancel={() => {
+              setDuplicateMockModalOpen(false);
+              setMockToDuplicate(null);
+            }}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={duplicateMockForm} onFinish={duplicateMock} layout="vertical">
+              <Form.Item
+                name="target_folder"
+                label="Выберите папку для дублирования"
+                rules={[{ required: true, message: "Выберите папку" }]}
+              >
+                <Select
+                  placeholder="Выберите папку или подпапку"
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {foldersData
+                    .filter(f => f.name === "default" ? !f.parent_folder : true)
+                    .sort((a, b) => {
+                      // Сначала корневые папки, потом подпапки
+                      if (!a.parent_folder && b.parent_folder) return -1;
+                      if (a.parent_folder && !b.parent_folder) return 1;
+                      // Если обе корневые или обе подпапки, сортируем по имени
+                      if (!a.parent_folder && !b.parent_folder) {
+                        if (a.name === "default") return -1;
+                        if (b.name === "default") return 1;
+                        return a.name.localeCompare(b.name);
+                      }
+                      // Для подпапок сортируем сначала по родителю, потом по имени
+                      if (a.parent_folder !== b.parent_folder) {
+                        return a.parent_folder.localeCompare(b.parent_folder);
+                      }
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map(f => {
+                      const folderKey = getFolderKey(f.name, f.parent_folder);
+                      const displayName = f.name === "default" 
+                        ? "Главная" 
+                        : f.parent_folder 
+                          ? `${f.parent_folder} / ${f.name}` 
+                          : f.name;
+                      return (
+                        <Select.Option key={folderKey} value={folderKey}>
+                          {displayName}
+                        </Select.Option>
+                      );
+                    })}
+                </Select>
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Продублировать мок
                 </Button>
               </Form.Item>
             </Form>
