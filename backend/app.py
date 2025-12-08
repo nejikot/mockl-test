@@ -14,7 +14,7 @@ from urllib.parse import quote as url_quote
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile
+from fastapi import FastAPI, HTTPException, Request, Query, Body, Path, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -2077,7 +2077,7 @@ def _generate_example_from_schema(schema: Dict[str, Any], definitions: Optional[
     return None
 
 
-def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Session) -> int:
+def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Session, folder_parent: str = '') -> int:
     """
     Генерирует моки по OpenAPI/Swagger спецификации в указанную папку.
     Поддерживает OpenAPI 3.x и Swagger 2.0 форматы.
@@ -2099,13 +2099,12 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
     allowed_methods = {"get", "post", "put", "delete", "patch", "options", "head"}
     
     # ОПТИМИЗАЦИЯ: Загружаем все существующие моки для папки одним запросом
-    # Моки из OpenAPI создаются в корневых папках (parent_folder = '')
-    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name, folder_parent='').all()
+    existing_mocks = db.query(Mock).filter_by(folder_name=folder_name, folder_parent=folder_parent).all()
     # Используем нормализованные пути для сравнения
     existing_keys = {(m.method, m.path) for m in existing_mocks}
-    
+
     # ОПТИМИЗАЦИЯ: Получаем максимальный order один раз
-    max_order_result = db.query(Mock).filter_by(folder_name=folder_name, folder_parent='').with_entities(Mock.order).order_by(Mock.order.desc()).first()
+    max_order_result = db.query(Mock).filter_by(folder_name=folder_name, folder_parent=folder_parent).with_entities(Mock.order).order_by(Mock.order.desc()).first()
     next_order = (max_order_result[0] if max_order_result and max_order_result[0] is not None else -1) + 1
     
     # ОПТИМИЗАЦИЯ: Собираем все новые моки в список для bulk insert
@@ -2374,7 +2373,7 @@ def generate_mocks_for_openapi(spec: Dict[str, Any], folder_name: str, db: Sessi
             mock = Mock(
                 id=str(uuid4()),
                 folder_name=folder_name,
-                folder_parent='',  # Моки из OpenAPI создаются в корневых папках
+                folder_parent=folder_parent,
                 name=mock_name,
                     method=method_upper,
                 path=normalized_path,
@@ -3000,7 +2999,7 @@ def encode_filename_rfc5987(filename: str) -> str:
     summary="Импортировать моки из Postman Collection v2.1",
     description=(
         "Принимает JSON‑файл Postman Collection v2.1 и создаёт моки по содержимому коллекции.\n\n"
-        "Для коллекции создаётся отдельная папка с именем `collection.info.name`."
+        "Можно указать папку для импорта через параметр folder_name в формате 'name' или 'name|parent_folder'."
     ),
 )
 async def import_postman_collection(
@@ -3009,6 +3008,7 @@ async def import_postman_collection(
         description="Файл Postman Collection v2.1 в формате JSON",
         examples=["postman_collection.json"],
     ),
+    folder_name: Optional[str] = Form(None, description="Имя папки для импорта (формат 'name' или 'name|parent_folder')"),
     db: Session = Depends(get_db)
 ):
     """
@@ -3023,15 +3023,31 @@ async def import_postman_collection(
         except json.JSONDecodeError:
             return JSONResponse({"detail": "Invalid JSON file"}, status_code=400)
 
-        folder_name = coll.get("info", {}).get("name", "postman")
-        folder_name = folder_name.strip() or "postman"
+        # Определяем папку для импорта
+        if folder_name:
+            # Поддерживаем формат "name|parent_folder" для подпапок
+            if '|' in folder_name:
+                parts = folder_name.split('|', 1)
+                target_folder_name = parts[0]
+                target_parent_folder = parts[1] if parts[1] else ''
+            else:
+                target_folder_name = folder_name
+                target_parent_folder = ''
+        else:
+            # Если папка не указана, используем имя коллекции
+            target_folder_name = coll.get("info", {}).get("name", "postman")
+            target_folder_name = target_folder_name.strip() or "postman"
+            target_parent_folder = ''
 
+        # Создаем папку, если её нет
         if not db.query(Folder).filter(
-            Folder.name == folder_name,
-            Folder.parent_folder == ''
+            Folder.name == target_folder_name,
+            Folder.parent_folder == target_parent_folder
         ).first():
-            db.add(Folder(name=folder_name, parent_folder=''))
+            db.add(Folder(name=target_folder_name, parent_folder=target_parent_folder))
             db.flush()
+        
+        folder_name = target_folder_name
 
         items = coll.get("item", [])
         imported = []
@@ -3194,8 +3210,10 @@ async def import_postman_collection(
             # Логируем информацию о создаваемом моке для отладки
             logger.debug(f"Importing mock: folder={folder_name}, method={req.get('method', 'GET')}, path={path}, headers={request_headers}, body_contains={'yes' if body_contains else 'no'}")
 
+            # Используем формат "name|parent_folder" для подпапок
+            folder_value = f"{folder_name}|{target_parent_folder}" if target_parent_folder else folder_name
             entry = MockEntry(
-                folder=folder_name,
+                folder=folder_value,
                 name=item.get("name"),
                 request_condition=MockRequestCondition(
                     method=req.get("method", "GET"),
@@ -3293,13 +3311,31 @@ async def load_openapi_from_url(payload: OpenApiFromUrlPayload):
         name = payload.name or spec.get("info", {}).get("title") or payload.url
         OPENAPI_SPECS[name] = spec
 
-        raw_folder = payload.folder_name or name
-        folder_slug = _slugify_folder_name(raw_folder)
+        # Парсим folder_name в формате "name|parent_folder" или просто "name"
+        if payload.folder_name:
+            if '|' in payload.folder_name:
+                parts = payload.folder_name.split('|', 1)
+                folder_name = parts[0]
+                folder_parent = parts[1] if parts[1] else ''
+            else:
+                folder_name = payload.folder_name
+                folder_parent = ''
+        else:
+            # Если папка не указана, используем имя спецификации
+            folder_slug = _slugify_folder_name(name)
+            folder_name = folder_slug
+            folder_parent = ''
 
         db = SessionLocal()
         try:
-            folder_name = _ensure_folder(folder_slug, db=db)
-            mocks_created = generate_mocks_for_openapi(spec, folder_name, db)
+            # Создаем папку, если её нет
+            if not db.query(Folder).filter(
+                Folder.name == folder_name,
+                Folder.parent_folder == folder_parent
+            ).first():
+                db.add(Folder(name=folder_name, parent_folder=folder_parent))
+                db.flush()
+            mocks_created = generate_mocks_for_openapi(spec, folder_name, db, folder_parent)
             db.commit()
         except Exception as e:
             db.rollback()

@@ -750,6 +750,9 @@ export default function App() {
   const [folderSettingsForm] = Form.useForm();
   const [isOpenapiModalOpen, setOpenapiModalOpen] = useState(false);
   const [openapiForm] = Form.useForm();
+  const [isPostmanImportModalOpen, setPostmanImportModalOpen] = useState(false);
+  const [postmanImportForm] = Form.useForm();
+  const [postmanFileToImport, setPostmanFileToImport] = useState(null);
   const [isDuplicateModalOpen, setDuplicateModalOpen] = useState(false);
   const [duplicateForm] = Form.useForm();
   const [folderToDuplicate, setFolderToDuplicate] = useState(null);
@@ -806,8 +809,48 @@ export default function App() {
 
   const handleFileChange = e => {
     const file = e.target.files[0];
-    if (file) uploadJson(file);
+    if (file) {
+      setPostmanFileToImport(file);
+      postmanImportForm.resetFields();
+      postmanImportForm.setFieldsValue({
+        target_folder: selectedFolder
+      });
+      setPostmanImportModalOpen(true);
+    }
     e.target.value = "";
+  };
+
+  const handlePostmanImport = async (vals) => {
+    if (!postmanFileToImport) return;
+    
+    const targetFolderKey = vals.target_folder || selectedFolder;
+    const { name: targetFolderName, parent_folder: targetParentFolder } = parseFolderKey(targetFolderKey);
+    const folderValue = targetParentFolder ? `${targetFolderName}|${targetParentFolder}` : targetFolderName;
+    
+    const formData = new FormData();
+    formData.append("file", postmanFileToImport);
+    formData.append("folder_name", folderValue);
+    
+    try {
+      const res = await fetch(`${host}/api/mocks/import`, {
+        method: "POST",
+        body: formData
+      });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Импорт не удался");
+      }
+      const data = await res.json();
+      message.success(`Импортировано ${data.imported_ids.length} мока(ов) в папку "${targetFolderName}"`);
+      setPostmanImportModalOpen(false);
+      setPostmanFileToImport(null);
+      postmanImportForm.resetFields();
+      await fetchFolders();
+      setSelectedFolder(targetFolderKey);
+      await fetchMocks();
+    } catch (e) {
+      message.error("Ошибка импорта: " + (e.message || ""));
+    }
   };
 
   const toggleMockActive = async (id, active) => {
@@ -1023,6 +1066,9 @@ export default function App() {
 
   const openOpenapiModal = () => {
     openapiForm.resetFields();
+    openapiForm.setFieldsValue({
+      target_folder: selectedFolder
+    });
     setOpenapiModalOpen(true);
   };
 
@@ -1032,6 +1078,10 @@ export default function App() {
       message.error("Укажите URL OpenAPI");
       return;
     }
+    const targetFolderKey = vals.target_folder || selectedFolder;
+    const { name: targetFolderName, parent_folder: targetParentFolder } = parseFolderKey(targetFolderKey);
+    const folderValue = targetParentFolder ? `${targetFolderName}|${targetParentFolder}` : targetFolderName;
+    
     try {
       const res = await fetch(`${host}/api/openapi/specs/from-url`, {
         method: "POST",
@@ -1039,19 +1089,16 @@ export default function App() {
         body: JSON.stringify({
           url,
           name: (vals.spec_name || "").trim() || undefined,
-          folder_name: (vals.folder_name || "").trim() || undefined
+          folder_name: folderValue
         })
       });
       if (!res.ok) throw new Error("Не удалось загрузить спецификацию");
       const data = await res.json();
-      let folderName = (data.folder_name || vals.folder_name || data.name || "openapi").trim();
-      if (!folderName) folderName = "openapi";
-      message.success(`OpenAPI импортирован, страница "${folderName}" готова для создания моков`);
+      message.success(`OpenAPI импортирован в папку "${targetFolderName}"`);
       setOpenapiModalOpen(false);
       openapiForm.resetFields();
-      // ✅ ИСПРАВЛЕНИЕ: вызываем fetchFolders и fetchMocks без await (они не async по умолчанию)
       await fetchFolders();
-      setSelectedFolder(folderName);
+      setSelectedFolder(targetFolderKey);
       await fetchMocks();
     } catch (e) {
       message.error("Ошибка импорта OpenAPI: " + (e.message || ""));
@@ -3296,11 +3343,114 @@ export default function App() {
                 <Input placeholder="Например Payments API" />
               </Form.Item>
               <Form.Item
-                name="folder_name"
-                label="Имя новой страницы (опционально)"
-                tooltip="Если не указано, будет использовано название спецификации"
+                name="target_folder"
+                label="Выберите папку для импорта"
+                rules={[{ required: true, message: "Выберите папку" }]}
+                tooltip="Моки будут импортированы в выбранную папку или подпапку"
               >
-                <Input placeholder="Например payments" />
+                <Select
+                  placeholder="Выберите папку или подпапку"
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {foldersData
+                    .filter(f => f.name === "default" ? !f.parent_folder : true)
+                    .sort((a, b) => {
+                      if (!a.parent_folder && b.parent_folder) return -1;
+                      if (a.parent_folder && !b.parent_folder) return 1;
+                      if (!a.parent_folder && !b.parent_folder) {
+                        if (a.name === "default") return -1;
+                        if (b.name === "default") return 1;
+                        return a.name.localeCompare(b.name);
+                      }
+                      if (a.parent_folder !== b.parent_folder) {
+                        return a.parent_folder.localeCompare(b.parent_folder);
+                      }
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map(f => {
+                      const folderKey = getFolderKey(f.name, f.parent_folder);
+                      const displayName = f.name === "default" 
+                        ? "Главная" 
+                        : f.parent_folder 
+                          ? `${f.parent_folder} / ${f.name}` 
+                          : f.name;
+                      return (
+                        <Select.Option key={folderKey} value={folderKey}>
+                          {displayName}
+                        </Select.Option>
+                      );
+                    })}
+                </Select>
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block>
+                  Импортировать
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            title="Импорт Postman Collection"
+            open={isPostmanImportModalOpen}
+            onCancel={() => {
+              setPostmanImportModalOpen(false);
+              setPostmanFileToImport(null);
+            }}
+            footer={null}
+            destroyOnClose
+          >
+            <Form form={postmanImportForm} onFinish={handlePostmanImport} layout="vertical">
+              <Form.Item label="Файл">
+                <Typography.Text>{postmanFileToImport?.name || "Файл не выбран"}</Typography.Text>
+              </Form.Item>
+              <Form.Item
+                name="target_folder"
+                label="Выберите папку для импорта"
+                rules={[{ required: true, message: "Выберите папку" }]}
+                tooltip="Моки будут импортированы в выбранную папку или подпапку"
+              >
+                <Select
+                  placeholder="Выберите папку или подпапку"
+                  showSearch
+                  optionFilterProp="children"
+                  filterOption={(input, option) =>
+                    (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                  }
+                >
+                  {foldersData
+                    .filter(f => f.name === "default" ? !f.parent_folder : true)
+                    .sort((a, b) => {
+                      if (!a.parent_folder && b.parent_folder) return -1;
+                      if (a.parent_folder && !b.parent_folder) return 1;
+                      if (!a.parent_folder && !b.parent_folder) {
+                        if (a.name === "default") return -1;
+                        if (b.name === "default") return 1;
+                        return a.name.localeCompare(b.name);
+                      }
+                      if (a.parent_folder !== b.parent_folder) {
+                        return a.parent_folder.localeCompare(b.parent_folder);
+                      }
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map(f => {
+                      const folderKey = getFolderKey(f.name, f.parent_folder);
+                      const displayName = f.name === "default" 
+                        ? "Главная" 
+                        : f.parent_folder 
+                          ? `${f.parent_folder} / ${f.name}` 
+                          : f.name;
+                      return (
+                        <Select.Option key={folderKey} value={folderKey}>
+                          {displayName}
+                        </Select.Option>
+                      );
+                    })}
+                </Select>
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>
