@@ -971,7 +971,26 @@ class FolderCreatePayload(BaseModel):
     ),
 )
 def create_folder(
-    payload: FolderCreatePayload = Body(...),
+    payload: FolderCreatePayload = Body(
+        ...,
+        examples={
+            "root_folder": {
+                "summary": "Создание корневой папки",
+                "description": "Пример создания корневой папки",
+                "value": {
+                    "name": "api"
+                }
+            },
+            "subfolder": {
+                "summary": "Создание подпапки",
+                "description": "Пример создания подпапки в родительской папке",
+                "value": {
+                    "name": "users",
+                    "parent_folder": "api"
+                }
+            }
+        }
+    ),
     db: Session = Depends(get_db),
 ):
     name = payload.name.strip()
@@ -1061,11 +1080,18 @@ def create_folder(
     description=(
         "Удаляет указанную папку и все связанные с ней моки.\n\n"
         "Папку `default` удалить нельзя.\n\n"
-        "Поддерживает формат `name|parent_folder` для удаления подпапок."
+        "Поддерживает формат `name|parent_folder` для удаления подпапок.\n\n"
+        "Примеры:\n"
+        "- `DELETE /api/folders?name=api` - удалить корневую папку 'api'\n"
+        "- `DELETE /api/folders?name=users|api` - удалить подпапку 'users' из папки 'api'"
     ),
 )
 def delete_folder(
-    name: str = Query(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
+    name: str = Query(
+        ...,
+        description="Имя папки (может быть в формате name|parent_folder для подпапок)",
+        examples=["api", "users|api"]
+    ),
     db: Session = Depends(get_db),
 ):
     if name == "default":
@@ -1296,10 +1322,36 @@ def delete_folder(
     summary="Продублировать папку и все её моки",
     description=(
         "Создаёт новую папку с указанным именем и копирует в неё все моки и настройки из исходной папки.\n\n"
-        "Имена и содержимое моков копируются, для каждой копии генерируется новый UUID."
+        "Имена и содержимое моков копируются, для каждой копии генерируется новый UUID.\n\n"
+        "Примеры:\n"
+        "- Дублирование корневой папки: `old_name: \"api\"`, `new_name: \"api-copy\"`\n"
+        "- Дублирование подпапки: `old_name: \"users|api\"`, `new_name: \"users-copy\"`"
     ),
 )
-def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_db)):
+def duplicate_folder(
+    payload: FolderDuplicatePayload = Body(
+        ...,
+        examples={
+            "duplicate_root": {
+                "summary": "Дублирование корневой папки",
+                "description": "Пример дублирования корневой папки 'api' в 'api-copy'",
+                "value": {
+                    "old_name": "api",
+                    "new_name": "api-copy"
+                }
+            },
+            "duplicate_subfolder": {
+                "summary": "Дублирование подпапки",
+                "description": "Пример дублирования подпапки 'users' из папки 'api'",
+                "value": {
+                    "old_name": "users|api",
+                    "new_name": "users-copy"
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     """Дублирует папку: создаёт новую и копирует в неё все моки и настройки, включая подпапки рекурсивно."""
     try:
         src = payload.old_name.strip()
@@ -1462,12 +1514,37 @@ def duplicate_folder(payload: FolderDuplicatePayload, db: Session = Depends(get_
         "- folder_name во всех моках, которые ссылаются на эту папку\n"
         "- folder_name во всех записях истории вызовов (request_logs)\n"
         "- parent_folder во всех подпапках (если переименовывается корневая папка)\n"
-        "- Метрики Prometheus очищаются для старого имени"
+        "- Метрики Prometheus очищаются для старого имени\n\n"
+        "Примеры:\n"
+        "- Переименование корневой папки: `PATCH /api/folders/api/rename` с `new_name: \"api-v2\"`\n"
+        "- Переименование подпапки: `PATCH /api/folders/users|api/rename` с `new_name: \"clients\"`"
     ),
 )
 def rename_folder(
-    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
-    payload: FolderRenamePayload = Body(...),
+    name: str = Path(
+        ...,
+        description="Имя папки (может быть в формате name|parent_folder для подпапок)",
+        examples=["api", "users|api"]
+    ),
+    payload: FolderRenamePayload = Body(
+        ...,
+        examples={
+            "rename_root": {
+                "summary": "Переименование корневой папки",
+                "description": "Пример переименования корневой папки 'api' в 'api-v2'",
+                "value": {
+                    "new_name": "api-v2"
+                }
+            },
+            "rename_subfolder": {
+                "summary": "Переименование подпапки",
+                "description": "Пример переименования подпапки 'users' в 'clients'",
+                "value": {
+                    "new_name": "clients"
+                }
+            }
+        }
+    ),
     db: Session = Depends(get_db),
 ):
     """Переименовывает папку и обновляет все связанные данные."""
@@ -2494,9 +2571,19 @@ def load_openapi_specs_from_env():
     "/api/folders/{name}",
     response_model=FolderSettingsOut,
     summary="Получить настройки папки",
+    description=(
+        "Возвращает настройки папки (прокси и пр.).\n\n"
+        "Примеры:\n"
+        "- `GET /api/folders/api` - получить настройки корневой папки 'api'\n"
+        "- `GET /api/folders/users|api` - получить настройки подпапки 'users' в папке 'api'"
+    ),
 )
 def get_folder_settings(
-    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
+    name: str = Path(
+        ...,
+        description="Имя папки (может быть в формате name|parent_folder для подпапок)",
+        examples=["api", "users|api"]
+    ),
     db: Session = Depends(get_db),
 ):
     # Поддерживаем формат "name|parent_folder" для подпапок
@@ -2534,10 +2621,43 @@ def get_folder_settings(
 @app.patch(
     "/api/folders/{name}/settings",
     summary="Обновить настройки папки (прокси и пр.)",
+    description=(
+        "Обновляет настройки прокси для папки или подпапки.\n\n"
+        "Параметр `name` может быть в формате:\n"
+        "- `folder_name` для корневой папки\n"
+        "- `folder_name|parent_folder` для подпапки\n\n"
+        "Примеры:\n"
+        "- `/api/folders/api/settings` - настройки корневой папки 'api'\n"
+        "- `/api/folders/users|api/settings` - настройки подпапки 'users' в папке 'api'"
+    ),
 )
 def update_folder_settings(
-    name: str = Path(..., description="Имя папки (может быть в формате name|parent_folder для подпапок)"),
-    payload: FolderSettings = Body(...),
+    name: str = Path(
+        ...,
+        description="Имя папки (может быть в формате name|parent_folder для подпапок)",
+        examples=["api", "users|api"]
+    ),
+    payload: FolderSettings = Body(
+        ...,
+        examples={
+            "enable_proxy": {
+                "summary": "Включить прокси",
+                "description": "Пример включения прокси для папки",
+                "value": {
+                    "proxy_enabled": True,
+                    "proxy_base_url": "https://api.example.com"
+                }
+            },
+            "disable_proxy": {
+                "summary": "Отключить прокси",
+                "description": "Пример отключения прокси",
+                "value": {
+                    "proxy_enabled": False,
+                    "proxy_base_url": None
+                }
+            }
+        }
+    ),
     db: Session = Depends(get_db),
 ):
     # Поддерживаем формат "name|parent_folder" для подпапок
@@ -2624,6 +2744,188 @@ def list_folders(db: Session = Depends(get_db)):
         "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
         "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
+    response_model_examples={
+        "create": {
+            "summary": "Создание нового мока",
+            "description": "Пример создания нового мока для GET запроса",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "folder": "api",
+                    "name": "Получить пользователя",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/api/users/123",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "id": 123,
+                            "name": "Иван Иванов",
+                            "email": "ivan@example.com"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        },
+        "update": {
+            "summary": "Обновление существующего мока",
+            "description": "Пример обновления мока с указанием id",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "4f590593-bde9-4594-9299-c157a883f5ba",
+                    "folder": "crm|nikita",
+                    "name": "Мягкий чек",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/set-kit/softcheques/999900002500/shop/3001",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {},
+                        "body": {
+                            "guid": "999900002500",
+                            "shopNumber": 501,
+                            "status": "COMPLETED"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        }
+    },
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "create_mock": {
+                            "summary": "Создание нового мока",
+                            "description": "Пример создания нового мока для GET запроса",
+                            "value": {
+                                "folder": "api",
+                                "name": "Получить пользователя",
+                                "request_condition": {
+                                    "method": "GET",
+                                    "path": "/api/users/123",
+                                    "headers": {},
+                                    "body_contains": None,
+                                    "body_contains_required": True
+                                },
+                                "response_config": {
+                                    "status_code": 200,
+                                    "headers": {"Content-Type": "application/json"},
+                                    "body": {
+                                        "id": 123,
+                                        "name": "Иван Иванов",
+                                        "email": "ivan@example.com"
+                                    }
+                                },
+                                "active": True,
+                                "delay_ms": 0,
+                                "cache_enabled": False,
+                                "error_simulation_enabled": False
+                            }
+                        },
+                        "update_mock": {
+                            "summary": "Обновление существующего мока",
+                            "description": "Пример обновления мока с указанием id и подпапки",
+                            "value": {
+                                "id": "4f590593-bde9-4594-9299-c157a883f5ba",
+                                "folder": "crm|nikita",
+                                "name": "Мягкий чек",
+                                "request_condition": {
+                                    "method": "GET",
+                                    "path": "/set-kit/softcheques/999900002500/shop/3001",
+                                    "headers": {},
+                                    "body_contains": None,
+                                    "body_contains_required": True
+                                },
+                                "response_config": {
+                                    "status_code": 200,
+                                    "headers": {},
+                                    "body": {
+                                        "guid": "999900002500",
+                                        "shopNumber": 501,
+                                        "status": "COMPLETED",
+                                        "dateCreated": "2023-01-19 10:33",
+                                        "isEditable": True,
+                                        "totalPrice": 79
+                                    }
+                                },
+                                "active": True,
+                                "delay_ms": 0,
+                                "delay_range_min_ms": None,
+                                "delay_range_max_ms": None,
+                                "cache_enabled": False,
+                                "cache_ttl_seconds": None,
+                                "error_simulation_enabled": False,
+                                "error_simulation_probability": None,
+                                "error_simulation_status_code": None,
+                                "error_simulation_body": None,
+                                "error_simulation_delay_ms": None
+                            }
+                        },
+                        "post_mock": {
+                            "summary": "Мок для POST запроса",
+                            "description": "Пример создания мока для POST запроса с проверкой тела",
+                            "value": {
+                                "folder": "api",
+                                "name": "Создать пользователя",
+                                "request_condition": {
+                                    "method": "POST",
+                                    "path": "/api/users",
+                                    "headers": {"Content-Type": "application/json"},
+                                    "body_contains": "email",
+                                    "body_contains_required": True
+                                },
+                                "response_config": {
+                                    "status_code": 201,
+                                    "headers": {"Content-Type": "application/json"},
+                                    "body": {
+                                        "id": 456,
+                                        "message": "Пользователь создан"
+                                    }
+                                },
+                                "active": True,
+                                "delay_ms": 100
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 )
 async def create_or_update_mock(
     request: Request,
@@ -2749,13 +3051,18 @@ async def create_or_update_mock(
     summary="Получить список моков",
     description=(
         "Возвращает список всех моков.\n\n"
-        "Можно ограничить выборку конкретной папкой, передав параметр `folder`."
+        "Можно ограничить выборку конкретной папкой, передав параметр `folder`.\n\n"
+        "Примеры запросов:\n"
+        "- `GET /api/mocks` - получить все моки\n"
+        "- `GET /api/mocks?folder=api` - получить моки из корневой папки 'api'\n"
+        "- `GET /api/mocks?folder=users|api` - получить моки из подпапки 'users' в папке 'api'"
     ),
 )
 def list_mocks(
     folder: Optional[str] = Query(
         default=None,
-        description="Имя папки (страницы), для которой нужно вернуть моки. Если не указано — возвращаются все моки.",
+        description="Имя папки (страницы), для которой нужно вернуть моки. Если не указано — возвращаются все моки. Формат: 'name' для корневой папки или 'name|parent_folder' для подпапки.",
+        examples=["api", "users|api", "crm|nikita"]
     ),
     db: Session = Depends(get_db),
 ):
@@ -2838,7 +3145,11 @@ def list_mocks(
     description="Удаляет мок по его уникальному идентификатору (UUID).",
 )
 def delete_mock(
-    id_: str = Query(..., description="UUID мока, который нужно удалить"),
+    id_: str = Query(
+        ...,
+        description="UUID мока, который нужно удалить",
+        example="4f590593-bde9-4594-9299-c157a883f5ba"
+    ),
     db: Session = Depends(get_db),
 ):
     mock = db.query(Mock).filter_by(id=id_).first()
@@ -2853,11 +3164,21 @@ def delete_mock(
 @app.patch(
     "/api/mocks/{mock_id}/toggle",
     summary="Включить или выключить мок",
-    description="Меняет флаг активности мока (`active`). Неактивные моки игнорируются при обработке запросов.",
+    description=(
+        "Меняет флаг активности мока (`active`). Неактивные моки игнорируются при обработке запросов.\n\n"
+        "Примеры:\n"
+        "- `PATCH /api/mocks/550e8400-e29b-41d4-a716-446655440000/toggle` с `{\"active\": false}` - отключить мок\n"
+        "- `PATCH /api/mocks/550e8400-e29b-41d4-a716-446655440000/toggle` с `{\"active\": true}` - включить мок"
+    ),
 )
 def toggle_mock(
-    mock_id: str = Path(..., description="UUID мока"),
-    active: bool = Body(..., embed=True, description="Новое значение флага активности"),
+    mock_id: str = Path(..., description="UUID мока", example="550e8400-e29b-41d4-a716-446655440000"),
+    active: bool = Body(
+        ...,
+        embed=True,
+        description="Новое значение флага активности",
+        examples=[True, False]
+    ),
     db: Session = Depends(get_db)
 ):
     mock = db.query(Mock).filter_by(id=mock_id).first()
@@ -2872,12 +3193,19 @@ def toggle_mock(
 @app.post(
     "/api/mocks/deactivate-all",
     summary="Отключить все активные моки",
-    description="Массово отключает все моки, опционально только в указанной папке (включая вложенные папки).",
+    description=(
+        "Массово отключает все моки, опционально только в указанной папке (включая вложенные папки).\n\n"
+        "Примеры:\n"
+        "- `POST /api/mocks/deactivate-all` - отключить все моки во всех папках\n"
+        "- `POST /api/mocks/deactivate-all?folder=api` - отключить все моки в папке 'api' и её подпапках\n"
+        "- `POST /api/mocks/deactivate-all?folder=users|api` - отключить все моки в подпапке 'users'"
+    ),
 )
 def deactivate_all(
     folder: Optional[str] = Query(
         None,
-        description="Имя папки. Если не указано — будут отключены все активные моки во всех папках.",
+        description="Имя папки. Если не указано — будут отключены все активные моки во всех папках. Формат: 'name' для корневой папки или 'name|parent_folder' для подпапки.",
+        examples=["api", "users|api"]
     ),
     db: Session = Depends(get_db),
 ):
@@ -2965,10 +3293,21 @@ def reorder_mocks(
 @app.post(
     "/api/mocks/parse-curl",
     summary="Распарсить curl команду",
-    description="Парсит curl команду и возвращает структуру запроса (метод, URL, заголовки, тело).",
+    description=(
+        "Парсит curl команду и возвращает структуру запроса (метод, URL, заголовки, тело).\n\n"
+        "Пример запроса:\n"
+        "```json\n"
+        "{\"curl_command\": \"curl -X POST https://api.example.com/users -H 'Content-Type: application/json' -d '{\\\"name\\\":\\\"Ivan\\\"}'\"}\n"
+        "```"
+    ),
 )
 def parse_curl_endpoint(
-    curl_command: str = Body(..., embed=True, description="curl команда для парсинга"),
+    curl_command: str = Body(
+        ...,
+        embed=True,
+        description="curl команда для парсинга",
+        examples=["curl -X POST https://api.example.com/users -H 'Content-Type: application/json' -d '{\"name\":\"Ivan\"}'"]
+    ),
 ):
     """Парсит curl команду и возвращает структуру запроса."""
     try:
