@@ -4431,6 +4431,12 @@ def generate_mock_from_proxy(
         # Формируем имя мока: METHOD+PATH+proxy
         mock_name = f"{log.method.upper()}+{log.path}+proxy"
         
+        # Формируем параметр folder с учетом подпапок
+        # Формат: "name|parent_folder" для подпапок или просто "name" для корневых папок
+        folder_param = log.folder_name
+        if log.folder_parent:
+            folder_param = f"{log.folder_name}|{log.folder_parent}"
+        
         # Обрабатываем тело запроса
         request_body_contains = log.request_body
         if request_body_contains:
@@ -4445,20 +4451,73 @@ def generate_mock_from_proxy(
         # Обрабатываем тело ответа
         response_body = log.response_body
         if response_body:
-            # Если это JSON, пытаемся распарсить
-            try:
-                parsed = json.loads(response_body)
-                response_body = parsed
-            except (json.JSONDecodeError, TypeError):
-                # Если не JSON, оставляем как строку
-                response_body = {"text": response_body}
+            # Проверяем Content-Type из заголовков ответа
+            content_type = None
+            if log.response_headers:
+                content_type = log.response_headers.get("Content-Type") or log.response_headers.get("content-type")
+                if content_type:
+                    # Убираем параметры из Content-Type (например, charset)
+                    content_type = content_type.split(';')[0].strip().lower()
+            
+            # Если Content-Type указывает на JSON, пытаемся распарсить
+            if content_type in ("application/json", "application/json; charset=utf-8", "text/json"):
+                try:
+                    parsed = json.loads(response_body)
+                    response_body = parsed
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Если не удалось распарсить, проверяем, не является ли это base64
+                    try:
+                        # Пытаемся декодировать base64
+                        decoded = base64.b64decode(response_body)
+                        # Пытаемся распарсить декодированные данные как JSON
+                        parsed = json.loads(decoded.decode("utf-8", errors='replace'))
+                        response_body = parsed
+                    except Exception:
+                        # Если не получилось, оставляем как строку
+                        response_body = {"text": response_body}
+            else:
+                # Для не-JSON контента проверяем, можно ли распарсить как JSON
+                try:
+                    parsed = json.loads(response_body)
+                    response_body = parsed
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    # Проверяем, не является ли это base64 строкой
+                    try:
+                        # Пытаемся декодировать base64
+                        decoded = base64.b64decode(response_body)
+                        # Пытаемся распарсить декодированные данные как JSON
+                        parsed = json.loads(decoded.decode("utf-8", errors='replace'))
+                        response_body = parsed
+                    except Exception:
+                        # Если это бинарные данные или невалидная строка, проверяем наличие NUL символов
+                        # Если есть NUL или другие непечатные символы, это скорее всего бинарные данные
+                        has_binary = '\x00' in response_body or any(ord(c) < 32 and c not in '\n\r\t' for c in response_body[:100])
+                        if has_binary:
+                            # Сохраняем как base64, если это бинарные данные
+                            # Но сначала проверяем, не является ли это уже base64
+                            try:
+                                # Пытаемся декодировать как base64
+                                decoded = base64.b64decode(response_body)
+                                # Если успешно, значит это уже base64 - сохраняем как есть в структуре
+                                response_body = {"text": response_body}
+                            except Exception:
+                                # Если не base64, кодируем в base64
+                                try:
+                                    # Пытаемся получить исходные байты из строки
+                                    encoded = base64.b64encode(response_body.encode('utf-8', errors='replace')).decode('ascii')
+                                    response_body = {"text": encoded}
+                                except Exception:
+                                    response_body = {"text": response_body}
+                        else:
+                            # Если это обычный текст, сохраняем как строку
+                            response_body = {"text": response_body}
         else:
             response_body = {}
         
         # Создаём мок
         mock_entry = MockEntry(
             id=str(uuid4()),
-            folder=log.folder_name,
+            folder=folder_param,
             name=mock_name,
             request_condition={
                 "method": log.method.upper(),
@@ -5296,14 +5355,43 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         # Сохраняем тело ответа для логирования
         response_body_str = None
         if proxied.content:
-            try:
-                # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
-                response_body_str = proxied.content.decode("utf-8", errors='replace')
-                # Удаляем NUL символы из декодированной строки
-                response_body_str = _remove_nul_chars(response_body_str)
-            except Exception:
-                response_body_str = base64.b64encode(proxied.content).decode("ascii")
-                response_body_str = _remove_nul_chars(response_body_str)
+            # Проверяем Content-Type для определения способа сохранения
+            content_type_header = None
+            for k, v in proxied.headers.items():
+                if k.lower() == "content-type":
+                    content_type_header = v
+                    break
+            
+            content_type = None
+            if content_type_header:
+                content_type = content_type_header.split(';')[0].strip().lower()
+            
+            # Если это JSON, пытаемся сохранить как JSON строку
+            if content_type in ("application/json", "application/json; charset=utf-8", "text/json"):
+                try:
+                    decoded = proxied.content.decode("utf-8", errors='strict')
+                    # Проверяем, что это валидный JSON
+                    json.loads(decoded)  # Проверка валидности
+                    response_body_str = decoded
+                    response_body_str = _remove_nul_chars(response_body_str)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    # Если не валидный JSON или не UTF-8, сохраняем как base64
+                    response_body_str = base64.b64encode(proxied.content).decode("ascii")
+            else:
+                # Для других типов контента пытаемся декодировать как UTF-8
+                try:
+                    decoded = proxied.content.decode("utf-8", errors='strict')
+                    # Проверяем, что это не бинарные данные (нет NUL символов и других непечатных)
+                    if '\x00' not in decoded and all(ord(c) >= 32 or c in '\n\r\t' for c in decoded[:1000]):
+                        # Это текст, сохраняем как есть
+                        response_body_str = decoded
+                        response_body_str = _remove_nul_chars(response_body_str)
+                    else:
+                        # Есть бинарные данные, сохраняем как base64
+                        response_body_str = base64.b64encode(proxied.content).decode("ascii")
+                except UnicodeDecodeError:
+                    # Не UTF-8, сохраняем как base64
+                    response_body_str = base64.b64encode(proxied.content).decode("ascii")
 
         response_time = time.time() - start_time
         status_code = proxied.status_code

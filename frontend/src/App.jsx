@@ -654,7 +654,7 @@ export default function App() {
       message.error(`Ошибка очистки истории: ${error.message}`);
     }
   };
-
+  
   const generateMockFromProxy = async (logId) => {
     try {
       const response = await fetch(`${host}/api/mocks/generate-from-proxy`, {
@@ -670,7 +670,7 @@ export default function App() {
       }
       message.success('Мок успешно сформирован');
       // Обновляем список моков
-      loadMocks();
+      fetchMocks();
     } catch (error) {
       message.error(error.message || 'Ошибка при формировании мока');
     }
