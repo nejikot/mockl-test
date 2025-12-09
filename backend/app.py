@@ -4236,10 +4236,25 @@ def get_request_logs(
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
         folder_name = folder.strip()
+        folder_parent = None
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-        query = query.filter_by(folder_name=folder_name)
+            folder_parent = parts[1] if parts[1] else None
+        
+        # Нормализуем parent_folder: None -> '' для корневых папок
+        normalized_parent = folder_parent if folder_parent else ''
+        
+        # Фильтруем по folder_name и folder_parent
+        if normalized_parent == '':
+            # Для корневых папок ищем записи с folder_parent = '' или NULL (для обратной совместимости)
+            query = query.filter(
+                RequestLog.folder_name == folder_name,
+                (RequestLog.folder_parent == '') | (RequestLog.folder_parent.is_(None))
+            )
+        else:
+            # Для подпапок ищем записи с точным совпадением folder_parent
+            query = query.filter_by(folder_name=folder_name, folder_parent=normalized_parent)
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
@@ -4391,12 +4406,26 @@ def clear_request_logs(
     folder_name = None
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
-        # В request_logs хранится только folder_name (без parent_folder)
         folder_name = folder.strip()
+        folder_parent = None
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-        query = query.filter_by(folder_name=folder_name)
+            folder_parent = parts[1] if parts[1] else None
+        
+        # Нормализуем parent_folder: None -> '' для корневых папок
+        normalized_parent = folder_parent if folder_parent else ''
+        
+        # Фильтруем по folder_name и folder_parent
+        if normalized_parent == '':
+            # Для корневых папок ищем записи с folder_parent = '' или NULL (для обратной совместимости)
+            query = query.filter(
+                RequestLog.folder_name == folder_name,
+                (RequestLog.folder_parent == '') | (RequestLog.folder_parent.is_(None))
+            )
+        else:
+            # Для подпапок ищем записи с точным совпадением folder_parent
+            query = query.filter_by(folder_name=folder_name, folder_parent=normalized_parent)
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
     if folder_name:

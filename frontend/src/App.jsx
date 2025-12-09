@@ -546,11 +546,16 @@ export default function App() {
     try {
       const { name, parent_folder } = parseFolderKey(selectedFolder);
       const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`);
+      const url = `${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`;
+      console.log("Loading request logs for folder:", folderParam, "URL:", url);
+      const response = await fetch(url);
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Error response:", response.status, errorText);
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       const data = await response.json();
+      console.log("Request logs data:", data);
       setRequestLogs(data.logs || []);
     } catch (error) {
       console.error("Error loading request logs:", error);
@@ -565,7 +570,9 @@ export default function App() {
   const clearRequestLogs = async () => {
     if (!selectedFolder) return;
     try {
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}`, {
+      const { name, parent_folder } = parseFolderKey(selectedFolder);
+      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}`, {
         method: 'DELETE'
       });
       if (!response.ok) {
