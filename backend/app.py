@@ -202,8 +202,8 @@ class Mock(Base):
 
 
     # Условия запроса
-    method = Column(String, nullable=False)
-    path = Column(String, nullable=False)
+    method = Column(String, nullable=False, index=True)
+    path = Column(String, nullable=False, index=True)
     headers = Column(SAJSON, default={})
     body_contains = Column(String, nullable=True)
     body_contains_required = Column(Boolean, default=True, nullable=False)
@@ -262,11 +262,6 @@ class RequestLog(Base):
     status_code = Column(Integer, nullable=False, index=True)
     cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
-    # Данные запроса и ответа для прокси-запросов
-    request_headers = Column(SAJSON, nullable=True)  # Заголовки запроса
-    request_body = Column(String, nullable=True)  # Тело запроса (как строка)
-    response_headers = Column(SAJSON, nullable=True)  # Заголовки ответа
-    response_body = Column(String, nullable=True)  # Тело ответа (как строка)
 
 
 
@@ -709,7 +704,7 @@ def ensure_migrations():
             existing_columns = conn.execute(
                 text("""
                     SELECT table_name, column_name 
-                    FROM information_schema.columns
+                    FROM information_schema.columns 
                     WHERE table_name IN ('folders', 'mocks')
                     AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
                                         'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
@@ -720,21 +715,6 @@ def ensure_migrations():
             ).fetchall()
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
-            
-            # Проверяем существование колонок request_logs ДО операций с mocks, чтобы избежать проблем с транзакциями
-            try:
-                request_logs_columns = conn.execute(
-                    text("""
-                        SELECT column_name 
-                        FROM information_schema.columns
-                        WHERE table_name = 'request_logs'
-                        AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                    """)
-                ).fetchall()
-                existing_request_logs_columns = {row[0] for row in request_logs_columns}
-            except Exception as e:
-                logger.warning(f"Error checking request_logs columns: {e}")
-                existing_request_logs_columns = set()
             
         # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
@@ -927,106 +907,12 @@ def ensure_migrations():
                             logger.warning(f"Error adding mocks.{col_name}: {e}")
                 else:
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
-            
-            # Новые поля в request_logs для хранения данных запроса и ответа
-            # Используем уже проверенные колонки из начала функции
-            if 'request_headers' not in existing_request_logs_columns:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
-                    logger.info("Added column request_logs.request_headers")
-                except Exception as e:
-                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                        logger.info("Column request_logs.request_headers already exists, skipping")
-                    else:
-                        logger.warning(f"Error adding request_logs.request_headers: {e}")
-            
-            if 'request_body' not in existing_request_logs_columns:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
-                    logger.info("Added column request_logs.request_body")
-                except Exception as e:
-                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                        logger.info("Column request_logs.request_body already exists, skipping")
-                    else:
-                        logger.warning(f"Error adding request_logs.request_body: {e}")
-            
-            if 'response_headers' not in existing_request_logs_columns:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
-                    logger.info("Added column request_logs.response_headers")
-                except Exception as e:
-                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                        logger.info("Column request_logs.response_headers already exists, skipping")
-                    else:
-                        logger.warning(f"Error adding request_logs.response_headers: {e}")
-            
-            if 'response_body' not in existing_request_logs_columns:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
-                    logger.info("Added column request_logs.response_body")
-                except Exception as e:
-                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
-                        logger.info("Column request_logs.response_body already exists, skipping")
-                    else:
-                        logger.warning(f"Error adding request_logs.response_body: {e}")
         
         logger.info("Migrations completed successfully")
     except Exception as e:
         logger.error(f"Error during migrations: {e}", exc_info=True)
         # Не прерываем запуск приложения, но логируем ошибку
-    
-    # Выполняем миграцию для request_logs в отдельной транзакции, чтобы избежать проблем с failed транзакциями
-    # Это нужно, если предыдущая транзакция failed из-за ошибок при добавлении колонок в mocks
-    # Выполняем это ВСЕГДА, даже если основная транзакция failed
-    try:
-        with engine.begin() as conn:
-            # Проверяем существование колонок request_logs
-            request_logs_columns_check = conn.execute(
-                text("""
-                    SELECT column_name 
-                    FROM information_schema.columns
-                    WHERE table_name = 'request_logs'
-                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                """)
-            ).fetchall()
-            
-            existing_request_logs_cols = {row[0] for row in request_logs_columns_check}
-            
-            # Добавляем колонки, если их нет
-            if 'request_headers' not in existing_request_logs_cols:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
-                    logger.info("Added column request_logs.request_headers (separate transaction)")
-                except Exception as e:
-                    if "already exists" not in str(e).lower():
-                        logger.warning(f"Error adding request_logs.request_headers: {e}")
-            
-            if 'request_body' not in existing_request_logs_cols:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
-                    logger.info("Added column request_logs.request_body (separate transaction)")
-                except Exception as e:
-                    if "already exists" not in str(e).lower():
-                        logger.warning(f"Error adding request_logs.request_body: {e}")
-            
-            if 'response_headers' not in existing_request_logs_cols:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
-                    logger.info("Added column request_logs.response_headers (separate transaction)")
-                except Exception as e:
-                    if "already exists" not in str(e).lower():
-                        logger.warning(f"Error adding request_logs.response_headers: {e}")
-            
-            if 'response_body' not in existing_request_logs_cols:
-                try:
-                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
-                    logger.info("Added column request_logs.response_body (separate transaction)")
-                except Exception as e:
-                    if "already exists" not in str(e).lower():
-                        logger.warning(f"Error adding request_logs.response_body: {e}")
-    except Exception as e:
-        logger.warning(f"Error in separate transaction for request_logs migration: {e}")
-        # Не прерываем выполнение, так как это может быть повторная попытка
+        raise
 
 
 
@@ -2858,6 +2744,86 @@ def list_folders(db: Session = Depends(get_db)):
         "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
         "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
+    response_model_examples={
+        "create": {
+            "summary": "Создание нового мока",
+            "description": "Пример создания нового мока для GET запроса",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "folder": "api",
+                    "name": "Получить пользователя",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/api/users/123",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "id": 123,
+                            "name": "Иван Иванов",
+                            "email": "ivan@example.com"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        },
+        "update": {
+            "summary": "Обновление существующего мока",
+            "description": "Пример обновления мока с указанием id",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "4f590593-bde9-4594-9299-c157a883f5ba",
+                    "folder": "crm|nikita",
+                    "name": "Мягкий чек",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/set-kit/softcheques/999900002500/shop/3001",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {},
+                        "body": {
+                            "guid": "999900002500",
+                            "shopNumber": 501,
+                            "status": "COMPLETED"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        }
+    },
     openapi_extra={
         "requestBody": {
             "content": {
@@ -3349,178 +3315,6 @@ def parse_curl_endpoint(
         return parsed
     except Exception as e:
         raise HTTPException(400, f"Ошибка парсинга curl команды: {str(e)}")
-
-
-@app.post(
-    "/api/mocks/from-proxy",
-    summary="Создать мок из проксированного запроса",
-    description=(
-        "Создаёт мок на основе данных из истории проксированных запросов.\n\n"
-        "Принимает log_id записи из request_logs и создаёт мок с заполненными параметрами запроса и ответа.\n\n"
-        "Из запроса заполняются: метод, путь, заголовки, тело запроса.\n"
-        "Из ответа заполняются: HTTP статус, заголовки ответа (кроме системных), тело ответа.\n\n"
-        "Имя мока формируется как: метод+путь+proxy"
-    ),
-)
-def create_mock_from_proxy(
-    log_id: str = Body(..., embed=True, description="ID записи из request_logs"),
-    db: Session = Depends(get_db),
-):
-    """Создаёт мок на основе данных из проксированного запроса."""
-    # Находим запись в request_logs
-    request_log = db.query(RequestLog).filter_by(id=log_id).first()
-    if not request_log:
-        raise HTTPException(404, f"Запись с id {log_id} не найдена")
-    
-    if not request_log.is_proxied:
-        raise HTTPException(400, "Запись не является проксированным запросом")
-    
-    # Определяем папку для мока
-    folder_name = request_log.folder_name
-    folder_parent = request_log.folder_parent or ''
-    folder_path = folder_name if not folder_parent else f"{folder_name}|{folder_parent}"
-    
-    # Формируем имя мока: метод+путь+proxy
-    mock_name = f"{request_log.method}{request_log.path}proxy"
-    # Очищаем имя от недопустимых символов
-    mock_name = re.sub(r'[^\w\-/]', '_', mock_name)
-    
-    # Парсим заголовки запроса (сохраняем оригинальный регистр - ВАЖНО!)
-    request_headers = None
-    if request_log.request_headers:
-        try:
-            if isinstance(request_log.request_headers, dict):
-                # Сохраняем оригинальный регистр ключей заголовков
-                request_headers = request_log.request_headers
-            elif isinstance(request_log.request_headers, str):
-                request_headers = json.loads(request_log.request_headers)
-        except:
-            request_headers = None
-    
-    # Парсим тело запроса
-    body_contains = None
-    if request_log.request_body:
-        try:
-            # Пытаемся распарсить как JSON
-            body_json = json.loads(request_log.request_body)
-            body_contains = json.dumps(body_json, ensure_ascii=False)
-        except:
-            # Если не JSON, используем как есть
-            body_contains = request_log.request_body[:1000]  # Ограничиваем длину
-    
-    # Парсим заголовки ответа (сохраняем оригинальный регистр - ВАЖНО!)
-    # ВАЖНО: Что записали, то и возвращаем - сохраняем регистр!
-    response_headers = None
-    if request_log.response_headers:
-        try:
-            if isinstance(request_log.response_headers, dict):
-                # Сохраняем оригинальный регистр ключей заголовков - что записали, то и возвращаем
-                response_headers = request_log.response_headers.copy()
-            elif isinstance(request_log.response_headers, str):
-                response_headers = json.loads(request_log.response_headers)
-        except:
-            response_headers = None
-    
-    # Парсим тело ответа
-    # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Сохраняем тело ответа как JSON объект, если это JSON!
-    # Тело ответа должно быть сохранено как JSON/текст, а не base64
-    response_body = None
-    if request_log.response_body:
-        # Сначала пытаемся распарсить как JSON (тело ответа должно быть сохранено как JSON/текст, а не base64)
-        try:
-            # ИСПРАВЛЕНИЕ: Парсим JSON и сохраняем как объект (dict/list), а не строку
-            response_body = json.loads(request_log.response_body)
-            # Теперь response_body - это объект Python (dict или list), который будет сохранен в БД как JSON
-        except json.JSONDecodeError:
-            # Если не JSON, проверяем, не является ли это base64 (на случай старых записей)
-            # Base64 строки обычно длинные и содержат только base64 символы
-            is_likely_base64 = (
-                len(request_log.response_body) > 50 and 
-                all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in request_log.response_body)
-            )
-            
-            if is_likely_base64:
-                try:
-                    # Пытаемся декодировать base64 (для обратной совместимости со старыми записями)
-                    decoded_bytes = base64.b64decode(request_log.response_body, validate=True)
-                    # Пытаемся декодировать как UTF-8
-                    decoded_str = decoded_bytes.decode('utf-8')
-                    # Пытаемся распарсить как JSON
-                    try:
-                        # ИСПРАВЛЕНИЕ: Парсим JSON и сохраняем как объект
-                        response_body = json.loads(decoded_str)
-                    except json.JSONDecodeError:
-                        # Если не JSON после декодирования, используем как строку
-                        response_body = decoded_str
-                except Exception:
-                    # Если не удалось декодировать base64, используем как строку
-                    response_body = request_log.response_body
-            else:
-                # Если не похоже на base64, используем как строку (это нормальный текст)
-                response_body = request_log.response_body
-    
-    # Определяем Content-Type из заголовков ответа (сохраняем оригинальный регистр ключа)
-    content_type = None
-    content_type_key = None
-    if response_headers:
-        # Ищем Content-Type с сохранением оригинального регистра
-        for key in response_headers.keys():
-            if key.lower() == "content-type":
-                content_type = response_headers[key]
-                content_type_key = key
-                break
-    
-    # Если Content-Type не указан, пытаемся определить по содержимому
-    if not content_type and response_body:
-        if isinstance(response_body, (dict, list)):
-            content_type = "application/json"
-        elif isinstance(response_body, str):
-            try:
-                json.loads(response_body)
-                content_type = "application/json"
-            except:
-                content_type = "text/plain; charset=utf-8"
-    
-    # Устанавливаем Content-Type в заголовки ответа, если его нет (сохраняем оригинальный регистр)
-    if content_type:
-        if response_headers is None:
-            response_headers = {}
-        if content_type_key:
-            # Используем оригинальный ключ, если он был найден
-            response_headers[content_type_key] = content_type
-        else:
-            # Используем стандартный регистр, если ключа не было
-            response_headers["Content-Type"] = content_type
-    
-    # Создаём MockEntry
-    mock_entry = MockEntry(
-        folder=folder_path,
-        name=mock_name,
-        request_condition=MockRequestCondition(
-            method=request_log.method,
-            path=request_log.path,
-            headers=request_headers if request_headers else None,
-            body_contains=body_contains,
-            body_contains_required=bool(body_contains)  # Если есть тело, делаем проверку обязательной
-        ),
-        response_config=MockResponseConfig(
-            status_code=request_log.status_code,
-            headers=response_headers if response_headers else None,
-            body=response_body if response_body is not None else {}
-        ),
-        active=True,
-        delay_ms=0
-    )
-    
-    # Сохраняем мок
-    try:
-        _save_mock_entry(mock_entry, db)
-        db.commit()
-        return {"message": "mock saved", "mock": mock_entry}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating mock from proxy: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ошибка при создании мока: {str(e)}")
 
 
 def encode_filename_rfc5987(filename: str) -> str:
@@ -5252,50 +5046,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
             # Заголовки ответа с подстановками
             # Игнорируем системные заголовки, которые вычисляются автоматически
-            # ВАЖНО: Сохраняем оригинальный регистр заголовков из мока
             system_headers = {
                 "content-length", "connection", "date", "server", 
                 "transfer-encoding", "content-encoding"
             }
-            # Собираем заголовки с оригинальным регистром
-            headers_to_set = []
             for k, v in (m.response_headers or {}).items():
                 if k.lower() in system_headers:
                     continue  # Пропускаем системные заголовки
                 if isinstance(v, str):
                     v = _apply_templates(v, request, full_inner)
-                headers_to_set.append((k, str(v)))
-            
-            # Устанавливаем заголовки с сохранением оригинального регистра
-            # Starlette/FastAPI нормализует заголовки при установке через resp.headers[k] = v
-            # Используем прямой доступ к внутреннему списку заголовков _list для сохранения регистра
-            for k, v in headers_to_set:
-                normalized_key = k.lower()
-                # Удаляем нормализованную версию, если она уже есть
-                if normalized_key in resp.headers:
-                    # Находим и удаляем нормализованную версию из _list
-                    if hasattr(resp.headers, '_list'):
-                        resp.headers._list = [
-                            (hname, hvalue) for hname, hvalue in resp.headers._list
-                            if hname.decode('latin-1').lower() != normalized_key
-                        ]
-                    else:
-                        # Если _list недоступен, удаляем через обычный способ
-                        try:
-                            del resp.headers[normalized_key]
-                        except KeyError:
-                            pass
-                
-                # Устанавливаем заголовок с оригинальным регистром через прямой доступ к _list
-                # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
-                # Это позволяет сохранить оригинальный регистр заголовка
-                if hasattr(resp.headers, '_list'):
-                    # Добавляем заголовок с оригинальным регистром в _list
-                    resp.headers._list.append((k.encode('latin-1'), str(v).encode('latin-1')))
-                else:
-                    # Fallback: если _list недоступен, используем обычное присваивание
-                    # (но регистр может быть нормализован)
-                    resp.headers[k] = v
+                resp.headers[k] = v
 
             # Сохраняем в кэш, если включено
             if cache_key and ttl > 0:
@@ -5374,124 +5134,22 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if host not in ALLOWED_PROXY_HOSTS:
                 raise HTTPException(403, "Proxy target host is not allowed")
 
-        # Сохраняем данные запроса для логирования
-        request_body_bytes = await request.body()
-        # Сохраняем заголовки запроса с оригинальным регистром (ВАЖНО!)
-        # Starlette Request.headers уже нормализованы, но мы можем получить raw headers
-        request_headers_dict = {}
-        # Пытаемся получить raw headers для сохранения регистра
-        if hasattr(request, 'headers'):
-            # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
-            if hasattr(request.headers, '_list'):
-                for name_bytes, value_bytes in request.headers._list:
-                    try:
-                        name = name_bytes.decode('latin-1', errors='replace')
-                        value = value_bytes.decode('latin-1', errors='replace')
-                        request_headers_dict[name] = value
-                    except:
-                        pass
-            elif hasattr(request.headers, 'raw'):
-                for name_bytes, value_bytes in request.headers.raw:
-                    try:
-                        name = name_bytes.decode('latin-1', errors='replace')
-                        value = value_bytes.decode('latin-1', errors='replace')
-                        request_headers_dict[name] = value
-                    except:
-                        pass
-            else:
-                # Fallback: используем обычные заголовки (но регистр может быть потерян)
-                request_headers_dict = dict(request.headers)
-                logger.warning("Could not get raw headers from Starlette request, headers may be normalized")
-        
-        # Исключаем системные заголовки из запроса (сохраняем оригинальный регистр ключей!)
-        system_request_headers = {"host", "connection", "content-length", "transfer-encoding", "upgrade", "keep-alive", "te", "trailer"}
-        filtered_request_headers = {}
-        for k, v in request_headers_dict.items():
-            if k.lower() not in system_request_headers:
-                # Сохраняем заголовок с оригинальным регистром ключа
-                filtered_request_headers[k] = v
-        
         try:
-            # httpx автоматически распаковывает сжатые ответы (br, gzip)
-            # Это позволяет нам получить распакованные данные для сохранения
             async with httpx.AsyncClient() as client:
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-                    content=request_body_bytes,
-                    follow_redirects=True
+                    content=await request.body()
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")
 
-        # Сохраняем данные ответа для логирования
-        # httpx автоматически распаковывает сжатые ответы (br, gzip), поэтому proxied.content уже содержит распакованные данные
-        response_body_bytes = proxied.content
-        
-        # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 2: Сохраняем заголовки с оригинальным регистром
-        # httpx нормализует заголовки, но мы можем получить их через _headers (внутренний словарь)
-        # или через raw headers, если доступны
-        response_headers_dict = {}
-        # Пытаемся получить raw headers для сохранения оригинального регистра
-        if hasattr(proxied, 'headers'):
-            # httpx хранит заголовки в _headers как словарь с нормализованными ключами
-            # Но мы можем получить оригинальные через _raw_headers, если они доступны
-            raw_headers_found = False
-            if hasattr(proxied.headers, '_raw_headers'):
-                # _raw_headers содержит список кортежей (name, value) в байтах
-                try:
-                    for name_bytes, value_bytes in proxied.headers._raw_headers:
-                        try:
-                            name = name_bytes.decode('latin-1', errors='replace')
-                            value = value_bytes.decode('latin-1', errors='replace')
-                            # Сохраняем заголовок с оригинальным регистром
-                            response_headers_dict[name] = value
-                            raw_headers_found = True
-                        except:
-                            pass
-                except:
-                    pass
-            elif hasattr(proxied.headers, 'raw'):
-                # Альтернативный способ через raw
-                try:
-                    for name_bytes, value_bytes in proxied.headers.raw:
-                        try:
-                            name = name_bytes.decode('latin-1', errors='replace')
-                            value = value_bytes.decode('latin-1', errors='replace')
-                            response_headers_dict[name] = value
-                            raw_headers_found = True
-                        except:
-                            pass
-                except:
-                    pass
-            
-            # ИСПРАВЛЕНИЕ: Если raw headers недоступны, используем заголовки как есть
-            # но сохраняем их с оригинальным регистром из proxied.headers
-            # httpx может нормализовать ключи, но мы сохраняем то, что получили
-            if not raw_headers_found:
-                # Используем заголовки из proxied.headers, но сохраняем их как есть
-                # ВАЖНО: httpx может нормализовать ключи, но мы сохраняем то, что есть
-                for k, v in proxied.headers.items():
-                    # Сохраняем заголовок с ключом как есть (может быть нормализован httpx)
-                    # Но это лучше, чем ничего
-                    response_headers_dict[k] = v
-                logger.debug("Using normalized headers from httpx (raw headers not available)")
-        
-        # Исключаем системные заголовки из ответа (сохраняем оригинальный регистр ключей!)
-        # ВАЖНО: Сохраняем регистр заголовков - что получили, то и сохраняем
-        system_response_headers = {"content-length", "transfer-encoding", "connection", "upgrade", "keep-alive", "te", "trailer", "date", "server", "content-encoding"}
-        filtered_response_headers = {}
-        for k, v in response_headers_dict.items():
-            if k.lower() not in system_response_headers:
-                # Сохраняем заголовок с оригинальным регистром ключа
-                filtered_response_headers[k] = v
 
-        resp = Response(content=response_body_bytes, status_code=proxied.status_code)
-        # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 3: Копируем заголовки с сохранением оригинального регистра
-        # Исключаем hop-by-hop заголовки;
+        resp = Response(content=proxied.content, status_code=proxied.status_code)
+        # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
-        for k, v in response_headers_dict.items():
+        for k, v in proxied.headers.items():
             kl = k.lower()
             if kl in {"content-length", "transfer-encoding", "connection"}:
                 continue
@@ -5507,19 +5165,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         v = new_loc
                 except Exception:
                     pass
-            # ИСПРАВЛЕНИЕ: Устанавливаем заголовок с оригинальным регистром через _list
-            # Это важно для сохранения регистра заголовков
-            if hasattr(resp.headers, '_list'):
-                # Удаляем нормализованную версию, если она есть
-                resp.headers._list = [
-                    (hname, hvalue) for hname, hvalue in resp.headers._list
-                    if hname.decode('latin-1', errors='replace').lower() != kl
-                ]
-                # Добавляем заголовок с оригинальным регистром
-                resp.headers._list.append((k.encode('latin-1'), str(v).encode('latin-1')))
-            else:
-                # Fallback: используем обычное присваивание (регистр может быть нормализован)
-                resp.headers[k] = v
+            resp.headers[k] = v
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
@@ -5548,131 +5194,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             folder=folder_name
         ).observe(response_time)
         
-        # Логируем проксированный вызов в БД с данными запроса и ответа
+        # Логируем проксированный вызов в БД
         try:
-            # Преобразуем тело запроса в строку (если возможно, как JSON, иначе как текст)
-            request_body_str = None
-            if request_body_bytes:
-                try:
-                    # Пытаемся декодировать как UTF-8
-                    request_body_str = request_body_bytes.decode('utf-8')
-                    # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
-                    request_body_str = request_body_str.replace('\x00', '')
-                    # Пытаемся распарсить как JSON для форматирования
-                    try:
-                        request_body_json = json.loads(request_body_str)
-                        request_body_str = json.dumps(request_body_json, ensure_ascii=False)
-                    except:
-                        pass  # Если не JSON, оставляем как есть
-                except:
-                    # Если не удалось декодировать, сохраняем как base64
-                    request_body_str = base64.b64encode(request_body_bytes).decode('utf-8')
-            
-            # Преобразуем тело ответа в строку
-            # ВАЖНО: httpx автоматически распаковывает сжатые ответы (br, gzip), 
-            # поэтому response_body_bytes уже содержит распакованные данные
-            # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Сохраняем тело ответа как JSON объект, если это JSON!
-            response_body_str = None
-            if response_body_bytes:
-                # Определяем Content-Type из заголовков ответа
-                content_type_header = ""
-                for key, value in response_headers_dict.items():
-                    if key.lower() == "content-type":
-                        content_type_header = value.lower()
-                        break
-                
-                # Пытаемся декодировать как UTF-8 (httpx уже распаковал br/gzip)
-                decoded_successfully = False
-                decoded_str = None
-                
-                # Сначала пробуем UTF-8
-                for encoding in ['utf-8', 'utf-8-sig']:
-                    try:
-                        test_str = response_body_bytes.decode(encoding)
-                        decoded_str = test_str
-                        decoded_successfully = True
-                        break
-                    except (UnicodeDecodeError, LookupError):
-                        continue
-                
-                # Если UTF-8 не сработал, пробуем другие кодировки
-                if not decoded_successfully:
-                    if "charset=" in content_type_header:
-                        try:
-                            charset = content_type_header.split("charset=")[1].split(";")[0].strip()
-                            try:
-                                decoded_str = response_body_bytes.decode(charset)
-                                decoded_successfully = True
-                            except (UnicodeDecodeError, LookupError):
-                                pass
-                        except:
-                            pass
-                
-                # Если удалось декодировать, обрабатываем как текст/JSON
-                if decoded_successfully and decoded_str:
-                    # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
-                    decoded_str = decoded_str.replace('\x00', '')
-                    
-                    # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Пытаемся распарсить как JSON
-                    # Если это JSON и Content-Type указывает на JSON, сохраняем как JSON строку
-                    # Это позволит при создании мока распарсить его обратно в объект
-                    is_json_content = (
-                        "application/json" in content_type_header or
-                        "application/vnd.api+json" in content_type_header or
-                        "text/json" in content_type_header
-                    )
-                    
-                    try:
-                        response_body_json = json.loads(decoded_str)
-                        # Если это валидный JSON, сохраняем как отформатированную JSON строку
-                        # При создании мока из прокси эта строка будет распарсена обратно в объект
-                        response_body_str = json.dumps(response_body_json, ensure_ascii=False)
-                    except (json.JSONDecodeError, ValueError):
-                        # Если не JSON, проверяем, не является ли это base64 строкой
-                        # (для обратной совместимости со старыми записями)
-                        # Base64 строки обычно длинные и содержат только base64 символы
-                        is_likely_base64 = (
-                            len(decoded_str) > 50 and 
-                            all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in decoded_str)
-                        )
-                        if is_likely_base64:
-                            # Пытаемся декодировать base64 и проверить, не JSON ли это внутри
-                            try:
-                                decoded_bytes = base64.b64decode(decoded_str, validate=True)
-                                decoded_inner = decoded_bytes.decode('utf-8')
-                                try:
-                                    # Если внутри base64 был JSON, сохраняем как JSON строку
-                                    response_body_json = json.loads(decoded_inner)
-                                    response_body_str = json.dumps(response_body_json, ensure_ascii=False)
-                                except:
-                                    # Если не JSON, сохраняем как текст
-                                    response_body_str = decoded_inner
-                            except:
-                                # Если не удалось декодировать base64, сохраняем как текст
-                                response_body_str = decoded_str
-                        else:
-                            # Если не base64, сохраняем как текст (НЕ base64!)
-                            response_body_str = decoded_str
-                else:
-                    # Если не удалось декодировать, это бинарные данные
-                    # Сохраняем как base64 только в крайнем случае для бинарных данных
-                    logger.warning(f"Could not decode response body as text, saving as base64. Size: {len(response_body_bytes)} bytes, Content-Type: {content_type_header}")
-                    response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
-            
-            # Очищаем строки от NUL символов (0x00), которые PostgreSQL не может сохранить
-            if request_body_str:
-                request_body_str = request_body_str.replace('\x00', '')
-            if response_body_str:
-                response_body_str = response_body_str.replace('\x00', '')
-            
-            # Очищаем заголовки от NUL символов
-            if filtered_request_headers:
-                filtered_request_headers = {k.replace('\x00', ''): v.replace('\x00', '') if isinstance(v, str) else v 
-                                           for k, v in filtered_request_headers.items()}
-            if filtered_response_headers:
-                filtered_response_headers = {k.replace('\x00', ''): v.replace('\x00', '') if isinstance(v, str) else v 
-                                            for k, v in filtered_response_headers.items()}
-            
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
                 folder_name=folder_name,
@@ -5683,11 +5206,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 response_time_ms=int(response_time * 1000),
                 status_code=status_code,
                 cache_ttl_seconds=None,
-                cache_key=None,
-                request_headers=filtered_request_headers if filtered_request_headers else None,
-                request_body=request_body_str,
-                response_headers=filtered_response_headers if filtered_response_headers else None,
-                response_body=response_body_str
+                cache_key=None
             )
             db.add(request_log)
             db.commit()

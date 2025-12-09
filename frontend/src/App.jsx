@@ -546,16 +546,11 @@ export default function App() {
     try {
       const { name, parent_folder } = parseFolderKey(selectedFolder);
       const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const url = `${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`;
-      console.log("Loading request logs for folder:", folderParam, "URL:", url);
-      const response = await fetch(url);
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}&limit=10000`);
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Error response:", response.status, errorText);
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       const data = await response.json();
-      console.log("Request logs data:", data);
       setRequestLogs(data.logs || []);
     } catch (error) {
       console.error("Error loading request logs:", error);
@@ -570,9 +565,7 @@ export default function App() {
   const clearRequestLogs = async () => {
     if (!selectedFolder) return;
     try {
-      const { name, parent_folder } = parseFolderKey(selectedFolder);
-      const folderParam = parent_folder ? `${name}|${parent_folder}` : name;
-      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(folderParam)}`, {
+      const response = await fetch(`${host}/api/request-logs?folder=${encodeURIComponent(selectedFolder)}`, {
         method: 'DELETE'
       });
       if (!response.ok) {
@@ -1368,108 +1361,7 @@ export default function App() {
       error_simulation_status_code: m.error_simulation_status_code || undefined,
       error_simulation_body: m.error_simulation_body ? JSON.stringify(m.error_simulation_body, null, 2) : undefined,
       error_simulation_delay_ms: m.error_simulation_delay_ms || undefined,
-      response_body: (() => {
-        // ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 4: Улучшенная обработка и отображение тела ответа
-        // Тело ответа должно быть таким, каким мы его получили (JSON/текст), а не base64
-        let bodyToDisplay = m.response_config.body;
-        
-        // Если тело ответа уже является объектом или массивом, используем как есть
-        if (typeof bodyToDisplay === 'object' && bodyToDisplay !== null && !Array.isArray(bodyToDisplay) || Array.isArray(bodyToDisplay)) {
-          // ИСПРАВЛЕНИЕ: Красиво форматируем JSON с отступами
-          try {
-            return JSON.stringify(bodyToDisplay, null, 2);
-          } catch (e) {
-            console.warn('Failed to stringify response body:', e);
-            return String(bodyToDisplay);
-          }
-        }
-        
-        // Если тело ответа - строка
-        if (typeof bodyToDisplay === 'string') {
-          // ИСПРАВЛЕНИЕ: Сначала пытаемся распарсить как JSON (на случай, если это JSON-строка)
-          // Убираем лишние пробелы в начале и конце для лучшего парсинга
-          const trimmedBody = bodyToDisplay.trim();
-          
-          // Проверяем, начинается ли строка с { или [ (признаки JSON)
-          if ((trimmedBody.startsWith('{') && trimmedBody.endsWith('}')) || 
-              (trimmedBody.startsWith('[') && trimmedBody.endsWith(']'))) {
-            try {
-              const parsed = JSON.parse(trimmedBody);
-              // Если распарсилось, красиво форматируем
-              return JSON.stringify(parsed, null, 2);
-            } catch (e) {
-              // Если не удалось распарсить, продолжаем обработку
-              console.debug('Failed to parse as JSON, trying other methods:', e);
-            }
-          }
-          
-          // Если не JSON-строка, проверяем, не является ли это base64 (для обратной совместимости)
-          if (trimmedBody.length > 50) {
-            // Проверяем, похоже ли это на base64 (только base64 символы)
-            // ИСПРАВЛЕНИЕ: Улучшенная проверка base64 - учитываем padding
-            const isLikelyBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(trimmedBody) && 
-                                   (trimmedBody.length % 4 === 0 || trimmedBody.length % 4 === 1);
-            
-            if (isLikelyBase64) {
-              try {
-                // Пытаемся декодировать base64
-                const decodedBytes = atob(trimmedBody);
-                // Пытаемся декодировать как UTF-8
-                let decodedStr;
-                try {
-                  // Пробуем использовать TextDecoder для правильного декодирования UTF-8
-                  const decoder = new TextDecoder('utf-8', { fatal: false });
-                  const bytes = new Uint8Array([...decodedBytes].map(c => c.charCodeAt(0)));
-                  decodedStr = decoder.decode(bytes);
-                } catch {
-                  // Fallback: используем старый метод
-                  decodedStr = decodeURIComponent(escape(decodedBytes));
-                }
-                
-                // ИСПРАВЛЕНИЕ: Пытаемся распарсить как JSON после декодирования
-                try {
-                  const parsed = JSON.parse(decodedStr);
-                  // Если это JSON, красиво форматируем
-                  return JSON.stringify(parsed, null, 2);
-                } catch {
-                  // Если не JSON, используем декодированную строку как есть
-                  return decodedStr;
-                }
-              } catch (e) {
-                // Если не удалось декодировать, используем исходную строку
-                console.warn('Failed to decode base64 response body:', e);
-                return trimmedBody;
-              }
-            } else {
-              // ИСПРАВЛЕНИЕ: Если не base64, пытаемся еще раз распарсить как JSON
-              // (на случай, если строка не начиналась с { или [)
-              try {
-                const parsed = JSON.parse(trimmedBody);
-                return JSON.stringify(parsed, null, 2);
-              } catch {
-                // Если не JSON, используем как обычную строку (без JSON.stringify, чтобы не добавлять кавычки)
-                return trimmedBody;
-              }
-            }
-          } else {
-            // ИСПРАВЛЕНИЕ: Если строка короткая, пытаемся распарсить как JSON
-            try {
-              const parsed = JSON.parse(trimmedBody);
-              return JSON.stringify(parsed, null, 2);
-            } catch {
-              // Если не JSON, используем как есть (без JSON.stringify)
-              return trimmedBody;
-            }
-          }
-        }
-        
-        // Fallback: сериализуем как есть
-        try {
-          return JSON.stringify(bodyToDisplay, null, 2);
-        } catch (e) {
-          return String(bodyToDisplay);
-        }
-      })()
+      response_body: JSON.stringify(m.response_config.body, null, 2)
     });
     
     setModalOpen(true);
@@ -2139,6 +2031,7 @@ export default function App() {
             icon={<BarChartOutlined />}
             onClick={() => setIsGlobalMetricsModalOpen(true)}
             style={primaryButtonStyle}
+            disabled={true}
           >
             Получить метрики
           </Button>
@@ -2705,6 +2598,7 @@ export default function App() {
                                 setIsMetricsModalOpen(true);
                                 await loadMetrics();
                               }}
+                              disabled={true}
                             >
                               Получить метрики
                             </Button>
@@ -3851,6 +3745,226 @@ export default function App() {
                       </Col>
                     </Row>
                   </div>
+                  
+                  {/* Детальная статистика по методам и путям */}
+                  {data.methods_paths && data.methods_paths.length > 0 ? (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 16,
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                        Детальная статистика по методам и путям
+                      </Typography.Title>
+                      <Table
+                        dataSource={data.methods_paths.map((mp, idx) => ({ ...mp, key: idx }))}
+                        pagination={{ pageSize: 15 }}
+                        size="small"
+                        scroll={{ x: 'max-content' }}
+                        columns={[
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
+                            fixed: 'left',
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            width: 250,
+                            fixed: 'left',
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Всего',
+                            dataIndex: 'total_requests',
+                            key: 'total_requests',
+                            width: 80,
+                            align: 'right',
+                            render: (total) => (
+                              <Typography.Text style={{ fontWeight: 600 }}>
+                                {total || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Моки',
+                            dataIndex: 'mock_hits',
+                            key: 'mock_hits',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'proxied',
+                            key: 'proxied',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Ошибки',
+                            dataIndex: 'errors',
+                            key: 'errors',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: count > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Среднее время',
+                            dataIndex: 'avg_response_time_ms',
+                            key: 'avg_response_time_ms',
+                            width: 140,
+                            align: 'right',
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем точное время
+                              if (record.total_requests === 1 && time > 0) {
+                                return (
+                                  <Typography.Text strong style={{ color: theme === "dark" ? "#4fc3f7" : "#1890ff" }}>
+                                    {time.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text>
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
+                          },
+                          {
+                            title: 'Мин. время',
+                            dataIndex: 'min_response_time_ms',
+                            key: 'min_response_time_ms',
+                            width: 140,
+                            align: 'right',
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем то же время что и среднее
+                              if (record.total_requests === 1 && record.avg_response_time_ms > 0) {
+                                return (
+                                  <Typography.Text type="secondary">
+                                    {record.avg_response_time_ms.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text type="secondary">
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
+                          },
+                          {
+                            title: 'Макс. время',
+                            dataIndex: 'max_response_time_ms',
+                            key: 'max_response_time_ms',
+                            width: 140,
+                            align: 'right',
+                            render: (time, record) => {
+                              // Если есть только один запрос, показываем то же время что и среднее
+                              if (record.total_requests === 1 && record.avg_response_time_ms > 0) {
+                                return (
+                                  <Typography.Text type="secondary">
+                                    {record.avg_response_time_ms.toFixed(2)} мс
+                                  </Typography.Text>
+                                );
+                              }
+                              return (
+                                <Typography.Text type="secondary">
+                                  {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                                </Typography.Text>
+                              );
+                            }
+                          },
+                          {
+                            title: 'Прокси (среднее)',
+                            dataIndex: 'proxy_avg_time_ms',
+                            key: 'proxy_avg_time_ms',
+                            width: 150,
+                            align: 'right',
+                            render: (time, record) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {time ? `${time.toFixed(2)} мс` : '—'}
+                                {record.proxy_count > 0 && (
+                                  <Typography.Text type="secondary" style={{ fontSize: 10, marginLeft: 4 }}>
+                                    ({record.proxy_count})
+                                  </Typography.Text>
+                                )}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Статус коды',
+                            key: 'status_codes',
+                            width: 250,
+                            render: (_, record) => (
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {Object.entries(record.status_codes || {}).map(([code, count]) => (
+                                  <Typography.Text key={code} style={{ fontSize: 11 }}>
+                                    <Typography.Text 
+                                      strong 
+                                      style={{ 
+                                        color: code.startsWith('2') 
+                                          ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                          : code.startsWith('4') || code.startsWith('5')
+                                          ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                          : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                      }}
+                                    >
+                                      {code}
+                                    </Typography.Text>
+                                    {' '}
+                                    <Typography.Text type="secondary">
+                                      {count}
+                                    </Typography.Text>
+                                  </Typography.Text>
+                                ))}
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 40,
+                      textAlign: 'center',
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Text type="secondary">
+                        Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                      </Typography.Text>
+                    </div>
+                  )}
 
                   {/* Детальная история вызовов */}
                   <div style={{ 
@@ -4007,52 +4121,6 @@ export default function App() {
                               >
                                 {code}
                               </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Действия',
-                            key: 'actions',
-                            width: 150,
-                            align: 'center',
-                            render: (_, record) => (
-                              record.is_proxied ? (
-                                <Button
-                                  size="small"
-                                  type="primary"
-                                  icon={<PlusOutlined />}
-                                  onClick={() => {
-                                    Modal.confirm({
-                                      title: 'Создать мок из проксированного запроса',
-                                      content: `Создать мок на основе этого проксированного запроса?`,
-                                      okText: 'Создать',
-                                      cancelText: 'Отмена',
-                                      onOk: async () => {
-                                        try {
-                                          const response = await fetch(`${host}/api/mocks/from-proxy`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ log_id: record.id })
-                                          });
-                                          
-                                          if (!response.ok) {
-                                            const error = await response.json();
-                                            throw new Error(error.detail || `HTTP ${response.status}`);
-                                          }
-                                          
-                                          const result = await response.json();
-                                          message.success('Мок успешно создан');
-                                          // Обновляем список моков
-                                          fetchMocks();
-                                        } catch (error) {
-                                          message.error(`Ошибка создания мока: ${error.message}`);
-                                        }
-                                      }
-                                    });
-                                  }}
-                                >
-                                  Создать мок
-                                </Button>
-                              ) : null
                             )
                           }
                         ]}
@@ -4236,7 +4304,191 @@ export default function App() {
                       </Col>
                     </Row>
                   </div>
-
+                  
+                  {allMethodsPaths.length > 0 ? (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 16,
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
+                        Детальная статистика по всем папкам, методам и путям
+                      </Typography.Title>
+                      <Table
+                        dataSource={allMethodsPaths.map((mp, idx) => ({ ...mp, key: idx }))}
+                        pagination={{ pageSize: 10 }}
+                        size="small"
+                        scroll={{ x: 'max-content' }}
+                        columns={[
+                          {
+                            title: 'Папка',
+                            dataIndex: 'folder',
+                            key: 'folder',
+                            width: 120,
+                            fixed: 'left',
+                            render: (folder) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {folder}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Метод',
+                            dataIndex: 'method',
+                            key: 'method',
+                            width: 80,
+                            render: (method) => (
+                              <Typography.Text strong style={{ 
+                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
+                              }}>
+                                {method}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Путь',
+                            dataIndex: 'path',
+                            key: 'path',
+                            width: 200,
+                            render: (path) => (
+                              <Typography.Text code style={{ fontSize: 11 }}>
+                                {path}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Всего',
+                            dataIndex: 'total_requests',
+                            key: 'total_requests',
+                            width: 80,
+                            align: 'right',
+                            render: (total) => (
+                              <Typography.Text style={{ fontWeight: 600 }}>
+                                {total || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Моки',
+                            dataIndex: 'mock_hits',
+                            key: 'mock_hits',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Прокси',
+                            dataIndex: 'proxied',
+                            key: 'proxied',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Ошибки',
+                            dataIndex: 'errors',
+                            key: 'errors',
+                            width: 80,
+                            align: 'right',
+                            render: (count) => (
+                              <Typography.Text style={{ color: count > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
+                                {count || 0}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Среднее время',
+                            dataIndex: 'avg_response_time_ms',
+                            key: 'avg_response_time_ms',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text>
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Мин. время',
+                            dataIndex: 'min_response_time_ms',
+                            key: 'min_response_time_ms',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Макс. время',
+                            dataIndex: 'max_response_time_ms',
+                            key: 'max_response_time_ms',
+                            width: 120,
+                            align: 'right',
+                            render: (time) => (
+                              <Typography.Text type="secondary">
+                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
+                              </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Статус коды',
+                            key: 'status_codes',
+                            width: 200,
+                            render: (_, record) => (
+                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {Object.entries(record.status_codes || {}).map(([code, count]) => (
+                                  <Typography.Text key={code} style={{ fontSize: 11 }}>
+                                    <Typography.Text 
+                                      strong 
+                                      style={{ 
+                                        color: code.startsWith('2') 
+                                          ? (theme === "dark" ? "#81c784" : "#52c41a")
+                                          : code.startsWith('4') || code.startsWith('5')
+                                          ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
+                                          : (theme === "dark" ? "#ffb74d" : "#fa8c16")
+                                      }}
+                                    >
+                                      {code}
+                                    </Typography.Text>
+                                    {' '}
+                                    <Typography.Text type="secondary">
+                                      {count}
+                                    </Typography.Text>
+                                  </Typography.Text>
+                                ))}
+                              </div>
+                            )
+                          }
+                        ]}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      background: theme === "dark" ? "#262626" : "#fff",
+                      borderRadius: 8,
+                      padding: 40,
+                      textAlign: 'center',
+                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
+                    }}>
+                      <Typography.Text type="secondary">
+                        Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
+                      </Typography.Text>
+                    </div>
+                  )}
+                  
                   {/* Детальная история вызовов */}
                   <div style={{ 
                     background: theme === "dark" ? "#262626" : "#fff",
