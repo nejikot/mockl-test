@@ -1911,6 +1911,34 @@ def _clean_response_body(body: Any) -> Any:
     return body
 
 
+def _format_body_for_logging(body_bytes: bytes) -> str:
+    """Форматирует тело запроса/ответа для логирования.
+    
+    Пытается декодировать как UTF-8 и распарсить как JSON.
+    Если не получается, показывает как base64 или hex.
+    """
+    if not body_bytes:
+        return "(empty)"
+    
+    # Пытаемся декодировать как UTF-8
+    try:
+        body_str = body_bytes.decode('utf-8')
+        # Пытаемся распарсить как JSON для красивого форматирования
+        try:
+            body_json = json.loads(body_str)
+            return json.dumps(body_json, ensure_ascii=False, indent=2)
+        except (json.JSONDecodeError, ValueError):
+            # Если не JSON, возвращаем как строку (ограничиваем длину)
+            if len(body_str) > 1000:
+                return body_str[:1000] + "... (truncated)"
+            return body_str
+    except UnicodeDecodeError:
+        # Если не UTF-8, показываем как base64 (ограничиваем длину)
+        if len(body_bytes) > 100:
+            return f"(binary, base64): {base64.b64encode(body_bytes[:100]).decode('ascii')}... (truncated, {len(body_bytes)} bytes total)"
+        return f"(binary, base64): {base64.b64encode(body_bytes).decode('ascii')} ({len(body_bytes)} bytes)"
+
+
 def _remove_nul_chars(text: str) -> str:
     """Удаляет NUL (0x00) символы из строки, так как PostgreSQL не может их сохранить."""
     if text is None:
@@ -5135,6 +5163,29 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         for k, v in cached_payload.get("headers", {}).items():
                             resp.headers[k] = v
                         RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+                        
+                        # [ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Логируем вызов мока из кэша
+                        try:
+                            request_headers_formatted = dict(request.headers)
+                            request_body_formatted = _format_body_for_logging(body_bytes)
+                            response_headers_formatted = dict(resp.headers)
+                            response_body_bytes = cached_payload.get("content", b"")
+                            response_body_formatted = _format_body_for_logging(response_body_bytes)
+                            
+                            logger.info(
+                                "[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Вызов мока (из кэша):\n"
+                                f"  Mock ID: {m.id}\n"
+                                f"  Метод: {request.method}\n"
+                                f"  Путь: {full_inner}\n"
+                                f"  Заголовки запроса: {json.dumps(request_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                                f"  Тело запроса:\n{request_body_formatted}\n"
+                                f"  Статус ответа: {resp.status_code}\n"
+                                f"  Заголовки ответа: {json.dumps(response_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                                f"  Тело ответа:\n{response_body_formatted}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока из кэша: {e}", exc_info=True)
+                        
                         return resp
                     else:
                         logger.info(f"Cache EXPIRED for mock {m.id}: expires_at={expires_at}, current_time={current_time}")
@@ -5157,6 +5208,28 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
                 REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="error_simulated").inc()
                 MOCK_HITS.labels(folder=folder_name).inc()
+                
+                # [ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Логируем вызов мока с имитацией ошибки
+                try:
+                    request_headers_formatted = dict(request.headers)
+                    request_body_formatted = _format_body_for_logging(body_bytes)
+                    response_headers_formatted = dict(resp.headers)
+                    response_body_formatted = json.dumps(resp_body, ensure_ascii=False, indent=2) if isinstance(resp_body, (dict, list)) else str(resp_body)
+                    
+                    logger.info(
+                        "[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Вызов мока (имитация ошибки):\n"
+                        f"  Mock ID: {m.id}\n"
+                        f"  Метод: {request.method}\n"
+                        f"  Путь: {full_inner}\n"
+                        f"  Заголовки запроса: {json.dumps(request_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                        f"  Тело запроса:\n{request_body_formatted}\n"
+                        f"  Статус ответа: {resp.status_code}\n"
+                        f"  Заголовки ответа: {json.dumps(response_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                        f"  Тело ответа:\n{response_body_formatted}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока с имитацией ошибки: {e}", exc_info=True)
+                
                 return resp
 
             if delay_ms and delay_ms > 0:
@@ -5167,6 +5240,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
             # Поддержка файловых ответов через спец‑структуру
             is_file = isinstance(body, dict) and body.get("__file__") is True and "data_base64" in body
+            raw = None  # Инициализируем для использования в логировании
             if is_file:
                 try:
                     raw = base64.b64decode(body.get("data_base64") or "")
@@ -5277,6 +5351,47 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             except Exception as e:
                 logger.error(f"Error logging request: {e}", exc_info=True)
                 db.rollback()
+            
+            # [ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Логируем вызов мока с телом и заголовками запроса и ответа
+            try:
+                # Форматируем заголовки запроса
+                request_headers_formatted = dict(request.headers)
+                
+                # Форматируем тело запроса
+                request_body_formatted = _format_body_for_logging(body_bytes)
+                
+                # Форматируем заголовки ответа
+                response_headers_formatted = dict(resp.headers)
+                
+                # Получаем тело ответа
+                # Используем переменную body, которая была использована для создания ответа
+                response_body_formatted = ""
+                if is_file and raw is not None:
+                    # Для файловых ответов используем raw (уже декодированный из base64)
+                    response_body_formatted = _format_body_for_logging(raw)
+                elif isinstance(body, str):
+                    # Для текстовых ответов
+                    response_body_formatted = body
+                else:
+                    # Для JSON ответов - сериализуем в JSON
+                    try:
+                        response_body_formatted = json.dumps(body, ensure_ascii=False, indent=2)
+                    except (TypeError, ValueError):
+                        response_body_formatted = str(body)
+                
+                logger.info(
+                    "[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Вызов мока:\n"
+                    f"  Mock ID: {m.id}\n"
+                    f"  Метод: {request.method}\n"
+                    f"  Путь: {full_inner}\n"
+                    f"  Заголовки запроса: {json.dumps(request_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                    f"  Тело запроса:\n{request_body_formatted}\n"
+                    f"  Статус ответа: {resp.status_code}\n"
+                    f"  Заголовки ответа: {json.dumps(response_headers_formatted, ensure_ascii=False, indent=2)}\n"
+                    f"  Тело ответа:\n{response_body_formatted}"
+                )
+            except Exception as e:
+                logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока: {e}", exc_info=True)
             
             return resp
 
