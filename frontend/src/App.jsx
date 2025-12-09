@@ -2031,7 +2031,6 @@ export default function App() {
             icon={<BarChartOutlined />}
             onClick={() => setIsGlobalMetricsModalOpen(true)}
             style={primaryButtonStyle}
-            disabled={true}
           >
             Получить метрики
           </Button>
@@ -2598,7 +2597,6 @@ export default function App() {
                                 setIsMetricsModalOpen(true);
                                 await loadMetrics();
                               }}
-                              disabled={true}
                             >
                               Получить метрики
                             </Button>
@@ -4121,6 +4119,52 @@ export default function App() {
                               >
                                 {code}
                               </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Действия',
+                            key: 'actions',
+                            width: 150,
+                            align: 'center',
+                            render: (_, record) => (
+                              record.is_proxied ? (
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  icon={<PlusOutlined />}
+                                  onClick={() => {
+                                    Modal.confirm({
+                                      title: 'Создать мок из проксированного запроса',
+                                      content: `Создать мок на основе этого проксированного запроса?`,
+                                      okText: 'Создать',
+                                      cancelText: 'Отмена',
+                                      onOk: async () => {
+                                        try {
+                                          const response = await fetch(`${host}/api/mocks/from-proxy`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ log_id: record.id })
+                                          });
+                                          
+                                          if (!response.ok) {
+                                            const error = await response.json();
+                                            throw new Error(error.detail || `HTTP ${response.status}`);
+                                          }
+                                          
+                                          const result = await response.json();
+                                          message.success('Мок успешно создан');
+                                          // Обновляем список моков
+                                          loadMocks();
+                                        } catch (error) {
+                                          message.error(`Ошибка создания мока: ${error.message}`);
+                                        }
+                                      }
+                                    });
+                                  }}
+                                >
+                                  Создать мок
+                                </Button>
+                              ) : null
                             )
                           }
                         ]}
