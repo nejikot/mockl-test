@@ -4462,12 +4462,12 @@ def generate_mock_from_proxy(
         # Системные заголовки запроса, которые нужно исключить
         SYSTEM_REQUEST_HEADERS = {
             "cdn-loop", "cf-", "rndr-", "true-client-ip", "x-request-start",
-            "x-forwarded-for", "x-forwarded-proto", "postman-token"
+            "x-forwarded-for", "x-forwarded-proto", "postman-token", "host", "user-agent","render-proxy-ttl"
         }
         
         # Системные заголовки ответа, которые нужно исключить
         SYSTEM_RESPONSE_HEADERS = {
-            "cf-", "rndr-", "vary", "alt-svc", "x-render-origin-server", "cf-cache-status"
+            "cf-", "rndr-", "vary", "alt-svc", "x-render-origin-server", "cf-cache-status","postman-token", "host", "user-agent","render-proxy-ttl"
         }
         
         # Фильтруем заголовки запроса (сохраняем регистр)
@@ -5315,7 +5315,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             # Игнорируем системные заголовки, которые вычисляются автоматически
             system_headers = {
                 "content-length", "connection", "date", "server", 
-                "transfer-encoding", "content-encoding"
+                "transfer-encoding", "content-encoding", "date","server","postman-token", "host", "user-agent","render-proxy-ttl"
             }
             for k, v in (m.response_headers or {}).items():
                 if k.lower() in system_headers:
