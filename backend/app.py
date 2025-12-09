@@ -262,11 +262,6 @@ class RequestLog(Base):
     status_code = Column(Integer, nullable=False, index=True)
     cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
-    # Дополнительные поля для проксированных запросов (для возможности создания моков)
-    request_headers = Column(SAJSON, nullable=True)  # Заголовки запроса (только для проксированных)
-    request_body = Column(SAJSON, nullable=True)  # Тело запроса (только для проксированных)
-    response_headers = Column(SAJSON, nullable=True)  # Заголовки ответа (только для проксированных)
-    response_body = Column(SAJSON, nullable=True)  # Тело ответа (только для проксированных)
 
 
 
@@ -705,70 +700,7 @@ def ensure_migrations():
             except Exception as e:
                 logger.warning(f"Error recreating foreign keys: {e}")
             
-            # Миграция: добавляем поля для сохранения полной информации о проксированных запросах
-            # Выполняем миграцию для каждой колонки отдельно, чтобы не потерять прогресс при ошибке
-            logger.info("=" * 80)
-            logger.info("Starting migration for request_logs proxy fields")
-            logger.info("=" * 80)
-            
-            request_logs_proxy_fields = ['request_headers', 'request_body', 'response_headers', 'response_body']
-            migration_results = {}
-            
-            for field in request_logs_proxy_fields:
-                logger.info(f"[MIGRATION] Checking column request_logs.{field}...")
-                field_exists = conn.execute(
-                    text(f"""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name = 'request_logs' AND column_name = '{field}'
-                    """)
-                ).fetchone()
-                
-                if field_exists:
-                    logger.info(f"[MIGRATION] ✓ Column request_logs.{field} already exists, skipping")
-                    migration_results[field] = "already_exists"
-                else:
-                    try:
-                        logger.info(f"[MIGRATION] → Adding column request_logs.{field}...")
-                        conn.execute(text(f"ALTER TABLE request_logs ADD COLUMN {field} JSON NULL"))
-                        logger.info(f"[MIGRATION] ✓ Successfully added column request_logs.{field}")
-                        migration_results[field] = "added"
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        if "already exists" in error_msg or "duplicate" in error_msg:
-                            logger.info(f"[MIGRATION] ✓ Column request_logs.{field} already exists (detected via exception), skipping")
-                            migration_results[field] = "already_exists"
-                        else:
-                            logger.error(f"[MIGRATION] ✗ Error adding request_logs.{field}: {e}", exc_info=True)
-                            migration_results[field] = f"error: {str(e)}"
-            
-            # Выводим итоговый отчет о миграции
-            logger.info("=" * 80)
-            logger.info("Migration summary for request_logs proxy fields:")
-            for field, result in migration_results.items():
-                status_icon = "✓" if result == "added" or result == "already_exists" else "✗"
-                logger.info(f"  {status_icon} {field}: {result}")
-            logger.info("=" * 80)
-            
-            # Проверяем финальное состояние колонок
-            final_check = conn.execute(
-                text("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'request_logs' 
-                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                """)
-            ).fetchall()
-            final_columns = [row[0] for row in final_check]
-            logger.info(f"[MIGRATION] Final check: Found {len(final_columns)} proxy columns: {final_columns}")
-            
-            if len(final_columns) == 4:
-                logger.info("[MIGRATION] ✓ All proxy fields are available in the database")
-            else:
-                logger.warning(f"[MIGRATION] ⚠ Only {len(final_columns)}/4 proxy fields are available. Missing: {set(request_logs_proxy_fields) - set(final_columns)}")
-            
             # Проверяем существование колонок одним запросом для оптимизации
-            # Примечание: engine.begin() автоматически коммитит транзакцию при успешном завершении блока
             existing_columns = conn.execute(
                 text("""
                     SELECT table_name, column_name 
@@ -976,46 +908,11 @@ def ensure_migrations():
                 else:
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
         
-        # Финальная проверка миграций для request_logs proxy fields
-        # Выполняем проверку в новой сессии, чтобы убедиться, что изменения видны
-        logger.info("=" * 80)
-        logger.info("Final verification of request_logs proxy fields migration")
-        logger.info("=" * 80)
-        try:
-            # Используем новую сессию для проверки, чтобы убедиться, что изменения закоммичены
-            with Session(engine) as check_session:
-                final_check = check_session.execute(
-                    text("""
-                        SELECT column_name 
-                        FROM information_schema.columns 
-                        WHERE table_name = 'request_logs' 
-                        AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                    """)
-                ).fetchall()
-                final_columns = [row[0] for row in final_check]
-                logger.info(f"Final verification: Found {len(final_columns)}/4 proxy columns in request_logs table")
-                logger.info(f"Columns found: {final_columns}")
-                
-                if len(final_columns) == 4:
-                    logger.info("✓ All proxy fields migration completed successfully")
-                else:
-                    missing = set(['request_headers', 'request_body', 'response_headers', 'response_body']) - set(final_columns)
-                    logger.warning(f"⚠ Some proxy fields are missing: {missing}")
-                    logger.warning("Application will continue, but 'create mock from proxy' feature may not work")
-        except Exception as e:
-            logger.error(f"Error during final verification: {e}", exc_info=True)
-        
-        logger.info("=" * 80)
         logger.info("Migrations completed successfully")
-        logger.info("=" * 80)
     except Exception as e:
-        logger.error("=" * 80)
         logger.error(f"Error during migrations: {e}", exc_info=True)
-        logger.error("=" * 80)
-        # Не прерываем запуск приложения, если миграция не удалась
-        # Приложение будет работать с базовыми полями, если колонки не добавлены
-        # Это позволяет приложению работать даже если миграция не выполнилась
-        logger.warning("Application will continue with basic fields only. Some features may be limited.")
+        # Не прерываем запуск приложения, но логируем ошибку
+        raise
 
 
 
@@ -2847,6 +2744,86 @@ def list_folders(db: Session = Depends(get_db)):
         "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
         "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
+    response_model_examples={
+        "create": {
+            "summary": "Создание нового мока",
+            "description": "Пример создания нового мока для GET запроса",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "folder": "api",
+                    "name": "Получить пользователя",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/api/users/123",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "id": 123,
+                            "name": "Иван Иванов",
+                            "email": "ivan@example.com"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        },
+        "update": {
+            "summary": "Обновление существующего мока",
+            "description": "Пример обновления мока с указанием id",
+            "value": {
+                "message": "mock saved",
+                "mock": {
+                    "id": "4f590593-bde9-4594-9299-c157a883f5ba",
+                    "folder": "crm|nikita",
+                    "name": "Мягкий чек",
+                    "request_condition": {
+                        "method": "GET",
+                        "path": "/set-kit/softcheques/999900002500/shop/3001",
+                        "headers": {},
+                        "body_contains": None,
+                        "body_contains_required": True
+                    },
+                    "response_config": {
+                        "status_code": 200,
+                        "headers": {},
+                        "body": {
+                            "guid": "999900002500",
+                            "shopNumber": 501,
+                            "status": "COMPLETED"
+                        }
+                    },
+                    "active": True,
+                    "delay_ms": 0,
+                    "delay_range_min_ms": None,
+                    "delay_range_max_ms": None,
+                    "cache_enabled": False,
+                    "cache_ttl_seconds": None,
+                    "error_simulation_enabled": False,
+                    "error_simulation_probability": None,
+                    "error_simulation_status_code": None,
+                    "error_simulation_body": None,
+                    "error_simulation_delay_ms": None
+                }
+            }
+        }
+    },
     openapi_extra={
         "requestBody": {
             "content": {
@@ -3160,156 +3137,6 @@ def list_mocks(
         logger.error(f"Error in list_mocks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка при получении списка моков: {str(e)}")
 
-
-
-@app.post(
-    "/api/mocks/from-proxy",
-    summary="Создать мок из проксированного запроса",
-    description=(
-        "Создаёт новый мок на основе информации из проксированного запроса.\n\n"
-        "Использует данные из request_logs для создания мока с теми же условиями запроса и ответом."
-    ),
-)
-def create_mock_from_proxy(
-    log_id: str = Body(..., embed=True, description="ID записи из request_logs"),
-    mock_name: Optional[str] = Body(None, embed=True, description="Имя для нового мока (опционально)"),
-    db: Session = Depends(get_db),
-):
-    """Создаёт мок на основе проксированного запроса."""
-    # Проверяем, существуют ли новые колонки для проксированных запросов
-    logger.info(f"[create_mock_from_proxy] Checking proxy fields for log_id={log_id}")
-    try:
-        check_columns = db.execute(text("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'request_logs' 
-            AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-        """)).fetchall()
-        found_columns = [row[0] for row in check_columns]
-        has_proxy_fields = len(check_columns) == 4
-        logger.info(f"[create_mock_from_proxy] Found {len(check_columns)}/4 proxy columns: {found_columns}")
-        if not has_proxy_fields:
-            missing = set(['request_headers', 'request_body', 'response_headers', 'response_body']) - set(found_columns)
-            logger.warning(f"[create_mock_from_proxy] Missing proxy columns: {missing}")
-    except Exception as e:
-        logger.error(f"[create_mock_from_proxy] Error checking proxy fields existence: {e}", exc_info=True)
-        has_proxy_fields = False
-    
-    # Получаем запись из request_logs
-    if not has_proxy_fields:
-        # Используем прямой SQL запрос для получения базовых полей
-        result = db.execute(text("""
-            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-                   response_time_ms, status_code, cache_ttl_seconds, cache_key
-            FROM request_logs 
-            WHERE id = :log_id
-        """), {"log_id": log_id}).first()
-        
-        if not result:
-            raise HTTPException(404, f"Request log with id {log_id} not found")
-        
-        if not result.is_proxied:
-            raise HTTPException(400, "This request was not proxied. Only proxied requests can be converted to mocks.")
-        
-        raise HTTPException(400, "Proxy fields are not available in the database. Please restart the application to run migrations.")
-    
-    # Используем прямой SQL запрос для получения всех полей, включая прокси
-    logger.info(f"[create_mock_from_proxy] Fetching request log with id={log_id}")
-    try:
-        result = db.execute(text("""
-            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-                   response_time_ms, status_code, cache_ttl_seconds, cache_key,
-                   request_headers, request_body, response_headers, response_body
-            FROM request_logs 
-            WHERE id = :log_id
-        """), {"log_id": log_id}).first()
-    except Exception as e:
-        logger.error(f"[create_mock_from_proxy] Error fetching request log: {e}", exc_info=True)
-        # Если колонки не существуют, SQL запрос упадет с ошибкой
-        # В этом случае пробуем получить только базовые поля
-        logger.warning(f"[create_mock_from_proxy] Trying to fetch basic fields only")
-        result = db.execute(text("""
-            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-                   response_time_ms, status_code, cache_ttl_seconds, cache_key
-            FROM request_logs 
-            WHERE id = :log_id
-        """), {"log_id": log_id}).first()
-        if result and result.is_proxied:
-            raise HTTPException(400, "Proxy fields are not available in the database. Please restart the application to run migrations.")
-        raise HTTPException(404, f"Request log with id {log_id} not found")
-    
-    if not result:
-        raise HTTPException(404, f"Request log with id {log_id} not found")
-    
-    if not result.is_proxied:
-        raise HTTPException(400, "This request was not proxied. Only proxied requests can be converted to mocks.")
-    
-    # Извлекаем данные из результата SQL запроса
-    # Результат SQL запроса возвращает Row объект, доступ к полям по имени колонки
-    logger.info(f"[create_mock_from_proxy] Extracting data from request log")
-    request_headers = getattr(result, 'request_headers', None) if hasattr(result, 'request_headers') else None
-    request_body = getattr(result, 'request_body', None) if hasattr(result, 'request_body') else None
-    response_headers = getattr(result, 'response_headers', None) if hasattr(result, 'response_headers') else None
-    response_body = getattr(result, 'response_body', None) if hasattr(result, 'response_body') else None
-    
-    logger.info(f"[create_mock_from_proxy] Extracted data: request_headers={request_headers is not None}, request_body={request_body is not None}, response_headers={response_headers is not None}, response_body={response_body is not None}")
-    
-    # Проверяем наличие данных для создания мока
-    if not request_headers or not response_body:
-        logger.error(f"[create_mock_from_proxy] Insufficient data: request_headers={request_headers is not None}, response_body={response_body is not None}")
-        raise HTTPException(400, f"Insufficient data in request log to create a mock. Request headers or response body is missing. request_headers={request_headers is not None}, response_body={response_body is not None}")
-    
-    # Определяем folder_name и folder_parent
-    folder_name = result.folder_name
-    folder_parent = result.folder_parent if result.folder_parent else ''
-    
-    # Формируем имя мока
-    if not mock_name:
-        mock_name = f"{result.method} {result.path}"
-    
-    # Создаём мок на основе данных из проксированного запроса
-    try:
-        # Формируем request_condition
-        request_condition = MockRequestCondition(
-            method=result.method,
-            path=result.path,
-            headers=request_headers if isinstance(request_headers, dict) else {},
-            body_contains=None,  # Можно улучшить, если нужно проверять тело
-            body_contains_required=False  # Для GET запросов тело не требуется
-        )
-        
-        # Если есть тело запроса, добавляем проверку
-        if request_body and isinstance(request_body, (dict, list)):
-            # Для POST/PUT/PATCH запросов можно добавить проверку тела
-            request_condition.body_contains_required = True
-            # Можно добавить body_contains, если нужно
-        
-        # Формируем response_config
-        response_config = MockResponseConfig(
-            status_code=result.status_code,
-            headers=response_headers if isinstance(response_headers, dict) else {},
-            body=response_body
-        )
-        
-        # Создаём MockEntry
-        mock_entry = MockEntry(
-            folder=f"{folder_name}|{folder_parent}" if folder_parent else folder_name,
-            name=mock_name,
-            request_condition=request_condition,
-            response_config=response_config,
-            active=True,
-            delay_ms=0
-        )
-        
-        # Используем существующую функцию для сохранения мока
-        _save_mock_entry(mock_entry, db)
-        db.commit()
-        return {"message": "mock saved", "mock": mock_entry}
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating mock from proxy: {e}", exc_info=True)
-        raise HTTPException(500, f"Ошибка при создании мока: {str(e)}")
 
 
 @app.delete(
@@ -4385,107 +4212,17 @@ def get_request_logs(
     db: Session = Depends(get_db),
 ):
     """Возвращает историю вызовов с возможностью фильтрации по папке."""
-    # Сначала проверяем, существуют ли новые колонки для проксированных запросов
-    # Используем прямой SQL запрос для проверки
-    try:
-        check_columns = db.execute(text("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'request_logs' 
-            AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-        """)).fetchall()
-        has_proxy_fields = len(check_columns) == 4
-    except Exception as e:
-        logger.warning(f"Error checking proxy fields existence: {e}")
-        has_proxy_fields = False
-    
-    # Подготавливаем параметры фильтрации
-    folder_filter = ""
-    params = {}
-    if folder:
-        folder_name = folder.strip()
-        folder_parent = None
-        if '|' in folder_name:
-            parts = folder_name.split('|', 1)
-            folder_name = parts[0]
-            folder_parent = parts[1] if parts[1] else None
-        normalized_parent = folder_parent if folder_parent else ''
-        params = {"folder_name": folder_name}
-        if normalized_parent == '':
-            folder_filter = "WHERE folder_name = :folder_name AND (folder_parent = '' OR folder_parent IS NULL)"
-        else:
-            folder_filter = "WHERE folder_name = :folder_name AND folder_parent = :folder_parent"
-            params["folder_parent"] = normalized_parent
-    
-    # Используем прямые SQL запросы для обхода проблемы с отсутствующими колонками в модели
-    if not has_proxy_fields:
-        # Получаем общее количество
-        count_query = text(f"SELECT COUNT(*) FROM request_logs {folder_filter}")
-        total = db.execute(count_query, params).scalar()
-        
-        # Получаем логи (только базовые поля)
-        logs_query = text(f"""
-            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-                   response_time_ms, status_code, cache_ttl_seconds, cache_key
-            FROM request_logs 
-            {folder_filter}
-            ORDER BY timestamp DESC 
-            LIMIT :limit OFFSET :offset
-        """)
-        params.update({"limit": limit, "offset": offset})
-        result = db.execute(logs_query, params)
-        
-        logs_data = []
-        for row in result:
-            logs_data.append({
-                "id": row.id,
-                "timestamp": row.timestamp,
-                "folder_name": row.folder_name,
-                "method": row.method,
-                "path": row.path,
-                "is_proxied": row.is_proxied,
-                "response_time_ms": row.response_time_ms,
-                "status_code": row.status_code,
-                "cache_ttl_seconds": row.cache_ttl_seconds,
-                "cache_key": row.cache_key,
-                "request_headers": None,
-                "request_body": None,
-                "response_headers": None,
-                "response_body": None
-            })
-        
-        logger.debug(f"get_request_logs (basic fields only): total={total}, logs_count={len(logs_data)}")
-        return {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "logs": logs_data
-        }
-    
-    # Если колонки есть, используем полный запрос через ORM
     query = db.query(RequestLog)
     if folder:
+        # Поддерживаем формат "name|parent_folder" для подпапок
         folder_name = folder.strip()
-        folder_parent = None
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-            folder_parent = parts[1] if parts[1] else None
-        normalized_parent = folder_parent if folder_parent else ''
-        
-        logger.debug(f"get_request_logs: folder={folder}, folder_name={folder_name}, normalized_parent={normalized_parent}")
-        
-        if normalized_parent == '':
-            query = query.filter(
-                RequestLog.folder_name == folder_name,
-                (RequestLog.folder_parent == '') | (RequestLog.folder_parent.is_(None))
-            )
-        else:
-            query = query.filter_by(folder_name=folder_name, folder_parent=normalized_parent)
+        query = query.filter_by(folder_name=folder_name)
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
-    logger.debug(f"get_request_logs: total={total}, logs_count={len(logs)}")
     
     return {
         "total": total,
@@ -4502,186 +4239,92 @@ def get_request_logs(
                 "response_time_ms": log.response_time_ms,
                 "status_code": log.status_code,
                 "cache_ttl_seconds": log.cache_ttl_seconds,
-                "cache_key": log.cache_key,
-                "request_headers": log.request_headers if log.is_proxied else None,
-                "request_body": log.request_body if log.is_proxied else None,
-                "response_headers": log.response_headers if log.is_proxied else None,
-                "response_body": log.response_body if log.is_proxied else None
+                "cache_key": log.cache_key
             }
             for log in logs
         ]
     }
 
 
-def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session, method_path_combinations_from_logs: Optional[List] = None):
+def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
     """Очищает метрики Prometheus для конкретной папки.
     
     Использует данные из request_logs для определения всех комбинаций методов и путей,
     затем обнуляет соответствующие метрики Prometheus.
-    
-    Args:
-        folder_name: Имя папки
-        db: Сессия базы данных
-        method_path_combinations_from_logs: Список комбинаций (method, path) из логов, которые будут удалены
     """
     try:
-        logger.debug(f"Clearing Prometheus metrics for folder: {folder_name}")
+        # Получаем все уникальные комбинации method/path из request_logs для этой папки
+        logs = db.query(RequestLog).filter_by(folder_name=folder_name).all()
         
-        # Используем переданные комбинации или получаем из БД
-        if method_path_combinations_from_logs:
-            method_path_combinations = {(row[0], row[1]) for row in method_path_combinations_from_logs}
-            logger.debug(f"Using {len(method_path_combinations)} method/path combinations from logs")
-        else:
-            # Используем прямой SQL запрос для обхода проблемы с отсутствующими колонками
-            logs_result = db.execute(text("""
-                SELECT method, path, is_proxied, status_code
-                FROM request_logs 
-                WHERE folder_name = :folder_name
-            """), {"folder_name": folder_name}).fetchall()
-            
-            logger.debug(f"Found {len(logs_result)} log entries for folder {folder_name}")
-            
-            # Собираем уникальные комбинации method/path
-            method_path_combinations = set()
-            status_codes = set()
-            
-            for row in logs_result:
-                method_path_combinations.add((row.method, row.path))
-                if row.status_code:
-                    status_codes.add(str(row.status_code))
+        # Собираем уникальные комбинации method/path
+        method_path_combinations = set()
+        outcomes = ['mock_hit', 'proxied', 'not_found', 'cache_hit']
+        status_codes = set()
         
-        outcomes = {'mock_hit', 'proxied', 'not_found', 'cache_hit'}  # Используем set вместо list
-        # Если нет комбинаций из логов, используем все возможные статус-коды
-        if not method_path_combinations_from_logs:
-            status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
-        else:
-            status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
+        for log in logs:
+            method_path_combinations.add((log.method, log.path))
+            if log.status_code:
+                status_codes.add(str(log.status_code))
+            if log.is_proxied:
+                outcomes.add('proxied')
+            else:
+                outcomes.add('mock_hit')
         
-        logger.debug(f"Found {len(method_path_combinations)} unique method/path combinations for folder {folder_name}")
-        
-        # Если нет логов, очищаем все метрики для всех возможных комбинаций
-        # Это нужно для полной очистки метрик даже если логи уже удалены
-        if len(method_path_combinations) == 0:
-            logger.info(f"No logs found for folder {folder_name}, clearing all metrics for all possible combinations")
-            # Получаем все возможные комбинации из всех метрик Prometheus
-            # Для этого нужно очистить все метрики для всех методов, путей, исходов и статус-кодов
-            methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
-            paths = ['/', '/api', '/api/v1', '/api/v2']  # Базовые пути, но лучше очистить все
-            all_outcomes = {'mock_hit', 'proxied', 'not_found', 'cache_hit'}
-            all_status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
-            
-            # Очищаем метрики для всех комбинаций
-            for method in methods:
-                for path in paths:
-                    for outcome in all_outcomes:
-                        for status_code in all_status_codes:
-                            try:
-                                REQUEST_DETAILED.labels(
-                                    method=method,
-                                    path=path,
-                                    folder=folder_name,
-                                    outcome=outcome,
-                                    status_code=status_code
-                                )._value._value = 0
-                            except Exception:
-                                pass
-                            
-                            try:
-                                REQUESTS_TOTAL.labels(
-                                    method=method,
-                                    path=path,
-                                    folder=folder_name,
-                                    outcome=outcome
-                                )._value._value = 0
-                            except Exception:
-                                pass
-                            
-                            try:
-                                RESPONSE_TIME_DETAILED.labels(
-                                    method=method,
-                                    path=path,
-                                    folder=folder_name,
-                                    outcome=outcome
-                                )._sum._value = 0
-                                RESPONSE_TIME_DETAILED.labels(
-                                    method=method,
-                                    path=path,
-                                    folder=folder_name,
-                                    outcome=outcome
-                                )._count._value = 0
-                            except Exception:
-                                pass
-                            
-                            if outcome == 'proxied':
-                                try:
-                                    PROXY_RESPONSE_TIME.labels(
-                                        method=method,
-                                        path=path,
-                                        folder=folder_name
-                                    )._sum._value = 0
-                                    PROXY_RESPONSE_TIME.labels(
-                                        method=method,
-                                        path=path,
-                                        folder=folder_name
-                                    )._count._value = 0
-                                except Exception:
-                                    pass
-        else:
-            # Обнуляем детальные метрики для всех комбинаций из логов
-            for method, path in method_path_combinations:
-                for outcome in outcomes:
-                    for status_code in status_codes:
-                        try:
-                            REQUEST_DETAILED.labels(
-                                method=method,
-                                path=path,
-                                folder=folder_name,
-                                outcome=outcome,
-                                status_code=status_code
-                            )._value._value = 0
-                        except Exception:
-                            pass  # Метрика может не существовать для этой комбинации
-                    
+        # Обнуляем детальные метрики для всех комбинаций
+        for method, path in method_path_combinations:
+            for outcome in outcomes:
+                for status_code in status_codes:
                     try:
-                        REQUESTS_TOTAL.labels(
+                        REQUEST_DETAILED.labels(
                             method=method,
                             path=path,
                             folder=folder_name,
-                            outcome=outcome
+                            outcome=outcome,
+                            status_code=status_code
                         )._value._value = 0
                     except Exception:
-                        pass
-                    
+                        pass  # Метрика может не существовать для этой комбинации
+                
+                try:
+                    REQUESTS_TOTAL.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._value._value = 0
+                except Exception:
+                    pass
+                
+                try:
+                    RESPONSE_TIME_DETAILED.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._sum._value = 0
+                    RESPONSE_TIME_DETAILED.labels(
+                        method=method,
+                        path=path,
+                        folder=folder_name,
+                        outcome=outcome
+                    )._count._value = 0
+                except Exception:
+                    pass
+                
+                if outcome == 'proxied':
                     try:
-                        RESPONSE_TIME_DETAILED.labels(
+                        PROXY_RESPONSE_TIME.labels(
                             method=method,
                             path=path,
-                            folder=folder_name,
-                            outcome=outcome
+                            folder=folder_name
                         )._sum._value = 0
-                        RESPONSE_TIME_DETAILED.labels(
+                        PROXY_RESPONSE_TIME.labels(
                             method=method,
                             path=path,
-                            folder=folder_name,
-                            outcome=outcome
+                            folder=folder_name
                         )._count._value = 0
                     except Exception:
                         pass
-                    
-                    if outcome == 'proxied':
-                        try:
-                            PROXY_RESPONSE_TIME.labels(
-                                method=method,
-                                path=path,
-                                folder=folder_name
-                            )._sum._value = 0
-                            PROXY_RESPONSE_TIME.labels(
-                                method=method,
-                                path=path,
-                                folder=folder_name
-                            )._count._value = 0
-                        except Exception:
-                            pass
         
         # Обнуляем общие метрики для папки
         try:
@@ -4720,122 +4363,30 @@ def clear_request_logs(
     db: Session = Depends(get_db),
 ):
     """Очищает историю вызовов и метрики Prometheus."""
-    # Используем прямой SQL запрос для обхода проблемы с отсутствующими колонками
+    query = db.query(RequestLog)
     folder_name = None
-    folder_filter = ""
-    params = {}
-    
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
+        # В request_logs хранится только folder_name (без parent_folder)
         folder_name = folder.strip()
-        folder_parent = None
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-            folder_parent = parts[1] if parts[1] else None
-        
-        # Нормализуем parent_folder: None -> '' для корневых папок
-        normalized_parent = folder_parent if folder_parent else ''
-        params = {"folder_name": folder_name}
-        
-        # Фильтруем по folder_name и folder_parent
-        if normalized_parent == '':
-            folder_filter = "WHERE folder_name = :folder_name AND (folder_parent = '' OR folder_parent IS NULL)"
-        else:
-            folder_filter = "WHERE folder_name = :folder_name AND folder_parent = :folder_parent"
-            params["folder_parent"] = normalized_parent
+        query = query.filter_by(folder_name=folder_name)
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
-    # Сначала получаем все уникальные комбинации method/path из логов, которые будут удалены
-    logger.info("Collecting method/path combinations from logs before deletion")
-    if folder_filter:
-        method_path_query = text(f"SELECT DISTINCT method, path FROM request_logs {folder_filter}")
-    else:
-        method_path_query = text("SELECT DISTINCT method, path FROM request_logs")
-    method_path_combinations = db.execute(method_path_query, params).fetchall()
-    logger.info(f"Found {len(method_path_combinations)} unique method/path combinations to clear")
-    
     if folder_name:
-        logger.info(f"Clearing Prometheus metrics for folder: {folder_name}")
-        _clear_prometheus_metrics_for_folder(folder_name, db, method_path_combinations)
+        _clear_prometheus_metrics_for_folder(folder_name, db)
     else:
         # Если папка не указана, очищаем метрики для всех папок
-        logger.info("Clearing Prometheus metrics for all folders")
-        # Получаем список всех уникальных папок из request_logs через прямой SQL
-        all_folders_result = db.execute(text("SELECT DISTINCT folder_name FROM request_logs")).fetchall()
-        logger.info(f"Found {len(all_folders_result)} folders to clear metrics for")
-        for (fname,) in all_folders_result:
-            logger.debug(f"Clearing metrics for folder: {fname}")
-            _clear_prometheus_metrics_for_folder(fname, db, method_path_combinations)
-        
-        # Также очищаем глобальные метрики (метрики без указания папки)
-        logger.info("Clearing global Prometheus metrics")
-        try:
-            # Очищаем все метрики, которые не привязаны к конкретной папке
-            # Это включает метрики для всех комбинаций method/path/outcome
-            # Получаем все уникальные комбинации из request_logs
-            all_methods_paths = db.execute(text("""
-                SELECT DISTINCT method, path 
-                FROM request_logs
-            """)).fetchall()
-            
-            outcomes = ['mock_hit', 'proxied', 'not_found', 'cache_hit']
-            status_codes = ['200', '400', '404', '500']
-            
-            for method, path in all_methods_paths:
-                for outcome in outcomes:
-                    for status_code in status_codes:
-                        try:
-                            REQUEST_DETAILED.labels(
-                                method=method,
-                                path=path,
-                                folder="",
-                                outcome=outcome,
-                                status_code=status_code
-                            )._value._value = 0
-                        except Exception:
-                            pass
-                        
-                        try:
-                            REQUESTS_TOTAL.labels(
-                                method=method,
-                                path=path,
-                                folder="",
-                                outcome=outcome
-                            )._value._value = 0
-                        except Exception:
-                            pass
-                        
-                        try:
-                            RESPONSE_TIME_DETAILED.labels(
-                                method=method,
-                                path=path,
-                                folder="",
-                                outcome=outcome
-                            )._sum._value = 0
-                            RESPONSE_TIME_DETAILED.labels(
-                                method=method,
-                                path=path,
-                                folder="",
-                                outcome=outcome
-                            )._count._value = 0
-                        except Exception:
-                            pass
-        except Exception as e:
-            logger.warning(f"Error clearing global Prometheus metrics: {e}")
+        # Получаем список всех уникальных папок из request_logs
+        all_folders = db.query(RequestLog.folder_name).distinct().all()
+        for (fname,) in all_folders:
+            _clear_prometheus_metrics_for_folder(fname, db)
     
-    # Получаем количество записей для удаления
-    count_query = text(f"SELECT COUNT(*) FROM request_logs {folder_filter}")
-    count = db.execute(count_query, params).scalar()
-    
-    logger.info(f"Deleting {count} request log entries")
-    
-    # Удаляем записи
-    delete_query = text(f"DELETE FROM request_logs {folder_filter}")
-    db.execute(delete_query, params)
+    count = query.count()
+    query.delete()
     db.commit()
-    
-    logger.info(f"Successfully deleted {count} request log entries")
     
     return {"message": f"Удалено {count} записей", "deleted_count": count}
 
@@ -5548,12 +5099,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             
             # Логируем вызов в БД
             try:
-                # Нормализуем folder_parent: None -> '' для корневых папок
-                normalized_folder_parent = folder_parent if folder_parent else ''
                 request_log = RequestLog(
                     timestamp=datetime.utcnow().isoformat() + "Z",
                     folder_name=folder_name,
-                    folder_parent=normalized_folder_parent,
+                    folder_parent=folder_parent,
                     method=request.method,
                     path=full_inner.split('?')[0],
                     is_proxied=False,
@@ -5585,31 +5134,13 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if host not in ALLOWED_PROXY_HOSTS:
                 raise HTTPException(403, "Proxy target host is not allowed")
 
-        # Сохраняем информацию о запросе для возможности создания мока
-        request_headers_dict = dict(request.headers)
-        request_body_data = None
-        try:
-            # Пытаемся прочитать тело запроса как JSON, если это возможно
-            if body_bytes:
-                try:
-                    request_body_data = json.loads(body_bytes.decode('utf-8'))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    # Если не JSON, сохраняем как строку
-                    try:
-                        request_body_data = body_bytes.decode('utf-8')
-                    except UnicodeDecodeError:
-                        # Если не UTF-8, сохраняем как base64
-                        request_body_data = base64.b64encode(body_bytes).decode('ascii')
-        except Exception as e:
-            logger.warning(f"Error reading request body for proxy log: {e}")
-        
         try:
             async with httpx.AsyncClient() as client:
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-                    content=body_bytes
+                    content=await request.body()
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")
@@ -5618,7 +5149,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         resp = Response(content=proxied.content, status_code=proxied.status_code)
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
-        response_headers_dict = {}
         for k, v in proxied.headers.items():
             kl = k.lower()
             if kl in {"content-length", "transfer-encoding", "connection"}:
@@ -5636,23 +5166,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 except Exception:
                     pass
             resp.headers[k] = v
-            response_headers_dict[k] = v
-
-        # Сохраняем информацию о ответе для возможности создания мока
-        response_body_data = None
-        try:
-            if proxied.content:
-                try:
-                    response_body_data = json.loads(proxied.content.decode('utf-8'))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    # Если не JSON, сохраняем как строку
-                    try:
-                        response_body_data = proxied.content.decode('utf-8')
-                    except UnicodeDecodeError:
-                        # Если не UTF-8, сохраняем как base64
-                        response_body_data = base64.b64encode(proxied.content).decode('ascii')
-        except Exception as e:
-            logger.warning(f"Error reading response body for proxy log: {e}")
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
@@ -5681,68 +5194,22 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             folder=folder_name
         ).observe(response_time)
         
-        # Логируем проксированный вызов в БД с полной информацией о запросе и ответе
+        # Логируем проксированный вызов в БД
         try:
-            # Нормализуем folder_parent: None -> '' для корневых папок
-            normalized_folder_parent = folder_parent if folder_parent else ''
-            logger.debug(f"Creating RequestLog: folder_name={folder_name}, folder_parent={normalized_folder_parent}, is_proxied=True")
-            
-            # Проверяем, существуют ли колонки для проксированных запросов
-            try:
-                check_columns = db.execute(text("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'request_logs' 
-                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                """)).fetchall()
-                has_proxy_fields = len(check_columns) == 4
-            except Exception:
-                has_proxy_fields = False
-            
-            if has_proxy_fields:
-                # Используем ORM, если колонки есть
-                request_log = RequestLog(
-                    timestamp=datetime.utcnow().isoformat() + "Z",
-                    folder_name=folder_name,
-                    folder_parent=normalized_folder_parent,
-                    method=request.method,
-                    path=full_inner.split('?')[0],
-                    is_proxied=True,
-                    response_time_ms=int(response_time * 1000),
-                    status_code=status_code,
-                    cache_ttl_seconds=None,
-                    cache_key=None,
-                    request_headers=request_headers_dict,
-                    request_body=request_body_data,
-                    response_headers=response_headers_dict,
-                    response_body=response_body_data
-                )
-                db.add(request_log)
-                db.commit()
-            else:
-                # Используем прямой SQL запрос, если колонок нет
-                db.execute(text("""
-                    INSERT INTO request_logs 
-                    (id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-                     response_time_ms, status_code, cache_ttl_seconds, cache_key)
-                    VALUES 
-                    (:id, :timestamp, :folder_name, :folder_parent, :method, :path, :is_proxied,
-                     :response_time_ms, :status_code, :cache_ttl_seconds, :cache_key)
-                """), {
-                    "id": str(uuid4()),
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                    "folder_name": folder_name,
-                    "folder_parent": normalized_folder_parent,
-                    "method": request.method,
-                    "path": full_inner.split('?')[0],
-                    "is_proxied": True,
-                    "response_time_ms": int(response_time * 1000),
-                    "status_code": status_code,
-                    "cache_ttl_seconds": None,
-                    "cache_key": None
-                })
-                db.commit()
-                logger.info(f"Saved proxied request log (basic fields only, proxy fields not available)")
+            request_log = RequestLog(
+                timestamp=datetime.utcnow().isoformat() + "Z",
+                folder_name=folder_name,
+                folder_parent=folder_parent,
+                method=request.method,
+                path=full_inner.split('?')[0],
+                is_proxied=True,
+                response_time_ms=int(response_time * 1000),
+                status_code=status_code,
+                cache_ttl_seconds=None,
+                cache_key=None
+            )
+            db.add(request_log)
+            db.commit()
         except Exception as e:
             logger.error(f"Error logging proxied request: {e}", exc_info=True)
             db.rollback()
