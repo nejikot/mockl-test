@@ -834,6 +834,7 @@ export default function App() {
       setPostmanFileToImport(file);
       postmanImportForm.resetFields();
       postmanImportForm.setFieldsValue({
+        folder_mode: "existing",
         target_folder: selectedFolder
       });
       setPostmanImportModalOpen(true);
@@ -844,9 +845,54 @@ export default function App() {
   const handlePostmanImport = async (vals) => {
     if (!postmanFileToImport) return;
     
-    const targetFolderKey = vals.target_folder || selectedFolder;
-    const { name: targetFolderName, parent_folder: targetParentFolder } = parseFolderKey(targetFolderKey);
-    const folderValue = targetParentFolder ? `${targetFolderName}|${targetParentFolder}` : targetFolderName;
+    let targetFolderKey;
+    let targetFolderName;
+    let folderValue;
+    
+    // Если нужно создать новую папку
+    if (vals.folder_mode === 'new') {
+      const newFolderName = (vals.new_folder_name || "").trim();
+      if (!newFolderName) {
+        message.error("Введите имя новой папки");
+        return;
+      }
+      
+      try {
+        // Создаем новую папку
+        const payload = {
+          name: newFolderName,
+          parent_folder: vals.new_folder_parent || null
+        };
+        const createRes = await fetch(`${host}/api/folders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!createRes.ok) {
+          const errorData = await createRes.json().catch(() => ({}));
+          throw new Error(errorData.detail || "Ошибка создания папки");
+        }
+        
+        // Обновляем список папок
+        await fetchFolders();
+        
+        // Формируем ключ и значение для импорта
+        targetFolderKey = getFolderKey(newFolderName, vals.new_folder_parent || null);
+        targetFolderName = newFolderName;
+        folderValue = vals.new_folder_parent ? `${newFolderName}|${vals.new_folder_parent}` : newFolderName;
+        
+        message.success(`Папка "${newFolderName}" создана`);
+      } catch (e) {
+        message.error("Ошибка создания папки: " + (e.message || ""));
+        return;
+      }
+    } else {
+      // Используем существующую папку
+      targetFolderKey = vals.target_folder || selectedFolder;
+      const parsed = parseFolderKey(targetFolderKey);
+      targetFolderName = parsed.name;
+      folderValue = parsed.parent_folder ? `${parsed.name}|${parsed.parent_folder}` : parsed.name;
+    }
     
     const formData = new FormData();
     formData.append("file", postmanFileToImport);
@@ -1088,6 +1134,7 @@ export default function App() {
   const openOpenapiModal = () => {
     openapiForm.resetFields();
     openapiForm.setFieldsValue({
+      folder_mode: "existing",
       target_folder: selectedFolder
     });
     setOpenapiModalOpen(true);
@@ -1099,9 +1146,55 @@ export default function App() {
       message.error("Укажите URL OpenAPI");
       return;
     }
-    const targetFolderKey = vals.target_folder || selectedFolder;
-    const { name: targetFolderName, parent_folder: targetParentFolder } = parseFolderKey(targetFolderKey);
-    const folderValue = targetParentFolder ? `${targetFolderName}|${targetParentFolder}` : targetFolderName;
+    
+    let targetFolderKey;
+    let targetFolderName;
+    let folderValue;
+    
+    // Если нужно создать новую папку
+    if (vals.folder_mode === 'new') {
+      const newFolderName = (vals.new_folder_name || "").trim();
+      if (!newFolderName) {
+        message.error("Введите имя новой папки");
+        return;
+      }
+      
+      try {
+        // Создаем новую папку
+        const payload = {
+          name: newFolderName,
+          parent_folder: vals.new_folder_parent || null
+        };
+        const createRes = await fetch(`${host}/api/folders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!createRes.ok) {
+          const errorData = await createRes.json().catch(() => ({}));
+          throw new Error(errorData.detail || "Ошибка создания папки");
+        }
+        
+        // Обновляем список папок
+        await fetchFolders();
+        
+        // Формируем ключ и значение для импорта
+        targetFolderKey = getFolderKey(newFolderName, vals.new_folder_parent || null);
+        targetFolderName = newFolderName;
+        folderValue = vals.new_folder_parent ? `${newFolderName}|${vals.new_folder_parent}` : newFolderName;
+        
+        message.success(`Папка "${newFolderName}" создана`);
+      } catch (e) {
+        message.error("Ошибка создания папки: " + (e.message || ""));
+        return;
+      }
+    } else {
+      // Используем существующую папку
+      targetFolderKey = vals.target_folder || selectedFolder;
+      const parsed = parseFolderKey(targetFolderKey);
+      targetFolderName = parsed.name;
+      folderValue = parsed.parent_folder ? `${parsed.name}|${parsed.parent_folder}` : parsed.name;
+    }
     
     try {
       const res = await fetch(`${host}/api/openapi/specs/from-url`, {
@@ -3362,48 +3455,105 @@ export default function App() {
                 <Input placeholder="Например Payments API" />
               </Form.Item>
               <Form.Item
-                name="target_folder"
-                label="Выберите папку для импорта"
-                rules={[{ required: true, message: "Выберите папку" }]}
-                tooltip="Моки будут импортированы в выбранную папку или подпапку"
+                name="folder_mode"
+                label="Выбор папки"
+                initialValue="existing"
               >
-                <Select
-                  placeholder="Выберите папку или подпапку"
-                  showSearch
-                  optionFilterProp="children"
-                  filterOption={(input, option) =>
-                    (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
-                  }
-                >
-                  {foldersData
-                    .filter(f => f.name === "default" ? !f.parent_folder : true)
-                    .sort((a, b) => {
-                      if (!a.parent_folder && b.parent_folder) return -1;
-                      if (a.parent_folder && !b.parent_folder) return 1;
-                      if (!a.parent_folder && !b.parent_folder) {
-                        if (a.name === "default") return -1;
-                        if (b.name === "default") return 1;
-                        return a.name.localeCompare(b.name);
-                      }
-                      if (a.parent_folder !== b.parent_folder) {
-                        return a.parent_folder.localeCompare(b.parent_folder);
-                      }
-                      return a.name.localeCompare(b.name);
-                    })
-                    .map(f => {
-                      const folderKey = getFolderKey(f.name, f.parent_folder);
-                      const displayName = f.name === "default" 
-                        ? "Главная" 
-                        : f.parent_folder 
-                          ? `${f.parent_folder} / ${f.name}` 
-                          : f.name;
-                      return (
-                        <Select.Option key={folderKey} value={folderKey}>
-                          {displayName}
-                        </Select.Option>
-                      );
-                    })}
+                <Select>
+                  <Select.Option value="existing">Выбрать существующую папку</Select.Option>
+                  <Select.Option value="new">Создать новую папку</Select.Option>
                 </Select>
+              </Form.Item>
+              <Form.Item
+                noStyle
+                shouldUpdate={(prevValues, currentValues) => prevValues.folder_mode !== currentValues.folder_mode}
+              >
+                {({ getFieldValue }) => {
+                  const folderMode = getFieldValue('folder_mode');
+                  if (folderMode === 'new') {
+                    return (
+                      <>
+                        <Form.Item
+                          name="new_folder_name"
+                          label="Имя новой папки"
+                          rules={[{ required: true, message: "Введите имя папки" }]}
+                        >
+                          <Input placeholder="Например api" />
+                        </Form.Item>
+                        <Form.Item
+                          name="new_folder_parent"
+                          label="Родительская папка (опционально)"
+                          tooltip="Выберите родительскую папку для создания вложенной папки"
+                        >
+                          <Select
+                            placeholder="Выберите родительскую папку (необязательно)"
+                            allowClear
+                            showSearch
+                            optionFilterProp="children"
+                            filterOption={(input, option) =>
+                              (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                            }
+                          >
+                            {foldersData
+                              .filter(f => f.name !== "default" && !f.parent_folder)
+                              .sort((a, b) => a.name.localeCompare(b.name))
+                              .map(f => (
+                                <Select.Option key={f.name} value={f.name}>
+                                  {f.name}
+                                </Select.Option>
+                              ))}
+                          </Select>
+                        </Form.Item>
+                      </>
+                    );
+                  }
+                  return (
+                    <Form.Item
+                      name="target_folder"
+                      label="Выберите папку для импорта"
+                      rules={[{ required: true, message: "Выберите папку" }]}
+                      tooltip="Моки будут импортированы в выбранную папку или подпапку"
+                    >
+                      <Select
+                        placeholder="Выберите папку или подпапку"
+                        showSearch
+                        optionFilterProp="children"
+                        filterOption={(input, option) =>
+                          (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      >
+                        {foldersData
+                          .filter(f => f.name === "default" ? !f.parent_folder : true)
+                          .sort((a, b) => {
+                            if (!a.parent_folder && b.parent_folder) return -1;
+                            if (a.parent_folder && !b.parent_folder) return 1;
+                            if (!a.parent_folder && !b.parent_folder) {
+                              if (a.name === "default") return -1;
+                              if (b.name === "default") return 1;
+                              return a.name.localeCompare(b.name);
+                            }
+                            if (a.parent_folder !== b.parent_folder) {
+                              return a.parent_folder.localeCompare(b.parent_folder);
+                            }
+                            return a.name.localeCompare(b.name);
+                          })
+                          .map(f => {
+                            const folderKey = getFolderKey(f.name, f.parent_folder);
+                            const displayName = f.name === "default" 
+                              ? "Главная" 
+                              : f.parent_folder 
+                                ? `${f.parent_folder} / ${f.name}` 
+                                : f.name;
+                            return (
+                              <Select.Option key={folderKey} value={folderKey}>
+                                {displayName}
+                              </Select.Option>
+                            );
+                          })}
+                      </Select>
+                    </Form.Item>
+                  );
+                }}
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>
@@ -3428,48 +3578,105 @@ export default function App() {
                 <Typography.Text>{postmanFileToImport?.name || "Файл не выбран"}</Typography.Text>
               </Form.Item>
               <Form.Item
-                name="target_folder"
-                label="Выберите папку для импорта"
-                rules={[{ required: true, message: "Выберите папку" }]}
-                tooltip="Моки будут импортированы в выбранную папку или подпапку"
+                name="folder_mode"
+                label="Выбор папки"
+                initialValue="existing"
               >
-                <Select
-                  placeholder="Выберите папку или подпапку"
-                  showSearch
-                  optionFilterProp="children"
-                  filterOption={(input, option) =>
-                    (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
-                  }
-                >
-                  {foldersData
-                    .filter(f => f.name === "default" ? !f.parent_folder : true)
-                    .sort((a, b) => {
-                      if (!a.parent_folder && b.parent_folder) return -1;
-                      if (a.parent_folder && !b.parent_folder) return 1;
-                      if (!a.parent_folder && !b.parent_folder) {
-                        if (a.name === "default") return -1;
-                        if (b.name === "default") return 1;
-                        return a.name.localeCompare(b.name);
-                      }
-                      if (a.parent_folder !== b.parent_folder) {
-                        return a.parent_folder.localeCompare(b.parent_folder);
-                      }
-                      return a.name.localeCompare(b.name);
-                    })
-                    .map(f => {
-                      const folderKey = getFolderKey(f.name, f.parent_folder);
-                      const displayName = f.name === "default" 
-                        ? "Главная" 
-                        : f.parent_folder 
-                          ? `${f.parent_folder} / ${f.name}` 
-                          : f.name;
-                      return (
-                        <Select.Option key={folderKey} value={folderKey}>
-                          {displayName}
-                        </Select.Option>
-                      );
-                    })}
+                <Select>
+                  <Select.Option value="existing">Выбрать существующую папку</Select.Option>
+                  <Select.Option value="new">Создать новую папку</Select.Option>
                 </Select>
+              </Form.Item>
+              <Form.Item
+                noStyle
+                shouldUpdate={(prevValues, currentValues) => prevValues.folder_mode !== currentValues.folder_mode}
+              >
+                {({ getFieldValue }) => {
+                  const folderMode = getFieldValue('folder_mode');
+                  if (folderMode === 'new') {
+                    return (
+                      <>
+                        <Form.Item
+                          name="new_folder_name"
+                          label="Имя новой папки"
+                          rules={[{ required: true, message: "Введите имя папки" }]}
+                        >
+                          <Input placeholder="Например api" />
+                        </Form.Item>
+                        <Form.Item
+                          name="new_folder_parent"
+                          label="Родительская папка (опционально)"
+                          tooltip="Выберите родительскую папку для создания вложенной папки"
+                        >
+                          <Select
+                            placeholder="Выберите родительскую папку (необязательно)"
+                            allowClear
+                            showSearch
+                            optionFilterProp="children"
+                            filterOption={(input, option) =>
+                              (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                            }
+                          >
+                            {foldersData
+                              .filter(f => f.name !== "default" && !f.parent_folder)
+                              .sort((a, b) => a.name.localeCompare(b.name))
+                              .map(f => (
+                                <Select.Option key={f.name} value={f.name}>
+                                  {f.name}
+                                </Select.Option>
+                              ))}
+                          </Select>
+                        </Form.Item>
+                      </>
+                    );
+                  }
+                  return (
+                    <Form.Item
+                      name="target_folder"
+                      label="Выберите папку для импорта"
+                      rules={[{ required: true, message: "Выберите папку" }]}
+                      tooltip="Моки будут импортированы в выбранную папку или подпапку"
+                    >
+                      <Select
+                        placeholder="Выберите папку или подпапку"
+                        showSearch
+                        optionFilterProp="children"
+                        filterOption={(input, option) =>
+                          (option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                      >
+                        {foldersData
+                          .filter(f => f.name === "default" ? !f.parent_folder : true)
+                          .sort((a, b) => {
+                            if (!a.parent_folder && b.parent_folder) return -1;
+                            if (a.parent_folder && !b.parent_folder) return 1;
+                            if (!a.parent_folder && !b.parent_folder) {
+                              if (a.name === "default") return -1;
+                              if (b.name === "default") return 1;
+                              return a.name.localeCompare(b.name);
+                            }
+                            if (a.parent_folder !== b.parent_folder) {
+                              return a.parent_folder.localeCompare(b.parent_folder);
+                            }
+                            return a.name.localeCompare(b.name);
+                          })
+                          .map(f => {
+                            const folderKey = getFolderKey(f.name, f.parent_folder);
+                            const displayName = f.name === "default" 
+                              ? "Главная" 
+                              : f.parent_folder 
+                                ? `${f.parent_folder} / ${f.name}` 
+                                : f.name;
+                            return (
+                              <Select.Option key={folderKey} value={folderKey}>
+                                {displayName}
+                              </Select.Option>
+                            );
+                          })}
+                      </Select>
+                    </Form.Item>
+                  );
+                }}
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" block>
