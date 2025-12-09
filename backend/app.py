@@ -4533,7 +4533,7 @@ def generate_mock_from_proxy(
                 filtered_response_headers[k] = v
         
         # Формируем имя мока: METHOD+PATH+proxy
-        mock_name = f"{log.method.upper()}+{log.path}+proxy"
+        mock_name = f"{log.method.upper()}{log.path} proxy"
         
         # Формируем параметр folder с учетом подпапок
         # Формат: "name|parent_folder" для подпапок или просто "name" для корневых папок
