@@ -5441,56 +5441,76 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     request_body_str = base64.b64encode(request_body_bytes).decode('utf-8')
             
             # Преобразуем тело ответа в строку
+            # Сохраняем данные как есть, без конвертаций - всегда как base64 для бинарных данных
             response_body_str = None
             if response_body_bytes:
-                # Определяем кодировку из Content-Type заголовка (ищем с учетом регистра)
+                # Определяем Content-Type из заголовков ответа
                 content_type_header = ""
                 for key, value in response_headers_dict.items():
                     if key.lower() == "content-type":
-                        content_type_header = value
+                        content_type_header = value.lower()
                         break
-                charset = "utf-8"
-                if "charset=" in content_type_header.lower():
-                    try:
-                        charset = content_type_header.lower().split("charset=")[1].split(";")[0].strip()
-                    except:
-                        pass
                 
-                # Пытаемся декодировать с правильной кодировкой
-                decoded_successfully = False
-                for encoding in [charset, 'utf-8', 'utf-8-sig', 'latin-1', 'cp1251']:
-                    try:
-                        response_body_str = response_body_bytes.decode(encoding)
-                        decoded_successfully = True
-                        break
-                    except (UnicodeDecodeError, LookupError):
-                        continue
+                # Определяем, является ли содержимое текстовым
+                is_text_content = False
+                if content_type_header:
+                    # Проверяем, является ли это текстовым типом
+                    text_types = ['text/', 'application/json', 'application/xml', 'application/javascript', 
+                                 'application/x-www-form-urlencoded', 'application/xhtml+xml']
+                    is_text_content = any(content_type_header.startswith(t) for t in text_types)
                 
-                if not decoded_successfully:
-                    # Если не удалось декодировать с указанными кодировками, пробуем еще раз с более широким набором
-                    for encoding in ['utf-8', 'latin-1', 'cp1251', 'iso-8859-1']:
+                # Если это текстовый контент, пытаемся декодировать как текст
+                if is_text_content:
+                    charset = "utf-8"
+                    if "charset=" in content_type_header:
                         try:
-                            response_body_str = response_body_bytes.decode(encoding, errors='replace')
-                            decoded_successfully = True
-                            break
+                            charset = content_type_header.split("charset=")[1].split(";")[0].strip()
+                        except:
+                            pass
+                    
+                    # Пытаемся декодировать с правильной кодировкой
+                    decoded_successfully = False
+                    decoded_str = None
+                    for encoding in [charset, 'utf-8', 'utf-8-sig']:
+                        try:
+                            test_str = response_body_bytes.decode(encoding)
+                            # Проверяем, что декодирование корректное
+                            # Если это JSON, проверяем валидность
+                            if content_type_header.startswith('application/json'):
+                                try:
+                                    json.loads(test_str)
+                                    decoded_str = test_str
+                                    decoded_successfully = True
+                                    break
+                                except:
+                                    continue
+                            else:
+                                # Для текстовых типов проверяем, что нет слишком много непечатаемых символов
+                                # (более 10% непечатаемых символов означает, что это скорее всего бинарные данные)
+                                non_printable = sum(1 for c in test_str if ord(c) < 32 and c not in '\n\r\t')
+                                if len(test_str) > 0 and (non_printable / len(test_str)) < 0.1:
+                                    decoded_str = test_str
+                                    decoded_successfully = True
+                                    break
                         except (UnicodeDecodeError, LookupError):
                             continue
                     
-                    if not decoded_successfully:
-                        # Только в крайнем случае сохраняем как base64
-                        logger.warning(f"Could not decode response body with any encoding, saving as base64. Size: {len(response_body_bytes)} bytes")
+                    if decoded_successfully and decoded_str:
+                        # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
+                        response_body_str = decoded_str.replace('\x00', '')
+                        # Если это JSON, форматируем его
+                        if content_type_header.startswith('application/json'):
+                            try:
+                                response_body_json = json.loads(response_body_str)
+                                response_body_str = json.dumps(response_body_json, ensure_ascii=False)
+                            except json.JSONDecodeError:
+                                pass
+                    else:
+                        # Если не удалось декодировать текстовый контент, сохраняем как base64
                         response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
-                
-                if decoded_successfully:
-                    # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
-                    response_body_str = response_body_str.replace('\x00', '')
-                    # Пытаемся распарсить как JSON для форматирования
-                    try:
-                        response_body_json = json.loads(response_body_str)
-                        response_body_str = json.dumps(response_body_json, ensure_ascii=False)
-                    except json.JSONDecodeError:
-                        # Если не JSON, оставляем как есть (это может быть текст, HTML и т.д.)
-                        pass
+                else:
+                    # Для бинарных данных (изображения, файлы и т.д.) всегда сохраняем как base64
+                    response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
             
             # Очищаем строки от NUL символов (0x00), которые PostgreSQL не может сохранить
             if request_body_str:
