@@ -4467,7 +4467,19 @@ def generate_mock_from_proxy(
         
         # Системные заголовки ответа, которые нужно исключить
         SYSTEM_RESPONSE_HEADERS = {
-            "cf-", "rndr-", "vary", "alt-svc", "x-render-origin-server", "cf-cache-status","postman-token", "host", "user-agent","render-proxy-ttl"
+            "cf-",  # Все заголовки Cloudflare (cf-ray, cf-cache-status, cf-visitor и т.д.)
+            "rndr-",  # Все заголовки Render (rndr-id и т.д.)
+            "vary",
+            "alt-svc",
+            "x-render-origin-server",
+            "cf-cache-status",
+            "cache-status",  # Альтернативный вариант
+            "content-encoding",  # Content-Encoding (br, gzip и т.д.)
+            "cf-ray",  # CF-RAY явно
+            "postman-token",
+            "host",
+            "user-agent",
+            "render-proxy-ttl"
         }
         
         # Фильтруем заголовки запроса (сохраняем регистр)
@@ -5542,7 +5554,14 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         
         for k, v in proxied.headers.items():
             kl = k.lower()
-            if kl in {"content-length", "transfer-encoding", "connection"}:
+            # Исключаем системные заголовки
+            # Точное совпадение
+            if kl in {"content-length", "transfer-encoding", "connection", "vary", "alt-svc", 
+                      "x-render-origin-server", "cf-cache-status", "cache-status", 
+                      "content-encoding", "cf-ray"}:
+                continue
+            # Проверяем префиксы (cf-*, rndr-*)
+            if any(kl.startswith(prefix) for prefix in ["cf-", "rndr-"]):
                 continue
             if kl == "location":
                 try:
