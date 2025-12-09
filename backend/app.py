@@ -5276,14 +5276,18 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                             if hname.decode('latin-1').lower() != normalized_key
                         ]
                     else:
-                        del resp.headers[normalized_key]
+                        # Если _list недоступен, удаляем через обычный способ
+                        try:
+                            del resp.headers[normalized_key]
+                        except KeyError:
+                            pass
                 
                 # Устанавливаем заголовок с оригинальным регистром через прямой доступ к _list
                 # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
                 # Это позволяет сохранить оригинальный регистр заголовка
                 if hasattr(resp.headers, '_list'):
                     # Добавляем заголовок с оригинальным регистром в _list
-                    resp.headers._list.append((k.encode('latin-1'), v.encode('latin-1')))
+                    resp.headers._list.append((k.encode('latin-1'), str(v).encode('latin-1')))
                 else:
                     # Fallback: если _list недоступен, используем обычное присваивание
                     # (но регистр может быть нормализован)
@@ -5372,17 +5376,28 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         # Starlette Request.headers уже нормализованы, но мы можем получить raw headers
         request_headers_dict = {}
         # Пытаемся получить raw headers для сохранения регистра
-        if hasattr(request, 'headers') and hasattr(request.headers, 'raw'):
-            for name_bytes, value_bytes in request.headers.raw:
-                try:
-                    name = name_bytes.decode('utf-8', errors='replace')
-                    value = value_bytes.decode('utf-8', errors='replace')
-                    request_headers_dict[name] = value
-                except:
-                    pass
-        else:
-            # Fallback: используем обычные заголовки (но регистр может быть потерян)
-            request_headers_dict = dict(request.headers)
+        if hasattr(request, 'headers'):
+            # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
+            if hasattr(request.headers, '_list'):
+                for name_bytes, value_bytes in request.headers._list:
+                    try:
+                        name = name_bytes.decode('latin-1', errors='replace')
+                        value = value_bytes.decode('latin-1', errors='replace')
+                        request_headers_dict[name] = value
+                    except:
+                        pass
+            elif hasattr(request.headers, 'raw'):
+                for name_bytes, value_bytes in request.headers.raw:
+                    try:
+                        name = name_bytes.decode('latin-1', errors='replace')
+                        value = value_bytes.decode('latin-1', errors='replace')
+                        request_headers_dict[name] = value
+                    except:
+                        pass
+            else:
+                # Fallback: используем обычные заголовки (но регистр может быть потерян)
+                request_headers_dict = dict(request.headers)
+                logger.warning("Could not get raw headers from Starlette request, headers may be normalized")
         
         # Исключаем системные заголовки из запроса (сохраняем оригинальный регистр ключей!)
         system_request_headers = {"host", "connection", "content-length", "transfer-encoding", "upgrade", "keep-alive", "te", "trailer"}
@@ -5411,22 +5426,37 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         response_body_bytes = proxied.content
         
         # Сохраняем заголовки с оригинальным регистром (ВАЖНО: сохраняем регистр!)
-        # Используем raw_headers для получения оригинальных заголовков с регистром
+        # httpx нормализует заголовки, но мы можем получить их через _headers (внутренний словарь)
+        # или через raw headers, если доступны
         response_headers_dict = {}
-        if hasattr(proxied, 'headers') and hasattr(proxied.headers, 'raw'):
-            # httpx возвращает raw headers как список кортежей (name, value) в байтах
-            # Это позволяет сохранить оригинальный регистр заголовков
-            for name_bytes, value_bytes in proxied.headers.raw:
-                try:
-                    name = name_bytes.decode('utf-8', errors='replace')
-                    value = value_bytes.decode('utf-8', errors='replace')
-                    # Сохраняем заголовок с оригинальным регистром
-                    response_headers_dict[name] = value
-                except:
-                    pass
-        else:
-            # Fallback: используем обычные заголовки (но регистр может быть потерян)
-            response_headers_dict = dict(proxied.headers)
+        # Пытаемся получить raw headers для сохранения оригинального регистра
+        if hasattr(proxied, 'headers'):
+            # httpx хранит заголовки в _headers как словарь с нормализованными ключами
+            # Но мы можем получить оригинальные через _raw_headers, если они доступны
+            if hasattr(proxied.headers, '_raw_headers'):
+                # _raw_headers содержит список кортежей (name, value) в байтах
+                for name_bytes, value_bytes in proxied.headers._raw_headers:
+                    try:
+                        name = name_bytes.decode('latin-1', errors='replace')
+                        value = value_bytes.decode('latin-1', errors='replace')
+                        # Сохраняем заголовок с оригинальным регистром
+                        response_headers_dict[name] = value
+                    except:
+                        pass
+            elif hasattr(proxied.headers, 'raw'):
+                # Альтернативный способ через raw
+                for name_bytes, value_bytes in proxied.headers.raw:
+                    try:
+                        name = name_bytes.decode('latin-1', errors='replace')
+                        value = value_bytes.decode('latin-1', errors='replace')
+                        response_headers_dict[name] = value
+                    except:
+                        pass
+            else:
+                # Fallback: используем обычные заголовки (но регистр может быть потерян)
+                # В этом случае сохраняем как есть, но с предупреждением
+                response_headers_dict = dict(proxied.headers)
+                logger.warning("Could not get raw headers from httpx response, headers may be normalized")
         
         # Исключаем системные заголовки из ответа (сохраняем оригинальный регистр ключей!)
         # ВАЖНО: Сохраняем регистр заголовков - что получили, то и сохраняем
@@ -5551,18 +5581,43 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     decoded_str = decoded_str.replace('\x00', '')
                     
                     # Пытаемся распарсить как JSON (независимо от Content-Type)
-                    # ВАЖНО: Если это JSON, сохраняем как JSON, а не base64!
+                    # ВАЖНО: Если это JSON, сохраняем как JSON строку, а не base64!
                     try:
                         response_body_json = json.loads(decoded_str)
-                        # Если это валидный JSON, сохраняем как отформатированный JSON
+                        # Если это валидный JSON, сохраняем как отформатированный JSON строку
+                        # Это важно - сохраняем как строку JSON, а не как объект
                         response_body_str = json.dumps(response_body_json, ensure_ascii=False)
                     except (json.JSONDecodeError, ValueError):
-                        # Если не JSON, сохраняем как текст (НЕ base64!)
-                        response_body_str = decoded_str
+                        # Если не JSON, проверяем, не является ли это base64 строкой
+                        # (для обратной совместимости со старыми записями)
+                        # Base64 строки обычно длинные и содержат только base64 символы
+                        is_likely_base64 = (
+                            len(decoded_str) > 50 and 
+                            all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in decoded_str)
+                        )
+                        if is_likely_base64:
+                            # Пытаемся декодировать base64 и проверить, не JSON ли это внутри
+                            try:
+                                decoded_bytes = base64.b64decode(decoded_str, validate=True)
+                                decoded_inner = decoded_bytes.decode('utf-8')
+                                try:
+                                    # Если внутри base64 был JSON, сохраняем как JSON
+                                    response_body_json = json.loads(decoded_inner)
+                                    response_body_str = json.dumps(response_body_json, ensure_ascii=False)
+                                except:
+                                    # Если не JSON, сохраняем как текст
+                                    response_body_str = decoded_inner
+                            except:
+                                # Если не удалось декодировать base64, сохраняем как текст
+                                response_body_str = decoded_str
+                        else:
+                            # Если не base64, сохраняем как текст (НЕ base64!)
+                            response_body_str = decoded_str
                 else:
                     # Если не удалось декодировать, это бинарные данные
-                    # Сохраняем как base64 только в крайнем случае
-                    logger.warning(f"Could not decode response body, saving as base64. Size: {len(response_body_bytes)} bytes")
+                    # Сохраняем как base64 только в крайнем случае для бинарных данных
+                    # Но сначала проверяем, не является ли это уже закодированным JSON
+                    logger.warning(f"Could not decode response body as text, saving as base64. Size: {len(response_body_bytes)} bytes, Content-Type: {content_type_header}")
                     response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
             
             # Очищаем строки от NUL символов (0x00), которые PostgreSQL не может сохранить
