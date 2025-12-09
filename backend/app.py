@@ -5608,7 +5608,44 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             raise HTTPException(502, f"Proxy error: {str(e)}")
 
 
-        resp = Response(content=proxied.content, status_code=proxied.status_code)
+        # Определяем Content-Type из проксированного ответа для правильной установки media_type
+        content_type_header = None
+        for k, v in proxied.headers.items():
+            if k.lower() == "content-type":
+                content_type_header = v
+                break
+        
+        # Определяем media_type на основе Content-Type
+        # Используем полный Content-Type из проксированного ответа (включая charset, если есть)
+        media_type = None
+        if content_type_header:
+            # Используем полный Content-Type как есть (включая charset и другие параметры)
+            media_type = content_type_header.strip()
+        
+        # Если Content-Type не указан, пытаемся определить по содержимому
+        if not media_type and proxied.content:
+            try:
+                # Пытаемся декодировать и проверить, является ли это JSON
+                decoded = proxied.content.decode("utf-8", errors='replace')
+                try:
+                    json.loads(decoded)
+                    # Если это валидный JSON, устанавливаем application/json
+                    media_type = "application/json"
+                except (json.JSONDecodeError, ValueError):
+                    # Если не JSON, используем text/plain
+                    media_type = "text/plain; charset=utf-8"
+            except UnicodeDecodeError:
+                # Если не UTF-8, используем application/octet-stream
+                media_type = "application/octet-stream"
+        
+        # Если media_type все еще не определен, используем значение по умолчанию
+        if not media_type:
+            media_type = "application/octet-stream"
+        
+        # Создаем Response с правильным media_type
+        # ВАЖНО: proxied.content уже содержит декодированные данные (httpx автоматически декодирует сжатые ответы)
+        resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
+        
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
         # ВАЖНО: httpx возвращает заголовки в нижнем регистре через .items(), но мы должны сохранить оригинальный регистр
@@ -5650,6 +5687,12 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         v = new_loc
                 except Exception:
                     pass
+            # Пропускаем Content-Type, если он уже установлен через media_type
+            # Это гарантирует, что JSON ответы всегда имеют правильный Content-Type
+            if kl == "content-type":
+                # Уже установлен через media_type, пропускаем
+                continue
+            
             # Используем оригинальный ключ заголовка, если доступен, иначе восстанавливаем регистр
             original_key = original_headers_map.get(kl) or _restore_header_case(kl)
             resp.headers[original_key] = v
