@@ -3102,47 +3102,85 @@ def create_mock_from_proxy(
     db: Session = Depends(get_db),
 ):
     """Создаёт мок на основе проксированного запроса."""
+    # Проверяем, существуют ли новые колонки для проксированных запросов
+    try:
+        check_columns = db.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'request_logs' 
+            AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+        """)).fetchall()
+        has_proxy_fields = len(check_columns) == 4
+    except Exception as e:
+        logger.warning(f"Error checking proxy fields existence: {e}")
+        has_proxy_fields = False
+    
     # Получаем запись из request_logs
-    request_log = db.query(RequestLog).filter_by(id=log_id).first()
-    if not request_log:
+    if not has_proxy_fields:
+        # Используем прямой SQL запрос для получения базовых полей
+        result = db.execute(text("""
+            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
+                   response_time_ms, status_code, cache_ttl_seconds, cache_key
+            FROM request_logs 
+            WHERE id = :log_id
+        """), {"log_id": log_id}).first()
+        
+        if not result:
+            raise HTTPException(404, f"Request log with id {log_id} not found")
+        
+        if not result.is_proxied:
+            raise HTTPException(400, "This request was not proxied. Only proxied requests can be converted to mocks.")
+        
+        raise HTTPException(400, "Proxy fields are not available in the database. Please run migrations first.")
+    
+    # Используем прямой SQL запрос для получения всех полей, включая прокси
+    result = db.execute(text("""
+        SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
+               response_time_ms, status_code, cache_ttl_seconds, cache_key,
+               request_headers, request_body, response_headers, response_body
+        FROM request_logs 
+        WHERE id = :log_id
+    """), {"log_id": log_id}).first()
+    
+    if not result:
         raise HTTPException(404, f"Request log with id {log_id} not found")
     
-    if not request_log.is_proxied:
+    if not result.is_proxied:
         raise HTTPException(400, "This request was not proxied. Only proxied requests can be converted to mocks.")
     
-    if not request_log.request_headers or not request_log.response_body:
+    if not result.request_headers or not result.response_body:
         raise HTTPException(400, "Insufficient data in request log to create a mock")
     
     # Определяем folder_name и folder_parent
-    folder_name = request_log.folder_name
-    folder_parent = request_log.folder_parent if request_log.folder_parent else ''
+    folder_name = result.folder_name
+    folder_parent = result.folder_parent if result.folder_parent else ''
     
     # Формируем имя мока
     if not mock_name:
-        mock_name = f"{request_log.method} {request_log.path}"
+        mock_name = f"{result.method} {result.path}"
     
     # Создаём мок на основе данных из проксированного запроса
     try:
         # Формируем request_condition
         request_condition = MockRequestCondition(
-            method=request_log.method,
-            path=request_log.path,
-            headers=request_log.request_headers,
+            method=result.method,
+            path=result.path,
+            headers=result.request_headers if isinstance(result.request_headers, dict) else {},
             body_contains=None,  # Можно улучшить, если нужно проверять тело
             body_contains_required=False  # Для GET запросов тело не требуется
         )
         
         # Если есть тело запроса, добавляем проверку
-        if request_log.request_body and isinstance(request_log.request_body, (dict, list)):
+        if result.request_body and isinstance(result.request_body, (dict, list)):
             # Для POST/PUT/PATCH запросов можно добавить проверку тела
             request_condition.body_contains_required = True
             # Можно добавить body_contains, если нужно
         
         # Формируем response_config
         response_config = MockResponseConfig(
-            status_code=request_log.status_code,
-            headers=request_log.response_headers or {},
-            body=request_log.response_body
+            status_code=result.status_code,
+            headers=result.response_headers if isinstance(result.response_headers, dict) else {},
+            body=result.response_body
         )
         
         # Создаём MockEntry
