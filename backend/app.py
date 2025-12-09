@@ -974,7 +974,59 @@ def ensure_migrations():
     except Exception as e:
         logger.error(f"Error during migrations: {e}", exc_info=True)
         # Не прерываем запуск приложения, но логируем ошибку
-        raise
+    
+    # Выполняем миграцию для request_logs в отдельной транзакции, чтобы избежать проблем с failed транзакциями
+    # Это нужно, если предыдущая транзакция failed из-за ошибок при добавлении колонок в mocks
+    # Выполняем это ВСЕГДА, даже если основная транзакция failed
+    try:
+        with engine.begin() as conn:
+            # Проверяем существование колонок request_logs
+            request_logs_columns_check = conn.execute(
+                text("""
+                    SELECT column_name 
+                    FROM information_schema.columns
+                    WHERE table_name = 'request_logs'
+                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                """)
+            ).fetchall()
+            
+            existing_request_logs_cols = {row[0] for row in request_logs_columns_check}
+            
+            # Добавляем колонки, если их нет
+            if 'request_headers' not in existing_request_logs_cols:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
+                    logger.info("Added column request_logs.request_headers (separate transaction)")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error adding request_logs.request_headers: {e}")
+            
+            if 'request_body' not in existing_request_logs_cols:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
+                    logger.info("Added column request_logs.request_body (separate transaction)")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error adding request_logs.request_body: {e}")
+            
+            if 'response_headers' not in existing_request_logs_cols:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
+                    logger.info("Added column request_logs.response_headers (separate transaction)")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error adding request_logs.response_headers: {e}")
+            
+            if 'response_body' not in existing_request_logs_cols:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
+                    logger.info("Added column request_logs.response_body (separate transaction)")
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        logger.warning(f"Error adding request_logs.response_body: {e}")
+    except Exception as e:
+        logger.warning(f"Error in separate transaction for request_logs migration: {e}")
+        # Не прерываем выполнение, так как это может быть повторная попытка
 
 
 
