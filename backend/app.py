@@ -1911,6 +1911,15 @@ def _clean_response_body(body: Any) -> Any:
     return body
 
 
+def _remove_nul_chars(text: str) -> str:
+    """Удаляет NUL (0x00) символы из строки, так как PostgreSQL не может их сохранить."""
+    if text is None:
+        return None
+    if isinstance(text, str):
+        return text.replace('\x00', '')
+    return text
+
+
 def _normalize_path_for_storage(path: str) -> str:
     """Нормализует путь для хранения в БД: убирает лишние слэши, но сохраняет query параметры."""
     if not path:
@@ -4180,10 +4189,13 @@ def get_request_logs(
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
         folder_name = folder.strip()
+        folder_parent = ''
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-        query = query.filter_by(folder_name=folder_name)
+            folder_parent = parts[1] if len(parts) > 1 else ''
+        # Фильтруем по folder_name и folder_parent для правильной работы с подпапками
+        query = query.filter_by(folder_name=folder_name, folder_parent=folder_parent)
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
@@ -5225,14 +5237,23 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 raise HTTPException(403, "Proxy target host is not allowed")
 
         # Сохраняем данные запроса для логирования (до проксирования)
-        request_headers_dict = {k: v for k, v in request.headers.items()}
+        # Очищаем заголовки от NUL символов
+        request_headers_dict = {}
+        for k, v in request.headers.items():
+            clean_key = _remove_nul_chars(k) if k else k
+            clean_value = _remove_nul_chars(v) if v else v
+            request_headers_dict[clean_key] = clean_value
+        
         request_body_str = None
         if body_bytes:
             try:
                 # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
                 request_body_str = body_bytes.decode("utf-8", errors='replace')
+                # Удаляем NUL символы из декодированной строки
+                request_body_str = _remove_nul_chars(request_body_str)
             except Exception:
                 request_body_str = base64.b64encode(body_bytes).decode("ascii")
+                request_body_str = _remove_nul_chars(request_body_str)
         
         try:
             async with httpx.AsyncClient() as client:
@@ -5267,7 +5288,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 except Exception:
                     pass
             resp.headers[k] = v
-            response_headers_dict[k] = v
+            # Очищаем заголовки от NUL символов перед сохранением
+            clean_key = _remove_nul_chars(k) if k else k
+            clean_value = _remove_nul_chars(v) if v else v
+            response_headers_dict[clean_key] = clean_value
         
         # Сохраняем тело ответа для логирования
         response_body_str = None
@@ -5275,8 +5299,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             try:
                 # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
                 response_body_str = proxied.content.decode("utf-8", errors='replace')
+                # Удаляем NUL символы из декодированной строки
+                response_body_str = _remove_nul_chars(response_body_str)
             except Exception:
                 response_body_str = base64.b64encode(proxied.content).decode("ascii")
+                response_body_str = _remove_nul_chars(response_body_str)
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
