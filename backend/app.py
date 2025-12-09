@@ -5389,14 +5389,40 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         encoded_filename = encode_filename_rfc5987(filename)
                         resp.headers["Content-Disposition"] = f"attachment; filename*={encoded_filename}"
             else:
-                # Если по ошибке в БД лежит строка, а не JSON, просто вернём текст
+                # Обрабатываем тело ответа в зависимости от его типа
+                # Цель: отправлять данные точно так, как они записаны в моке
+                # Если записан JSON (dict/list), отправляем как JSON
+                # Если записана строка JSON, отправляем как JSON
+                # Если записана обычная строка, отправляем как текст
+                
                 if isinstance(body, str):
-                    resp = Response(
+                    # Проверяем, является ли строка валидным JSON
+                    try:
+                        # Пытаемся распарсить строку как JSON
+                        parsed_json = json.loads(body)
+                        # Если успешно, это JSON строка - отправляем как JSON
+                        # Кодируем в bytes для Response
+                        resp = Response(
+                            content=body.encode('utf-8'),
+                            status_code=m.status_code,
+                            media_type="application/json",
+                        )
+                    except (json.JSONDecodeError, ValueError):
+                        # Если не JSON, отправляем как обычный текст
+                        resp = Response(
+                            content=body.encode('utf-8'),
+                            status_code=m.status_code,
+                            media_type="text/plain; charset=utf-8",
+                        )
+                elif isinstance(body, (dict, list)):
+                    # Если это dict или list, отправляем через JSONResponse
+                    # JSONResponse автоматически сериализует в JSON и устанавливает правильный Content-Type: application/json
+                    resp = JSONResponse(
                         content=body,
-                        status_code=m.status_code,
-                        media_type="text/plain; charset=utf-8",
+                        status_code=m.status_code
                     )
                 else:
+                    # Для других типов (int, float, bool, None) также отправляем как JSON
                     resp = JSONResponse(
                         content=body,
                         status_code=m.status_code
@@ -5420,6 +5446,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     continue
                 # Пропускаем заголовки с префиксами cf-* и rndr-*
                 if any(kl.startswith(prefix) for prefix in system_header_prefixes):
+                    continue
+                # Пропускаем Content-Type, если он уже установлен автоматически для JSON ответов
+                # Это гарантирует, что JSON ответы всегда имеют правильный Content-Type
+                if kl == "content-type" and resp.media_type and resp.media_type.startswith("application/json"):
                     continue
                 if isinstance(v, str):
                     v = _apply_templates(v, request, full_inner)
