@@ -3385,11 +3385,12 @@ def create_mock_from_proxy(
     # Очищаем имя от недопустимых символов
     mock_name = re.sub(r'[^\w\-/]', '_', mock_name)
     
-    # Парсим заголовки запроса (сохраняем оригинальный регистр)
+    # Парсим заголовки запроса (сохраняем оригинальный регистр - ВАЖНО!)
     request_headers = None
     if request_log.request_headers:
         try:
             if isinstance(request_log.request_headers, dict):
+                # Сохраняем оригинальный регистр ключей заголовков
                 request_headers = request_log.request_headers
             elif isinstance(request_log.request_headers, str):
                 request_headers = json.loads(request_log.request_headers)
@@ -3407,11 +3408,12 @@ def create_mock_from_proxy(
             # Если не JSON, используем как есть
             body_contains = request_log.request_body[:1000]  # Ограничиваем длину
     
-    # Парсим заголовки ответа (сохраняем оригинальный регистр)
+    # Парсим заголовки ответа (сохраняем оригинальный регистр - ВАЖНО!)
     response_headers = None
     if request_log.response_headers:
         try:
             if isinstance(request_log.response_headers, dict):
+                # Сохраняем оригинальный регистр ключей заголовков
                 response_headers = request_log.response_headers
             elif isinstance(request_log.response_headers, str):
                 response_headers = json.loads(request_log.response_headers)
@@ -3419,13 +3421,14 @@ def create_mock_from_proxy(
             response_headers = None
     
     # Парсим тело ответа
+    # ВАЖНО: Сохраняем тело ответа таким, каким мы его получили (JSON/текст), а не base64
     response_body = None
     if request_log.response_body:
-        # Сначала пытаемся распарсить как JSON
+        # Сначала пытаемся распарсить как JSON (тело ответа должно быть сохранено как JSON/текст, а не base64)
         try:
             response_body = json.loads(request_log.response_body)
         except json.JSONDecodeError:
-            # Если не JSON, проверяем, не является ли это base64
+            # Если не JSON, проверяем, не является ли это base64 (на случай старых записей)
             # Base64 строки обычно длинные и содержат только base64 символы
             is_likely_base64 = (
                 len(request_log.response_body) > 50 and 
@@ -3434,7 +3437,7 @@ def create_mock_from_proxy(
             
             if is_likely_base64:
                 try:
-                    # Пытаемся декодировать base64
+                    # Пытаемся декодировать base64 (для обратной совместимости со старыми записями)
                     decoded_bytes = base64.b64decode(request_log.response_body, validate=True)
                     # Пытаемся декодировать как UTF-8
                     decoded_str = decoded_bytes.decode('utf-8')
@@ -3448,7 +3451,7 @@ def create_mock_from_proxy(
                     # Если не удалось декодировать base64, используем как строку
                     response_body = request_log.response_body
             else:
-                # Если не похоже на base64, используем как строку
+                # Если не похоже на base64, используем как строку (это нормальный текст)
                 response_body = request_log.response_body
     
     # Определяем Content-Type из заголовков ответа (сохраняем оригинальный регистр ключа)
@@ -5519,10 +5522,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         # Если это валидный JSON, сохраняем как отформатированный JSON
                         response_body_str = json.dumps(response_body_json, ensure_ascii=False)
                     except (json.JSONDecodeError, ValueError):
-                        # Если не JSON, сохраняем как текст
+                        # Если не JSON, сохраняем как текст (не base64!)
                         response_body_str = decoded_str
                 else:
                     # Если не удалось декодировать, сохраняем как base64
+                    # Но только если это действительно бинарные данные
                     response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
             
             # Очищаем строки от NUL символов (0x00), которые PostgreSQL не может сохранить

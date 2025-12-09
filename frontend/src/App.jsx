@@ -1369,54 +1369,24 @@ export default function App() {
       error_simulation_body: m.error_simulation_body ? JSON.stringify(m.error_simulation_body, null, 2) : undefined,
       error_simulation_delay_ms: m.error_simulation_delay_ms || undefined,
       response_body: (() => {
-        // Обрабатываем тело ответа: если это строка, которая может быть base64, декодируем её
+        // Обрабатываем тело ответа
+        // ВАЖНО: Тело ответа должно быть таким, каким мы его получили (JSON/текст), а не base64
         let bodyToDisplay = m.response_config.body;
         
-        // Если тело ответа - строка, проверяем, не является ли она JSON-строкой (в кавычках)
+        // Если тело ответа уже является объектом или массивом, используем как есть
+        if (typeof bodyToDisplay === 'object' && bodyToDisplay !== null) {
+          return JSON.stringify(bodyToDisplay, null, 2);
+        }
+        
+        // Если тело ответа - строка
         if (typeof bodyToDisplay === 'string') {
-          // Сначала пытаемся распарсить как JSON (на случай, если это JSON-строка)
+          // Сначала пытаемся распарсить как JSON (на случай, если это JSON-строка в кавычках)
           try {
             const parsed = JSON.parse(bodyToDisplay);
-            // Если распарсилось и это строка, проверяем, не является ли она base64
-            if (typeof parsed === 'string' && parsed.length > 50) {
-              // Проверяем, похоже ли это на base64 (только base64 символы)
-              const isLikelyBase64 = /^[A-Za-z0-9+/=]+$/.test(parsed);
-              
-              if (isLikelyBase64) {
-                try {
-                  // Пытаемся декодировать base64
-                  const decodedBytes = atob(parsed);
-                  // Пытаемся декодировать как UTF-8
-                  let decodedStr;
-                  try {
-                    // Пробуем использовать TextDecoder для правильного декодирования UTF-8
-                    const decoder = new TextDecoder('utf-8', { fatal: false });
-                    decodedStr = decoder.decode(new Uint8Array([...decodedBytes].map(c => c.charCodeAt(0))));
-                  } catch {
-                    // Fallback: используем старый метод
-                    decodedStr = decodeURIComponent(escape(decodedBytes));
-                  }
-                  // Пытаемся распарсить как JSON
-                  try {
-                    bodyToDisplay = JSON.parse(decodedStr);
-                  } catch {
-                    // Если не JSON, используем декодированную строку
-                    bodyToDisplay = decodedStr;
-                  }
-                } catch (e) {
-                  // Если не удалось декодировать base64, используем распарсенную строку
-                  bodyToDisplay = parsed;
-                }
-              } else {
-                // Если не base64, используем распарсенную строку
-                bodyToDisplay = parsed;
-              }
-            } else {
-              // Если распарсилось и это не строка, используем как есть
-              bodyToDisplay = parsed;
-            }
+            // Если распарсилось, используем распарсенное значение
+            return JSON.stringify(parsed, null, 2);
           } catch {
-            // Если не JSON-строка, проверяем, не является ли сама строка base64
+            // Если не JSON-строка, проверяем, не является ли это base64 (для обратной совместимости)
             if (bodyToDisplay.length > 50) {
               // Проверяем, похоже ли это на base64 (только base64 символы)
               const isLikelyBase64 = /^[A-Za-z0-9+/=]+$/.test(bodyToDisplay);
@@ -1430,28 +1400,37 @@ export default function App() {
                   try {
                     // Пробуем использовать TextDecoder для правильного декодирования UTF-8
                     const decoder = new TextDecoder('utf-8', { fatal: false });
-                    decodedStr = decoder.decode(new Uint8Array([...decodedBytes].map(c => c.charCodeAt(0))));
+                    const bytes = new Uint8Array([...decodedBytes].map(c => c.charCodeAt(0)));
+                    decodedStr = decoder.decode(bytes);
                   } catch {
                     // Fallback: используем старый метод
                     decodedStr = decodeURIComponent(escape(decodedBytes));
                   }
                   // Пытаемся распарсить как JSON
                   try {
-                    bodyToDisplay = JSON.parse(decodedStr);
+                    const parsed = JSON.parse(decodedStr);
+                    return JSON.stringify(parsed, null, 2);
                   } catch {
                     // Если не JSON, используем декодированную строку
-                    bodyToDisplay = decodedStr;
+                    return JSON.stringify(decodedStr, null, 2);
                   }
                 } catch (e) {
-                  // Если не удалось декодировать, оставляем как есть
+                  // Если не удалось декодировать, используем исходную строку
                   console.warn('Failed to decode base64 response body:', e);
+                  return JSON.stringify(bodyToDisplay, null, 2);
                 }
+              } else {
+                // Если не base64, используем как обычную строку
+                return JSON.stringify(bodyToDisplay, null, 2);
               }
+            } else {
+              // Если строка короткая, используем как есть
+              return JSON.stringify(bodyToDisplay, null, 2);
             }
           }
         }
         
-        // Сериализуем для отображения
+        // Fallback: сериализуем как есть
         return JSON.stringify(bodyToDisplay, null, 2);
       })()
     });
