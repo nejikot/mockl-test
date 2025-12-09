@@ -768,6 +768,7 @@ def ensure_migrations():
                 logger.warning(f"[MIGRATION] ⚠ Only {len(final_columns)}/4 proxy fields are available. Missing: {set(request_logs_proxy_fields) - set(final_columns)}")
             
             # Проверяем существование колонок одним запросом для оптимизации
+            # Примечание: engine.begin() автоматически коммитит транзакцию при успешном завершении блока
             existing_columns = conn.execute(
                 text("""
                     SELECT table_name, column_name 
@@ -976,12 +977,14 @@ def ensure_migrations():
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
         
         # Финальная проверка миграций для request_logs proxy fields
+        # Выполняем проверку в новой сессии, чтобы убедиться, что изменения видны
         logger.info("=" * 80)
         logger.info("Final verification of request_logs proxy fields migration")
         logger.info("=" * 80)
         try:
-            with engine.begin() as conn:
-                final_check = conn.execute(
+            # Используем новую сессию для проверки, чтобы убедиться, что изменения закоммичены
+            with Session(engine) as check_session:
+                final_check = check_session.execute(
                     text("""
                         SELECT column_name 
                         FROM information_schema.columns 
@@ -3174,6 +3177,7 @@ def create_mock_from_proxy(
 ):
     """Создаёт мок на основе проксированного запроса."""
     # Проверяем, существуют ли новые колонки для проксированных запросов
+    logger.info(f"[create_mock_from_proxy] Checking proxy fields for log_id={log_id}")
     try:
         check_columns = db.execute(text("""
             SELECT column_name 
@@ -3181,9 +3185,14 @@ def create_mock_from_proxy(
             WHERE table_name = 'request_logs' 
             AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
         """)).fetchall()
+        found_columns = [row[0] for row in check_columns]
         has_proxy_fields = len(check_columns) == 4
+        logger.info(f"[create_mock_from_proxy] Found {len(check_columns)}/4 proxy columns: {found_columns}")
+        if not has_proxy_fields:
+            missing = set(['request_headers', 'request_body', 'response_headers', 'response_body']) - set(found_columns)
+            logger.warning(f"[create_mock_from_proxy] Missing proxy columns: {missing}")
     except Exception as e:
-        logger.warning(f"Error checking proxy fields existence: {e}")
+        logger.error(f"[create_mock_from_proxy] Error checking proxy fields existence: {e}", exc_info=True)
         has_proxy_fields = False
     
     # Получаем запись из request_logs
@@ -3205,13 +3214,29 @@ def create_mock_from_proxy(
         raise HTTPException(400, "Proxy fields are not available in the database. Please restart the application to run migrations.")
     
     # Используем прямой SQL запрос для получения всех полей, включая прокси
-    result = db.execute(text("""
-        SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
-               response_time_ms, status_code, cache_ttl_seconds, cache_key,
-               request_headers, request_body, response_headers, response_body
-        FROM request_logs 
-        WHERE id = :log_id
-    """), {"log_id": log_id}).first()
+    logger.info(f"[create_mock_from_proxy] Fetching request log with id={log_id}")
+    try:
+        result = db.execute(text("""
+            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
+                   response_time_ms, status_code, cache_ttl_seconds, cache_key,
+                   request_headers, request_body, response_headers, response_body
+            FROM request_logs 
+            WHERE id = :log_id
+        """), {"log_id": log_id}).first()
+    except Exception as e:
+        logger.error(f"[create_mock_from_proxy] Error fetching request log: {e}", exc_info=True)
+        # Если колонки не существуют, SQL запрос упадет с ошибкой
+        # В этом случае пробуем получить только базовые поля
+        logger.warning(f"[create_mock_from_proxy] Trying to fetch basic fields only")
+        result = db.execute(text("""
+            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
+                   response_time_ms, status_code, cache_ttl_seconds, cache_key
+            FROM request_logs 
+            WHERE id = :log_id
+        """), {"log_id": log_id}).first()
+        if result and result.is_proxied:
+            raise HTTPException(400, "Proxy fields are not available in the database. Please restart the application to run migrations.")
+        raise HTTPException(404, f"Request log with id {log_id} not found")
     
     if not result:
         raise HTTPException(404, f"Request log with id {log_id} not found")
@@ -3221,14 +3246,18 @@ def create_mock_from_proxy(
     
     # Извлекаем данные из результата SQL запроса
     # Результат SQL запроса возвращает Row объект, доступ к полям по имени колонки
-    request_headers = result.request_headers if result.request_headers else None
-    request_body = result.request_body if result.request_body else None
-    response_headers = result.response_headers if result.response_headers else None
-    response_body = result.response_body if result.response_body else None
+    logger.info(f"[create_mock_from_proxy] Extracting data from request log")
+    request_headers = getattr(result, 'request_headers', None) if hasattr(result, 'request_headers') else None
+    request_body = getattr(result, 'request_body', None) if hasattr(result, 'request_body') else None
+    response_headers = getattr(result, 'response_headers', None) if hasattr(result, 'response_headers') else None
+    response_body = getattr(result, 'response_body', None) if hasattr(result, 'response_body') else None
+    
+    logger.info(f"[create_mock_from_proxy] Extracted data: request_headers={request_headers is not None}, request_body={request_body is not None}, response_headers={response_headers is not None}, response_body={response_body is not None}")
     
     # Проверяем наличие данных для создания мока
     if not request_headers or not response_body:
-        raise HTTPException(400, "Insufficient data in request log to create a mock. Request headers or response body is missing.")
+        logger.error(f"[create_mock_from_proxy] Insufficient data: request_headers={request_headers is not None}, response_body={response_body is not None}")
+        raise HTTPException(400, f"Insufficient data in request log to create a mock. Request headers or response body is missing. request_headers={request_headers is not None}, response_body={response_body is not None}")
     
     # Определяем folder_name и folder_parent
     folder_name = result.folder_name
@@ -4484,95 +4513,175 @@ def get_request_logs(
     }
 
 
-def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
+def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session, method_path_combinations_from_logs: Optional[List] = None):
     """Очищает метрики Prometheus для конкретной папки.
     
     Использует данные из request_logs для определения всех комбинаций методов и путей,
     затем обнуляет соответствующие метрики Prometheus.
+    
+    Args:
+        folder_name: Имя папки
+        db: Сессия базы данных
+        method_path_combinations_from_logs: Список комбинаций (method, path) из логов, которые будут удалены
     """
     try:
         logger.debug(f"Clearing Prometheus metrics for folder: {folder_name}")
         
-        # Используем прямой SQL запрос для обхода проблемы с отсутствующими колонками
-        logs_result = db.execute(text("""
-            SELECT method, path, is_proxied, status_code
-            FROM request_logs 
-            WHERE folder_name = :folder_name
-        """), {"folder_name": folder_name}).fetchall()
+        # Используем переданные комбинации или получаем из БД
+        if method_path_combinations_from_logs:
+            method_path_combinations = {(row[0], row[1]) for row in method_path_combinations_from_logs}
+            logger.debug(f"Using {len(method_path_combinations)} method/path combinations from logs")
+        else:
+            # Используем прямой SQL запрос для обхода проблемы с отсутствующими колонками
+            logs_result = db.execute(text("""
+                SELECT method, path, is_proxied, status_code
+                FROM request_logs 
+                WHERE folder_name = :folder_name
+            """), {"folder_name": folder_name}).fetchall()
+            
+            logger.debug(f"Found {len(logs_result)} log entries for folder {folder_name}")
+            
+            # Собираем уникальные комбинации method/path
+            method_path_combinations = set()
+            status_codes = set()
+            
+            for row in logs_result:
+                method_path_combinations.add((row.method, row.path))
+                if row.status_code:
+                    status_codes.add(str(row.status_code))
         
-        logger.debug(f"Found {len(logs_result)} log entries for folder {folder_name}")
-        
-        # Собираем уникальные комбинации method/path
-        method_path_combinations = set()
-        outcomes = ['mock_hit', 'proxied', 'not_found', 'cache_hit']
-        status_codes = set()
-        
-        for row in logs_result:
-            method_path_combinations.add((row.method, row.path))
-            if row.status_code:
-                status_codes.add(str(row.status_code))
-            if row.is_proxied:
-                outcomes.add('proxied')
-            else:
-                outcomes.add('mock_hit')
+        outcomes = {'mock_hit', 'proxied', 'not_found', 'cache_hit'}  # Используем set вместо list
+        # Если нет комбинаций из логов, используем все возможные статус-коды
+        if not method_path_combinations_from_logs:
+            status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
+        else:
+            status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
         
         logger.debug(f"Found {len(method_path_combinations)} unique method/path combinations for folder {folder_name}")
         
-        # Обнуляем детальные метрики для всех комбинаций
-        for method, path in method_path_combinations:
-            for outcome in outcomes:
-                for status_code in status_codes:
+        # Если нет логов, очищаем все метрики для всех возможных комбинаций
+        # Это нужно для полной очистки метрик даже если логи уже удалены
+        if len(method_path_combinations) == 0:
+            logger.info(f"No logs found for folder {folder_name}, clearing all metrics for all possible combinations")
+            # Получаем все возможные комбинации из всех метрик Prometheus
+            # Для этого нужно очистить все метрики для всех методов, путей, исходов и статус-кодов
+            methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+            paths = ['/', '/api', '/api/v1', '/api/v2']  # Базовые пути, но лучше очистить все
+            all_outcomes = {'mock_hit', 'proxied', 'not_found', 'cache_hit'}
+            all_status_codes = {'200', '201', '204', '400', '401', '403', '404', '500', '502', '503'}
+            
+            # Очищаем метрики для всех комбинаций
+            for method in methods:
+                for path in paths:
+                    for outcome in all_outcomes:
+                        for status_code in all_status_codes:
+                            try:
+                                REQUEST_DETAILED.labels(
+                                    method=method,
+                                    path=path,
+                                    folder=folder_name,
+                                    outcome=outcome,
+                                    status_code=status_code
+                                )._value._value = 0
+                            except Exception:
+                                pass
+                            
+                            try:
+                                REQUESTS_TOTAL.labels(
+                                    method=method,
+                                    path=path,
+                                    folder=folder_name,
+                                    outcome=outcome
+                                )._value._value = 0
+                            except Exception:
+                                pass
+                            
+                            try:
+                                RESPONSE_TIME_DETAILED.labels(
+                                    method=method,
+                                    path=path,
+                                    folder=folder_name,
+                                    outcome=outcome
+                                )._sum._value = 0
+                                RESPONSE_TIME_DETAILED.labels(
+                                    method=method,
+                                    path=path,
+                                    folder=folder_name,
+                                    outcome=outcome
+                                )._count._value = 0
+                            except Exception:
+                                pass
+                            
+                            if outcome == 'proxied':
+                                try:
+                                    PROXY_RESPONSE_TIME.labels(
+                                        method=method,
+                                        path=path,
+                                        folder=folder_name
+                                    )._sum._value = 0
+                                    PROXY_RESPONSE_TIME.labels(
+                                        method=method,
+                                        path=path,
+                                        folder=folder_name
+                                    )._count._value = 0
+                                except Exception:
+                                    pass
+        else:
+            # Обнуляем детальные метрики для всех комбинаций из логов
+            for method, path in method_path_combinations:
+                for outcome in outcomes:
+                    for status_code in status_codes:
+                        try:
+                            REQUEST_DETAILED.labels(
+                                method=method,
+                                path=path,
+                                folder=folder_name,
+                                outcome=outcome,
+                                status_code=status_code
+                            )._value._value = 0
+                        except Exception:
+                            pass  # Метрика может не существовать для этой комбинации
+                    
                     try:
-                        REQUEST_DETAILED.labels(
+                        REQUESTS_TOTAL.labels(
                             method=method,
                             path=path,
                             folder=folder_name,
-                            outcome=outcome,
-                            status_code=status_code
+                            outcome=outcome
                         )._value._value = 0
                     except Exception:
-                        pass  # Метрика может не существовать для этой комбинации
-                
-                try:
-                    REQUESTS_TOTAL.labels(
-                        method=method,
-                        path=path,
-                        folder=folder_name,
-                        outcome=outcome
-                    )._value._value = 0
-                except Exception:
-                    pass
-                
-                try:
-                    RESPONSE_TIME_DETAILED.labels(
-                        method=method,
-                        path=path,
-                        folder=folder_name,
-                        outcome=outcome
-                    )._sum._value = 0
-                    RESPONSE_TIME_DETAILED.labels(
-                        method=method,
-                        path=path,
-                        folder=folder_name,
-                        outcome=outcome
-                    )._count._value = 0
-                except Exception:
-                    pass
-                
-                if outcome == 'proxied':
+                        pass
+                    
                     try:
-                        PROXY_RESPONSE_TIME.labels(
+                        RESPONSE_TIME_DETAILED.labels(
                             method=method,
                             path=path,
-                            folder=folder_name
+                            folder=folder_name,
+                            outcome=outcome
                         )._sum._value = 0
-                        PROXY_RESPONSE_TIME.labels(
+                        RESPONSE_TIME_DETAILED.labels(
                             method=method,
                             path=path,
-                            folder=folder_name
+                            folder=folder_name,
+                            outcome=outcome
                         )._count._value = 0
                     except Exception:
                         pass
+                    
+                    if outcome == 'proxied':
+                        try:
+                            PROXY_RESPONSE_TIME.labels(
+                                method=method,
+                                path=path,
+                                folder=folder_name
+                            )._sum._value = 0
+                            PROXY_RESPONSE_TIME.labels(
+                                method=method,
+                                path=path,
+                                folder=folder_name
+                            )._count._value = 0
+                        except Exception:
+                            pass
         
         # Обнуляем общие метрики для папки
         try:
@@ -4637,9 +4746,18 @@ def clear_request_logs(
             params["folder_parent"] = normalized_parent
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
+    # Сначала получаем все уникальные комбинации method/path из логов, которые будут удалены
+    logger.info("Collecting method/path combinations from logs before deletion")
+    if folder_filter:
+        method_path_query = text(f"SELECT DISTINCT method, path FROM request_logs {folder_filter}")
+    else:
+        method_path_query = text("SELECT DISTINCT method, path FROM request_logs")
+    method_path_combinations = db.execute(method_path_query, params).fetchall()
+    logger.info(f"Found {len(method_path_combinations)} unique method/path combinations to clear")
+    
     if folder_name:
         logger.info(f"Clearing Prometheus metrics for folder: {folder_name}")
-        _clear_prometheus_metrics_for_folder(folder_name, db)
+        _clear_prometheus_metrics_for_folder(folder_name, db, method_path_combinations)
     else:
         # Если папка не указана, очищаем метрики для всех папок
         logger.info("Clearing Prometheus metrics for all folders")
@@ -4648,7 +4766,7 @@ def clear_request_logs(
         logger.info(f"Found {len(all_folders_result)} folders to clear metrics for")
         for (fname,) in all_folders_result:
             logger.debug(f"Clearing metrics for folder: {fname}")
-            _clear_prometheus_metrics_for_folder(fname, db)
+            _clear_prometheus_metrics_for_folder(fname, db, method_path_combinations)
         
         # Также очищаем глобальные метрики (метрики без указания папки)
         logger.info("Clearing global Prometheus metrics")
