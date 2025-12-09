@@ -5597,7 +5597,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 request_body_str = _remove_nul_chars(request_body_str)
         
         try:
-            async with httpx.AsyncClient() as client:
+            # Настраиваем httpx клиент с автоматическим декодированием сжатых ответов
+            # follow_redirects=True - автоматически следовать редиректам
+            async with httpx.AsyncClient(follow_redirects=True) as client:
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
@@ -5621,33 +5623,75 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             # Берем только тип без параметров для проверки
             content_type = content_type_header.split(';')[0].strip().lower()
         
-        # ВАЖНО: proxied.content - это bytes
-        # httpx автоматически декодирует сжатые ответы (gzip, br, deflate),
-        # поэтому proxied.content уже содержит декодированные данные в виде bytes
+        # ВАЖНО: httpx автоматически декодирует сжатые ответы (gzip, br, deflate)
+        # proxied.content - это bytes с уже декодированными данными
+        # proxied.text - это строка (если доступна), но может быть None для бинарных данных
         
         # Для JSON ответов используем JSONResponse для правильной сериализации
         # Это гарантирует, что JSON будет отправлен корректно без дополнительного кодирования
-        if content_type in ("application/json", "text/json") or (not content_type and proxied.content):
-            # Проверяем, является ли содержимое валидным JSON
+        if content_type in ("application/json", "text/json"):
+            # Для JSON ответов используем proxied.text если доступно (httpx автоматически декодирует)
+            # или декодируем bytes вручную
             try:
-                decoded = proxied.content.decode("utf-8", errors='replace')
-                try:
-                    parsed_json = json.loads(decoded)
-                    # Если это валидный JSON, используем JSONResponse
-                    # Это гарантирует правильную отправку JSON без дополнительного кодирования
-                    resp = JSONResponse(content=parsed_json, status_code=proxied.status_code)
-                except (json.JSONDecodeError, ValueError):
-                    # Если не валидный JSON, отправляем как обычный текст
-                    media_type = content_type_header.strip() if content_type_header else "text/plain; charset=utf-8"
-                    resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
-            except UnicodeDecodeError:
-                # Если не UTF-8, отправляем как бинарные данные
+                # Пытаемся использовать proxied.text (httpx автоматически декодирует текстовые ответы)
+                if hasattr(proxied, 'text') and proxied.text is not None:
+                    decoded_text = proxied.text
+                else:
+                    # Если proxied.text недоступен, декодируем bytes вручную
+                    decoded_text = proxied.content.decode("utf-8", errors='strict')
+                
+                # Парсим JSON
+                parsed_json = json.loads(decoded_text)
+                # Используем JSONResponse - это гарантирует правильную сериализацию и Content-Type
+                resp = JSONResponse(content=parsed_json, status_code=proxied.status_code)
+            except (UnicodeDecodeError, AttributeError) as e:
+                # Если не UTF-8 или proxied.text недоступен, логируем ошибку и отправляем как бинарные данные
+                logger.warning(f"Failed to decode JSON response as UTF-8: {e}")
                 media_type = content_type_header.strip() if content_type_header else "application/octet-stream"
                 resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
+            except (json.JSONDecodeError, ValueError) as e:
+                # Если не валидный JSON, логируем и отправляем как текст
+                logger.warning(f"Response has Content-Type application/json but is not valid JSON: {e}")
+                try:
+                    if hasattr(proxied, 'text') and proxied.text is not None:
+                        decoded_text = proxied.text
+                    else:
+                        decoded_text = proxied.content.decode("utf-8", errors='replace')
+                    media_type = content_type_header.strip() if content_type_header else "text/plain; charset=utf-8"
+                    resp = Response(content=decoded_text.encode('utf-8'), status_code=proxied.status_code, media_type=media_type)
+                except Exception:
+                    media_type = content_type_header.strip() if content_type_header else "application/octet-stream"
+                    resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
+        elif not content_type and proxied.content:
+            # Если Content-Type не указан, пытаемся определить по содержимому
+            try:
+                decoded_text = proxied.content.decode("utf-8", errors='strict')
+                try:
+                    parsed_json = json.loads(decoded_text)
+                    # Если это валидный JSON, используем JSONResponse
+                    resp = JSONResponse(content=parsed_json, status_code=proxied.status_code)
+                except (json.JSONDecodeError, ValueError):
+                    # Если не JSON, отправляем как текст
+                    resp = Response(content=decoded_text.encode('utf-8'), status_code=proxied.status_code, media_type="text/plain; charset=utf-8")
+            except UnicodeDecodeError:
+                # Если не UTF-8, отправляем как бинарные данные
+                resp = Response(content=proxied.content, status_code=proxied.status_code, media_type="application/octet-stream")
         else:
             # Для не-JSON ответов используем Response с правильным media_type
-            media_type = content_type_header.strip() if content_type_header else "application/octet-stream"
-            resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
+            # Для текстовых ответов декодируем bytes в строку и кодируем обратно
+            if content_type and content_type.startswith("text/"):
+                try:
+                    decoded_text = proxied.content.decode("utf-8", errors='strict')
+                    media_type = content_type_header.strip() if content_type_header else "text/plain; charset=utf-8"
+                    resp = Response(content=decoded_text.encode('utf-8'), status_code=proxied.status_code, media_type=media_type)
+                except UnicodeDecodeError:
+                    # Если не UTF-8, отправляем как бинарные данные
+                    media_type = content_type_header.strip() if content_type_header else "application/octet-stream"
+                    resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
+            else:
+                # Для бинарных данных отправляем bytes как есть
+                media_type = content_type_header.strip() if content_type_header else "application/octet-stream"
+                resp = Response(content=proxied.content, status_code=proxied.status_code, media_type=media_type)
         
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
