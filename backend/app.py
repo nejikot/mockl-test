@@ -262,6 +262,11 @@ class RequestLog(Base):
     status_code = Column(Integer, nullable=False, index=True)
     cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
+    # Детальные данные для прокси запросов (для формирования моков)
+    request_headers = Column(SAJSON, nullable=True)  # Заголовки запроса
+    request_body = Column(String, nullable=True)  # Тело запроса (как строка)
+    response_headers = Column(SAJSON, nullable=True)  # Заголовки ответа
+    response_body = Column(String, nullable=True)  # Тело ответа (как строка)
 
 
 
@@ -648,6 +653,45 @@ def ensure_migrations():
                     logger.info("Added column request_logs.folder_parent")
                 except Exception as e:
                     logger.warning(f"Error adding request_logs.folder_parent: {e}")
+            
+            # Добавляем колонки для детальных данных прокси запросов (для формирования моков)
+            request_logs_detail_columns = conn.execute(
+                text("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'request_logs' 
+                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                """)
+            ).fetchall()
+            existing_detail_columns = {row[0] for row in request_logs_detail_columns}
+            
+            if 'request_headers' not in existing_detail_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
+                    logger.info("Added column request_logs.request_headers")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.request_headers: {e}")
+            
+            if 'request_body' not in existing_detail_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
+                    logger.info("Added column request_logs.request_body")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.request_body: {e}")
+            
+            if 'response_headers' not in existing_detail_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
+                    logger.info("Added column request_logs.response_headers")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.response_headers: {e}")
+            
+            if 'response_body' not in existing_detail_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
+                    logger.info("Added column request_logs.response_body")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.response_body: {e}")
             
             # После добавления folder_parent, нужно пересоздать внешние ключи
             # Сначала удаляем старые внешние ключи, если они существуют
@@ -4159,7 +4203,11 @@ def get_request_logs(
                 "response_time_ms": log.response_time_ms,
                 "status_code": log.status_code,
                 "cache_ttl_seconds": log.cache_ttl_seconds,
-                "cache_key": log.cache_key
+                "cache_key": log.cache_key,
+                "request_headers": log.request_headers,
+                "request_body": log.request_body,
+                "response_headers": log.response_headers,
+                "response_body": log.response_body
             }
             for log in logs
         ]
@@ -4309,6 +4357,128 @@ def clear_request_logs(
     db.commit()
     
     return {"message": f"Удалено {count} записей", "deleted_count": count}
+
+
+@app.post(
+    "/api/mocks/generate-from-proxy",
+    summary="Сформировать мок из прокси запроса",
+    description="Создаёт мок на основе реального запроса и ответа, перехваченного через прокси. Использует данные из request_logs.",
+)
+def generate_mock_from_proxy(
+    log_id: str = Body(..., description="ID записи из request_logs"),
+    db: Session = Depends(get_db),
+):
+    """Создаёт мок на основе данных из request_logs."""
+    try:
+        # Получаем запись из request_logs
+        log = db.query(RequestLog).filter_by(id=log_id).first()
+        if not log:
+            raise HTTPException(404, "Запись не найдена")
+        
+        if not log.is_proxied:
+            raise HTTPException(400, "Можно формировать мок только из прокси запросов")
+        
+        if not log.request_headers or not log.response_headers:
+            raise HTTPException(400, "Отсутствуют данные headers для формирования мока")
+        
+        # Системные заголовки запроса, которые нужно исключить
+        SYSTEM_REQUEST_HEADERS = {
+            "cdn-loop", "cf-", "rndr-", "true-client-ip", "x-request-start",
+            "x-forwarded-for", "x-forwarded-proto", "postman-token"
+        }
+        
+        # Системные заголовки ответа, которые нужно исключить
+        SYSTEM_RESPONSE_HEADERS = {
+            "cf-", "rndr-", "vary", "alt-svc", "x-render-origin-server", "cf-cache-status"
+        }
+        
+        # Фильтруем заголовки запроса (сохраняем регистр)
+        filtered_request_headers = {}
+        for k, v in (log.request_headers or {}).items():
+            k_lower = k.lower()
+            should_exclude = False
+            for sys_header in SYSTEM_REQUEST_HEADERS:
+                if k_lower.startswith(sys_header.lower()):
+                    should_exclude = True
+                    break
+            if not should_exclude:
+                filtered_request_headers[k] = v
+        
+        # Фильтруем заголовки ответа (сохраняем регистр)
+        filtered_response_headers = {}
+        for k, v in (log.response_headers or {}).items():
+            k_lower = k.lower()
+            should_exclude = False
+            for sys_header in SYSTEM_RESPONSE_HEADERS:
+                if k_lower.startswith(sys_header.lower()):
+                    should_exclude = True
+                    break
+            if not should_exclude:
+                filtered_response_headers[k] = v
+        
+        # Формируем имя мока: METHOD+PATH+proxy
+        mock_name = f"{log.method.upper()}+{log.path}+proxy"
+        
+        # Обрабатываем тело запроса
+        request_body_contains = log.request_body
+        if request_body_contains:
+            # Если это JSON, пытаемся распарсить и нормализовать
+            try:
+                parsed = json.loads(request_body_contains)
+                request_body_contains = json.dumps(parsed, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                # Если не JSON, оставляем как есть
+                pass
+        
+        # Обрабатываем тело ответа
+        response_body = log.response_body
+        if response_body:
+            # Если это JSON, пытаемся распарсить
+            try:
+                parsed = json.loads(response_body)
+                response_body = parsed
+            except (json.JSONDecodeError, TypeError):
+                # Если не JSON, оставляем как строку
+                response_body = {"text": response_body}
+        else:
+            response_body = {}
+        
+        # Создаём мок
+        mock_entry = MockEntry(
+            id=str(uuid4()),
+            folder=log.folder_name,
+            name=mock_name,
+            request_condition={
+                "method": log.method.upper(),
+                "path": log.path,
+                "headers": filtered_request_headers if filtered_request_headers else None,
+                "body_contains": request_body_contains,
+                "body_contains_required": True
+            },
+            response_config={
+                "status_code": log.status_code,
+                "headers": filtered_response_headers if filtered_response_headers else None,
+                "body": response_body
+            },
+            active=True,
+            delay_ms=0
+        )
+        
+        # Сохраняем мок
+        _save_mock_entry(mock_entry, db)
+        db.commit()
+        
+        return {
+            "message": "Мок успешно сформирован",
+            "mock": mock_entry
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error generating mock from proxy: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при формировании мока: {str(e)}")
 
 
 @app.delete(
@@ -5054,13 +5224,23 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if host not in ALLOWED_PROXY_HOSTS:
                 raise HTTPException(403, "Proxy target host is not allowed")
 
+        # Сохраняем данные запроса для логирования (до проксирования)
+        request_headers_dict = {k: v for k, v in request.headers.items()}
+        request_body_str = None
+        if body_bytes:
+            try:
+                # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
+                request_body_str = body_bytes.decode("utf-8", errors='replace')
+            except Exception:
+                request_body_str = base64.b64encode(body_bytes).decode("ascii")
+        
         try:
             async with httpx.AsyncClient() as client:
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-                    content=await request.body()
+                    content=body_bytes
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")
@@ -5069,6 +5249,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         resp = Response(content=proxied.content, status_code=proxied.status_code)
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
+        response_headers_dict = {}
         for k, v in proxied.headers.items():
             kl = k.lower()
             if kl in {"content-length", "transfer-encoding", "connection"}:
@@ -5086,6 +5267,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 except Exception:
                     pass
             resp.headers[k] = v
+            response_headers_dict[k] = v
+        
+        # Сохраняем тело ответа для логирования
+        response_body_str = None
+        if proxied.content:
+            try:
+                # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
+                response_body_str = proxied.content.decode("utf-8", errors='replace')
+            except Exception:
+                response_body_str = base64.b64encode(proxied.content).decode("ascii")
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
@@ -5114,7 +5305,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             folder=folder_name
         ).observe(response_time)
         
-        # Логируем проксированный вызов в БД
+        # Логируем проксированный вызов в БД с детальными данными
         try:
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
@@ -5126,7 +5317,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 response_time_ms=int(response_time * 1000),
                 status_code=status_code,
                 cache_ttl_seconds=None,
-                cache_key=None
+                cache_key=None,
+                request_headers=request_headers_dict,
+                request_body=request_body_str,
+                response_headers=response_headers_dict,
+                response_body=response_body_str
             )
             db.add(request_log)
             db.commit()

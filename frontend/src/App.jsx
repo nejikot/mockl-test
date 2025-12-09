@@ -654,6 +654,27 @@ export default function App() {
       message.error(`Ошибка очистки истории: ${error.message}`);
     }
   };
+
+  const generateMockFromProxy = async (logId) => {
+    try {
+      const response = await fetch(`${host}/api/mocks/generate-from-proxy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(logId)
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Неизвестная ошибка' }));
+        throw new Error(errorData.detail || 'Ошибка при формировании мока');
+      }
+      message.success('Мок успешно сформирован');
+      // Обновляем список моков
+      loadMocks();
+    } catch (error) {
+      message.error(error.message || 'Ошибка при формировании мока');
+    }
+  };
   
   // Функция для загрузки метрик всего сервиса (без фильтра по папке)
   const loadGlobalMetrics = async (showLoading = true) => {
@@ -4120,6 +4141,23 @@ export default function App() {
                                 {code}
                               </Typography.Text>
                             )
+                          },
+                          {
+                            title: 'Действия',
+                            key: 'actions',
+                            width: 150,
+                            fixed: 'right',
+                            render: (_, record) => (
+                              record.is_proxied ? (
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  onClick={() => generateMockFromProxy(record.id)}
+                                >
+                                  Сформировать мок
+                                </Button>
+                              ) : null
+                            )
                           }
                         ]}
                       />
@@ -4303,189 +4341,7 @@ export default function App() {
                     </Row>
                   </div>
                   
-                  {allMethodsPaths.length > 0 ? (
-                    <div style={{ 
-                      background: theme === "dark" ? "#262626" : "#fff",
-                      borderRadius: 8,
-                      padding: 16,
-                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
-                    }}>
-                      <Typography.Title level={5} style={{ marginTop: 0, marginBottom: 16 }}>
-                        Детальная статистика по всем папкам, методам и путям
-                      </Typography.Title>
-                      <Table
-                        dataSource={allMethodsPaths.map((mp, idx) => ({ ...mp, key: idx }))}
-                        pagination={{ pageSize: 10 }}
-                        size="small"
-                        scroll={{ x: 'max-content' }}
-                        columns={[
-                          {
-                            title: 'Папка',
-                            dataIndex: 'folder',
-                            key: 'folder',
-                            width: 120,
-                            fixed: 'left',
-                            render: (folder) => (
-                              <Typography.Text strong style={{ 
-                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
-                              }}>
-                                {folder}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Метод',
-                            dataIndex: 'method',
-                            key: 'method',
-                            width: 80,
-                            render: (method) => (
-                              <Typography.Text strong style={{ 
-                                color: theme === "dark" ? "#4fc3f7" : "#1890ff" 
-                              }}>
-                                {method}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Путь',
-                            dataIndex: 'path',
-                            key: 'path',
-                            width: 200,
-                            render: (path) => (
-                              <Typography.Text code style={{ fontSize: 11 }}>
-                                {path}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Всего',
-                            dataIndex: 'total_requests',
-                            key: 'total_requests',
-                            width: 80,
-                            align: 'right',
-                            render: (total) => (
-                              <Typography.Text style={{ fontWeight: 600 }}>
-                                {total || 0}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Моки',
-                            dataIndex: 'mock_hits',
-                            key: 'mock_hits',
-                            width: 80,
-                            align: 'right',
-                            render: (count) => (
-                              <Typography.Text style={{ color: theme === "dark" ? "#81c784" : "#52c41a" }}>
-                                {count || 0}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Прокси',
-                            dataIndex: 'proxied',
-                            key: 'proxied',
-                            width: 80,
-                            align: 'right',
-                            render: (count) => (
-                              <Typography.Text style={{ color: theme === "dark" ? "#ffb74d" : "#fa8c16" }}>
-                                {count || 0}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Ошибки',
-                            dataIndex: 'errors',
-                            key: 'errors',
-                            width: 80,
-                            align: 'right',
-                            render: (count) => (
-                              <Typography.Text style={{ color: count > 0 ? (theme === "dark" ? "#ef5350" : "#ff4d4f") : undefined }}>
-                                {count || 0}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Среднее время',
-                            dataIndex: 'avg_response_time_ms',
-                            key: 'avg_response_time_ms',
-                            width: 120,
-                            align: 'right',
-                            render: (time) => (
-                              <Typography.Text>
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Мин. время',
-                            dataIndex: 'min_response_time_ms',
-                            key: 'min_response_time_ms',
-                            width: 120,
-                            align: 'right',
-                            render: (time) => (
-                              <Typography.Text type="secondary">
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Макс. время',
-                            dataIndex: 'max_response_time_ms',
-                            key: 'max_response_time_ms',
-                            width: 120,
-                            align: 'right',
-                            render: (time) => (
-                              <Typography.Text type="secondary">
-                                {time > 0 ? `${time.toFixed(2)} мс` : '—'}
-                              </Typography.Text>
-                            )
-                          },
-                          {
-                            title: 'Статус коды',
-                            key: 'status_codes',
-                            width: 200,
-                            render: (_, record) => (
-                              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                                {Object.entries(record.status_codes || {}).map(([code, count]) => (
-                                  <Typography.Text key={code} style={{ fontSize: 11 }}>
-                                    <Typography.Text 
-                                      strong 
-                                      style={{ 
-                                        color: code.startsWith('2') 
-                                          ? (theme === "dark" ? "#81c784" : "#52c41a")
-                                          : code.startsWith('4') || code.startsWith('5')
-                                          ? (theme === "dark" ? "#ef5350" : "#ff4d4f")
-                                          : (theme === "dark" ? "#ffb74d" : "#fa8c16")
-                                      }}
-                                    >
-                                      {code}
-                                    </Typography.Text>
-                                    {' '}
-                                    <Typography.Text type="secondary">
-                                      {count}
-                                    </Typography.Text>
-                                  </Typography.Text>
-                                ))}
-                              </div>
-                            )
-                          }
-                        ]}
-                      />
-                    </div>
-                  ) : (
-                    <div style={{ 
-                      background: theme === "dark" ? "#262626" : "#fff",
-                      borderRadius: 8,
-                      padding: 40,
-                      textAlign: 'center',
-                      border: `1px solid ${theme === "dark" ? "#434343" : "#d9d9d9"}`
-                    }}>
-                      <Typography.Text type="secondary">
-                        Нет данных о выполнении методов. Выполните запросы к мокам или прокси для получения метрик.
-                      </Typography.Text>
-                    </div>
-                  )}
+                  {/* Удален пункт "Детальная статистика по всем папкам, методам и путям" */}
                   
                   {/* Детальная история вызовов */}
                   <div style={{ 
@@ -4653,6 +4509,23 @@ export default function App() {
                               >
                                 {code}
                               </Typography.Text>
+                            )
+                          },
+                          {
+                            title: 'Действия',
+                            key: 'actions',
+                            width: 150,
+                            fixed: 'right',
+                            render: (_, record) => (
+                              record.is_proxied ? (
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  onClick={() => generateMockFromProxy(record.id)}
+                                >
+                                  Сформировать мок
+                                </Button>
+                              ) : null
                             )
                           }
                         ]}
