@@ -1939,6 +1939,44 @@ def _format_body_for_logging(body_bytes: bytes) -> str:
         return f"(binary, base64): {base64.b64encode(body_bytes).decode('ascii')} ({len(body_bytes)} bytes)"
 
 
+def _restore_header_case(header_name: str) -> str:
+    """Восстанавливает регистр заголовка на основе стандартных правил.
+    
+    Для стандартных заголовков использует правильный регистр.
+    Для кастомных заголовков (X-*) использует заглавные буквы после каждого дефиса.
+    """
+    header_lower = header_name.lower()
+    
+    # Стандартные заголовки с правильным регистром
+    STANDARD_HEADERS = {
+        "content-type": "Content-Type",
+        "content-length": "Content-Length",
+        "content-encoding": "Content-Encoding",
+        "content-disposition": "Content-Disposition",
+        "location": "Location",
+        "cache-control": "Cache-Control",
+        "expires": "Expires",
+        "etag": "ETag",
+        "last-modified": "Last-Modified",
+        "vary": "Vary",
+        "accept-encoding": "Accept-Encoding",
+    }
+    
+    if header_lower in STANDARD_HEADERS:
+        return STANDARD_HEADERS[header_lower]
+    
+    # Для кастомных заголовков (X-*) используем заглавные буквы после каждого дефиса
+    if header_lower.startswith("x-"):
+        parts = header_lower.split("-")
+        # Первая часть (x) в нижнем регистре, остальные с заглавной буквы
+        restored = parts[0] + "-" + "-".join(part.capitalize() for part in parts[1:])
+        return restored
+    
+    # Для остальных заголовков используем заглавную букву в начале каждого слова
+    parts = header_lower.split("-")
+    return "-".join(part.capitalize() for part in parts)
+
+
 def _remove_nul_chars(text: str) -> str:
     """Удаляет NUL (0x00) символы из строки, так как PostgreSQL не может их сохранить."""
     if text is None:
@@ -4477,68 +4515,62 @@ def generate_mock_from_proxy(
                 pass
         
         # Обрабатываем тело ответа
+        # ВАЖНО: response_body может быть:
+        # 1. JSON строкой (если это был JSON ответ) - нужно распарсить в объект
+        # 2. Обычной текстовой строкой - оставляем как строку
+        # 3. Base64 строкой (если это были бинарные данные) - сохраняем в структуре __file__
         response_body = log.response_body
         if response_body:
-            # Проверяем Content-Type из заголовков ответа
-            content_type = None
-            if log.response_headers:
-                content_type = log.response_headers.get("Content-Type") or log.response_headers.get("content-type")
-                if content_type:
-                    # Убираем параметры из Content-Type (например, charset)
-                    content_type = content_type.split(';')[0].strip().lower()
-            
-            # Если Content-Type указывает на JSON, пытаемся распарсить
-            if content_type in ("application/json", "application/json; charset=utf-8", "text/json"):
+            # Проверяем, является ли это строкой
+            if isinstance(response_body, str):
+                # Сначала пытаемся распарсить как JSON (самый частый случай для JSON ответов)
                 try:
                     parsed = json.loads(response_body)
+                    # Если успешно распарсили, используем как JSON объект
                     response_body = parsed
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    # Если не удалось распарсить, проверяем, не является ли это base64
+                    # Если не JSON, проверяем, не является ли это base64
                     try:
                         # Пытаемся декодировать base64
-                        decoded = base64.b64decode(response_body)
+                        decoded_bytes = base64.b64decode(response_body)
                         # Пытаемся распарсить декодированные данные как JSON
-                        parsed = json.loads(decoded.decode("utf-8", errors='replace'))
-                        response_body = parsed
+                        try:
+                            decoded_str = decoded_bytes.decode("utf-8", errors='strict')
+                            parsed = json.loads(decoded_str)
+                            response_body = parsed
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            # Если декодированные данные не JSON, это бинарные данные
+                            # Сохраняем как base64 в структуре __file__
+                            response_body = {
+                                "__file__": True,
+                                "data_base64": response_body,
+                                "mime_type": "application/octet-stream"
+                            }
                     except Exception:
-                        # Если не получилось, оставляем как строку
-                        response_body = {"text": response_body}
-            else:
-                # Для не-JSON контента проверяем, можно ли распарсить как JSON
-                try:
-                    parsed = json.loads(response_body)
-                    response_body = parsed
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    # Проверяем, не является ли это base64 строкой
-                    try:
-                        # Пытаемся декодировать base64
-                        decoded = base64.b64decode(response_body)
-                        # Пытаемся распарсить декодированные данные как JSON
-                        parsed = json.loads(decoded.decode("utf-8", errors='replace'))
-                        response_body = parsed
-                    except Exception:
-                        # Если это бинарные данные или невалидная строка, проверяем наличие NUL символов
-                        # Если есть NUL или другие непечатные символы, это скорее всего бинарные данные
+                        # Если не base64, проверяем, не является ли это бинарными данными
                         has_binary = '\x00' in response_body or any(ord(c) < 32 and c not in '\n\r\t' for c in response_body[:100])
                         if has_binary:
-                            # Сохраняем как base64, если это бинарные данные
-                            # Но сначала проверяем, не является ли это уже base64
+                            # Это бинарные данные, кодируем в base64
                             try:
-                                # Пытаемся декодировать как base64
-                                decoded = base64.b64decode(response_body)
-                                # Если успешно, значит это уже base64 - сохраняем как есть в структуре
-                                response_body = {"text": response_body}
+                                encoded = base64.b64encode(response_body.encode('utf-8', errors='replace')).decode('ascii')
+                                response_body = {
+                                    "__file__": True,
+                                    "data_base64": encoded,
+                                    "mime_type": "application/octet-stream"
+                                }
                             except Exception:
-                                # Если не base64, кодируем в base64
-                                try:
-                                    # Пытаемся получить исходные байты из строки
-                                    encoded = base64.b64encode(response_body.encode('utf-8', errors='replace')).decode('ascii')
-                                    response_body = {"text": encoded}
-                                except Exception:
-                                    response_body = {"text": response_body}
+                                # Если не получилось, сохраняем как текст
+                                response_body = response_body
                         else:
-                            # Если это обычный текст, сохраняем как строку
-                            response_body = {"text": response_body}
+                            # Это обычный текст, сохраняем как строку
+                            # В системе моков текстовые ответы обрабатываются отдельно (см. mock_handler)
+                            response_body = response_body
+            # Если response_body уже является dict или list (уже распарсен), оставляем как есть
+            elif isinstance(response_body, (dict, list)):
+                response_body = response_body
+            else:
+                # Для других типов преобразуем в строку
+                response_body = str(response_body)
         else:
             response_body = {}
         
@@ -5444,7 +5476,22 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         resp = Response(content=proxied.content, status_code=proxied.status_code)
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
+        # ВАЖНО: httpx возвращает заголовки в нижнем регистре через .items(), но мы должны сохранить оригинальный регистр
+        # Пытаемся получить оригинальные заголовки из httpx Response
         response_headers_dict = {}
+        # Создаем словарь для быстрого поиска оригинальных ключей заголовков
+        original_headers_map = {}
+        try:
+            # httpx использует Headers с _list для хранения оригинальных ключей
+            if hasattr(proxied, 'headers') and hasattr(proxied.headers, '_list'):
+                for header_tuple in proxied.headers._list:
+                    if len(header_tuple) == 2:
+                        original_key, value = header_tuple
+                        original_headers_map[original_key.lower()] = original_key
+        except Exception:
+            # Если не удалось получить оригинальные заголовки, используем стандартные имена
+            pass
+        
         for k, v in proxied.headers.items():
             kl = k.lower()
             if kl in {"content-length", "transfer-encoding", "connection"}:
@@ -5461,13 +5508,16 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         v = new_loc
                 except Exception:
                     pass
-            resp.headers[k] = v
+            # Используем оригинальный ключ заголовка, если доступен, иначе восстанавливаем регистр
+            original_key = original_headers_map.get(kl) or _restore_header_case(kl)
+            resp.headers[original_key] = v
             # Очищаем заголовки от NUL символов перед сохранением
-            clean_key = _remove_nul_chars(k) if k else k
+            clean_key = _remove_nul_chars(original_key) if original_key else original_key
             clean_value = _remove_nul_chars(v) if v else v
             response_headers_dict[clean_key] = clean_value
         
         # Сохраняем тело ответа для логирования
+        # ВАЖНО: Сохраняем как JSON объект, если это JSON, иначе как строку или base64
         response_body_str = None
         if proxied.content:
             # Проверяем Content-Type для определения способа сохранения
@@ -5481,13 +5531,14 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if content_type_header:
                 content_type = content_type_header.split(';')[0].strip().lower()
             
-            # Если это JSON, пытаемся сохранить как JSON строку
+            # Если это JSON, пытаемся сохранить как JSON строку (для последующего парсинга в JSON объект)
             if content_type in ("application/json", "application/json; charset=utf-8", "text/json"):
                 try:
                     decoded = proxied.content.decode("utf-8", errors='strict')
-                    # Проверяем, что это валидный JSON
-                    json.loads(decoded)  # Проверка валидности
-                    response_body_str = decoded
+                    # Проверяем, что это валидный JSON и парсим его
+                    parsed_json = json.loads(decoded)
+                    # Сохраняем как JSON строку (нормализованную) для последующего парсинга
+                    response_body_str = json.dumps(parsed_json, ensure_ascii=False)
                     response_body_str = _remove_nul_chars(response_body_str)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     # Если не валидный JSON или не UTF-8, сохраняем как base64
