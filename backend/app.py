@@ -262,6 +262,11 @@ class RequestLog(Base):
     status_code = Column(Integer, nullable=False, index=True)
     cache_ttl_seconds = Column(Integer, nullable=True)  # TTL кэша, если был использован
     cache_key = Column(String, nullable=True)  # Ключ кэша для возможности сброса
+    # Данные запроса и ответа для прокси-запросов
+    request_headers = Column(SAJSON, nullable=True)  # Заголовки запроса
+    request_body = Column(String, nullable=True)  # Тело запроса (как строка)
+    response_headers = Column(SAJSON, nullable=True)  # Заголовки ответа
+    response_body = Column(String, nullable=True)  # Тело ответа (как строка)
 
 
 
@@ -907,6 +912,46 @@ def ensure_migrations():
                             logger.warning(f"Error adding mocks.{col_name}: {e}")
                 else:
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
+            
+            # Новые поля в request_logs для хранения данных запроса и ответа
+            request_logs_columns = conn.execute(
+                text("""
+                    SELECT column_name 
+                    FROM information_schema.columns
+                    WHERE table_name = 'request_logs'
+                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                """)
+            ).fetchall()
+            
+            existing_request_logs_columns = {row[0] for row in request_logs_columns}
+            
+            if 'request_headers' not in existing_request_logs_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
+                    logger.info("Added column request_logs.request_headers")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.request_headers: {e}")
+            
+            if 'request_body' not in existing_request_logs_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
+                    logger.info("Added column request_logs.request_body")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.request_body: {e}")
+            
+            if 'response_headers' not in existing_request_logs_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
+                    logger.info("Added column request_logs.response_headers")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.response_headers: {e}")
+            
+            if 'response_body' not in existing_request_logs_columns:
+                try:
+                    conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
+                    logger.info("Added column request_logs.response_body")
+                except Exception as e:
+                    logger.warning(f"Error adding request_logs.response_body: {e}")
         
         logger.info("Migrations completed successfully")
     except Exception as e:
@@ -2744,86 +2789,6 @@ def list_folders(db: Session = Depends(get_db)):
         "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
         "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
-    response_model_examples={
-        "create": {
-            "summary": "Создание нового мока",
-            "description": "Пример создания нового мока для GET запроса",
-            "value": {
-                "message": "mock saved",
-                "mock": {
-                    "id": "550e8400-e29b-41d4-a716-446655440000",
-                    "folder": "api",
-                    "name": "Получить пользователя",
-                    "request_condition": {
-                        "method": "GET",
-                        "path": "/api/users/123",
-                        "headers": {},
-                        "body_contains": None,
-                        "body_contains_required": True
-                    },
-                    "response_config": {
-                        "status_code": 200,
-                        "headers": {"Content-Type": "application/json"},
-                        "body": {
-                            "id": 123,
-                            "name": "Иван Иванов",
-                            "email": "ivan@example.com"
-                        }
-                    },
-                    "active": True,
-                    "delay_ms": 0,
-                    "delay_range_min_ms": None,
-                    "delay_range_max_ms": None,
-                    "cache_enabled": False,
-                    "cache_ttl_seconds": None,
-                    "error_simulation_enabled": False,
-                    "error_simulation_probability": None,
-                    "error_simulation_status_code": None,
-                    "error_simulation_body": None,
-                    "error_simulation_delay_ms": None
-                }
-            }
-        },
-        "update": {
-            "summary": "Обновление существующего мока",
-            "description": "Пример обновления мока с указанием id",
-            "value": {
-                "message": "mock saved",
-                "mock": {
-                    "id": "4f590593-bde9-4594-9299-c157a883f5ba",
-                    "folder": "crm|nikita",
-                    "name": "Мягкий чек",
-                    "request_condition": {
-                        "method": "GET",
-                        "path": "/set-kit/softcheques/999900002500/shop/3001",
-                        "headers": {},
-                        "body_contains": None,
-                        "body_contains_required": True
-                    },
-                    "response_config": {
-                        "status_code": 200,
-                        "headers": {},
-                        "body": {
-                            "guid": "999900002500",
-                            "shopNumber": 501,
-                            "status": "COMPLETED"
-                        }
-                    },
-                    "active": True,
-                    "delay_ms": 0,
-                    "delay_range_min_ms": None,
-                    "delay_range_max_ms": None,
-                    "cache_enabled": False,
-                    "cache_ttl_seconds": None,
-                    "error_simulation_enabled": False,
-                    "error_simulation_probability": None,
-                    "error_simulation_status_code": None,
-                    "error_simulation_body": None,
-                    "error_simulation_delay_ms": None
-                }
-            }
-        }
-    },
     openapi_extra={
         "requestBody": {
             "content": {
@@ -3315,6 +3280,136 @@ def parse_curl_endpoint(
         return parsed
     except Exception as e:
         raise HTTPException(400, f"Ошибка парсинга curl команды: {str(e)}")
+
+
+@app.post(
+    "/api/mocks/from-proxy",
+    summary="Создать мок из проксированного запроса",
+    description=(
+        "Создаёт мок на основе данных из истории проксированных запросов.\n\n"
+        "Принимает log_id записи из request_logs и создаёт мок с заполненными параметрами запроса и ответа.\n\n"
+        "Из запроса заполняются: метод, путь, заголовки, тело запроса.\n"
+        "Из ответа заполняются: HTTP статус, заголовки ответа (кроме системных), тело ответа.\n\n"
+        "Имя мока формируется как: метод+путь+proxy"
+    ),
+)
+def create_mock_from_proxy(
+    log_id: str = Body(..., embed=True, description="ID записи из request_logs"),
+    db: Session = Depends(get_db),
+):
+    """Создаёт мок на основе данных из проксированного запроса."""
+    # Находим запись в request_logs
+    request_log = db.query(RequestLog).filter_by(id=log_id).first()
+    if not request_log:
+        raise HTTPException(404, f"Запись с id {log_id} не найдена")
+    
+    if not request_log.is_proxied:
+        raise HTTPException(400, "Запись не является проксированным запросом")
+    
+    # Определяем папку для мока
+    folder_name = request_log.folder_name
+    folder_parent = request_log.folder_parent or ''
+    folder_path = folder_name if not folder_parent else f"{folder_name}|{folder_parent}"
+    
+    # Формируем имя мока: метод+путь+proxy
+    mock_name = f"{request_log.method}{request_log.path}proxy"
+    # Очищаем имя от недопустимых символов
+    mock_name = re.sub(r'[^\w\-/]', '_', mock_name)
+    
+    # Парсим заголовки запроса
+    request_headers = None
+    if request_log.request_headers:
+        try:
+            if isinstance(request_log.request_headers, dict):
+                request_headers = request_log.request_headers
+            elif isinstance(request_log.request_headers, str):
+                request_headers = json.loads(request_log.request_headers)
+        except:
+            request_headers = None
+    
+    # Парсим тело запроса
+    body_contains = None
+    if request_log.request_body:
+        try:
+            # Пытаемся распарсить как JSON
+            body_json = json.loads(request_log.request_body)
+            body_contains = json.dumps(body_json, ensure_ascii=False)
+        except:
+            # Если не JSON, используем как есть
+            body_contains = request_log.request_body[:1000]  # Ограничиваем длину
+    
+    # Парсим заголовки ответа
+    response_headers = None
+    if request_log.response_headers:
+        try:
+            if isinstance(request_log.response_headers, dict):
+                response_headers = request_log.response_headers
+            elif isinstance(request_log.response_headers, str):
+                response_headers = json.loads(request_log.response_headers)
+        except:
+            response_headers = None
+    
+    # Парсим тело ответа
+    response_body = None
+    if request_log.response_body:
+        try:
+            # Пытаемся распарсить как JSON
+            response_body = json.loads(request_log.response_body)
+        except:
+            # Если не JSON, используем как строку
+            response_body = request_log.response_body
+    
+    # Определяем Content-Type из заголовков ответа
+    content_type = None
+    if response_headers:
+        content_type = response_headers.get("Content-Type") or response_headers.get("content-type")
+    
+    # Если Content-Type не указан, пытаемся определить по содержимому
+    if not content_type and response_body:
+        if isinstance(response_body, (dict, list)):
+            content_type = "application/json"
+        elif isinstance(response_body, str):
+            try:
+                json.loads(response_body)
+                content_type = "application/json"
+            except:
+                content_type = "text/plain"
+    
+    # Устанавливаем Content-Type в заголовки ответа, если его нет
+    if content_type and response_headers:
+        response_headers["Content-Type"] = content_type
+    elif content_type:
+        response_headers = {"Content-Type": content_type}
+    
+    # Создаём MockEntry
+    mock_entry = MockEntry(
+        folder=folder_path,
+        name=mock_name,
+        request_condition=MockRequestCondition(
+            method=request_log.method,
+            path=request_log.path,
+            headers=request_headers if request_headers else None,
+            body_contains=body_contains,
+            body_contains_required=bool(body_contains)  # Если есть тело, делаем проверку обязательной
+        ),
+        response_config=MockResponseConfig(
+            status_code=request_log.status_code,
+            headers=response_headers if response_headers else None,
+            body=response_body if response_body is not None else {}
+        ),
+        active=True,
+        delay_ms=0
+    )
+    
+    # Сохраняем мок
+    try:
+        _save_mock_entry(mock_entry, db)
+        db.commit()
+        return {"message": "mock saved", "mock": mock_entry}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating mock from proxy: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка при создании мока: {str(e)}")
 
 
 def encode_filename_rfc5987(filename: str) -> str:
@@ -5134,19 +5229,32 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             if host not in ALLOWED_PROXY_HOSTS:
                 raise HTTPException(403, "Proxy target host is not allowed")
 
+        # Сохраняем данные запроса для логирования
+        request_body_bytes = await request.body()
+        request_headers_dict = dict(request.headers)
+        # Исключаем системные заголовки из запроса
+        system_request_headers = {"host", "connection", "content-length", "transfer-encoding", "upgrade"}
+        filtered_request_headers = {k: v for k, v in request_headers_dict.items() if k.lower() not in system_request_headers}
+        
         try:
             async with httpx.AsyncClient() as client:
                 proxied = await client.request(
                     method=request.method,
                     url=target_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-                    content=await request.body()
+                    content=request_body_bytes
                 )
         except Exception as e:
             raise HTTPException(502, f"Proxy error: {str(e)}")
 
+        # Сохраняем данные ответа для логирования
+        response_body_bytes = proxied.content
+        response_headers_dict = dict(proxied.headers)
+        # Исключаем системные заголовки из ответа
+        system_response_headers = {"content-length", "transfer-encoding", "connection", "upgrade"}
+        filtered_response_headers = {k: v for k, v in response_headers_dict.items() if k.lower() not in system_response_headers}
 
-        resp = Response(content=proxied.content, status_code=proxied.status_code)
+        resp = Response(content=response_body_bytes, status_code=proxied.status_code)
         # Копируем заголовки, исключая hop-by-hop;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
         for k, v in proxied.headers.items():
@@ -5194,8 +5302,40 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             folder=folder_name
         ).observe(response_time)
         
-        # Логируем проксированный вызов в БД
+        # Логируем проксированный вызов в БД с данными запроса и ответа
         try:
+            # Преобразуем тело запроса в строку (если возможно, как JSON, иначе как текст)
+            request_body_str = None
+            if request_body_bytes:
+                try:
+                    # Пытаемся декодировать как UTF-8
+                    request_body_str = request_body_bytes.decode('utf-8')
+                    # Пытаемся распарсить как JSON для форматирования
+                    try:
+                        request_body_json = json.loads(request_body_str)
+                        request_body_str = json.dumps(request_body_json, ensure_ascii=False)
+                    except:
+                        pass  # Если не JSON, оставляем как есть
+                except:
+                    # Если не удалось декодировать, сохраняем как base64
+                    request_body_str = base64.b64encode(request_body_bytes).decode('utf-8')
+            
+            # Преобразуем тело ответа в строку
+            response_body_str = None
+            if response_body_bytes:
+                try:
+                    # Пытаемся декодировать как UTF-8
+                    response_body_str = response_body_bytes.decode('utf-8')
+                    # Пытаемся распарсить как JSON для форматирования
+                    try:
+                        response_body_json = json.loads(response_body_str)
+                        response_body_str = json.dumps(response_body_json, ensure_ascii=False)
+                    except:
+                        pass  # Если не JSON, оставляем как есть
+                except:
+                    # Если не удалось декодировать, сохраняем как base64
+                    response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
+            
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
                 folder_name=folder_name,
@@ -5206,7 +5346,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 response_time_ms=int(response_time * 1000),
                 status_code=status_code,
                 cache_ttl_seconds=None,
-                cache_key=None
+                cache_key=None,
+                request_headers=filtered_request_headers if filtered_request_headers else None,
+                request_body=request_body_str,
+                response_headers=filtered_response_headers if filtered_response_headers else None,
+                response_body=response_body_str
             )
             db.add(request_log)
             db.commit()
