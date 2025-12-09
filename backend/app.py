@@ -5428,6 +5428,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 try:
                     # Пытаемся декодировать как UTF-8
                     request_body_str = request_body_bytes.decode('utf-8')
+                    # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
+                    request_body_str = request_body_str.replace('\x00', '')
                     # Пытаемся распарсить как JSON для форматирования
                     try:
                         request_body_json = json.loads(request_body_str)
@@ -5480,6 +5482,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
                 
                 if decoded_successfully:
+                    # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
+                    response_body_str = response_body_str.replace('\x00', '')
                     # Пытаемся распарсить как JSON для форматирования
                     try:
                         response_body_json = json.loads(response_body_str)
@@ -5487,6 +5491,20 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     except json.JSONDecodeError:
                         # Если не JSON, оставляем как есть (это может быть текст, HTML и т.д.)
                         pass
+            
+            # Очищаем строки от NUL символов (0x00), которые PostgreSQL не может сохранить
+            if request_body_str:
+                request_body_str = request_body_str.replace('\x00', '')
+            if response_body_str:
+                response_body_str = response_body_str.replace('\x00', '')
+            
+            # Очищаем заголовки от NUL символов
+            if filtered_request_headers:
+                filtered_request_headers = {k.replace('\x00', ''): v.replace('\x00', '') if isinstance(v, str) else v 
+                                           for k, v in filtered_request_headers.items()}
+            if filtered_response_headers:
+                filtered_response_headers = {k.replace('\x00', ''): v.replace('\x00', '') if isinstance(v, str) else v 
+                                            for k, v in filtered_response_headers.items()}
             
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
