@@ -1368,7 +1368,39 @@ export default function App() {
       error_simulation_status_code: m.error_simulation_status_code || undefined,
       error_simulation_body: m.error_simulation_body ? JSON.stringify(m.error_simulation_body, null, 2) : undefined,
       error_simulation_delay_ms: m.error_simulation_delay_ms || undefined,
-      response_body: JSON.stringify(m.response_config.body, null, 2)
+      response_body: (() => {
+        // Обрабатываем тело ответа: если это строка, которая может быть base64, декодируем её
+        let bodyToDisplay = m.response_config.body;
+        
+        // Если тело ответа - строка, проверяем, не является ли она base64
+        if (typeof bodyToDisplay === 'string' && bodyToDisplay.length > 50) {
+          // Проверяем, похоже ли это на base64 (только base64 символы)
+          const isLikelyBase64 = /^[A-Za-z0-9+/=]+$/.test(bodyToDisplay);
+          
+          if (isLikelyBase64) {
+            try {
+              // Пытаемся декодировать base64
+              const decodedBytes = atob(bodyToDisplay);
+              // Пытаемся декодировать как UTF-8
+              const decodedStr = decodeURIComponent(escape(decodedBytes));
+              // Пытаемся распарсить как JSON
+              try {
+                const parsed = JSON.parse(decodedStr);
+                bodyToDisplay = parsed;
+              } catch {
+                // Если не JSON, используем декодированную строку
+                bodyToDisplay = decodedStr;
+              }
+            } catch (e) {
+              // Если не удалось декодировать, оставляем как есть
+              console.warn('Failed to decode base64 response body:', e);
+            }
+          }
+        }
+        
+        // Сериализуем для отображения
+        return JSON.stringify(bodyToDisplay, null, 2);
+      })()
     });
     
     setModalOpen(true);

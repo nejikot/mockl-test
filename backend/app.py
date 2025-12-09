@@ -5260,19 +5260,23 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             
             # Устанавливаем заголовки с сохранением оригинального регистра
             # Starlette/FastAPI может нормализовать заголовки при установке через resp.headers[k] = v
-            # Поэтому используем прямой доступ к внутреннему списку заголовков
+            # Поэтому используем прямой доступ к raw_headers для сохранения регистра
             for k, v in headers_to_set:
                 normalized_key = k.lower()
                 # Удаляем нормализованную версию, если она уже есть
                 if normalized_key in resp.headers:
                     del resp.headers[normalized_key]
-                # Устанавливаем заголовок с оригинальным регистром через внутренний API Starlette
-                # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
-                if hasattr(resp.headers, '_list'):
-                    # Добавляем заголовок с оригинальным регистром
+                
+                # Устанавливаем заголовок с оригинальным регистром через raw_headers
+                # raw_headers - это список кортежей (bytes, bytes), который сохраняет регистр
+                if hasattr(resp, 'raw_headers'):
+                    # Добавляем заголовок с оригинальным регистром в raw_headers
+                    resp.raw_headers.append((k.encode('latin-1'), v.encode('latin-1')))
+                elif hasattr(resp.headers, '_list'):
+                    # Fallback: используем _list, если raw_headers недоступен
                     resp.headers._list.append((k.encode('latin-1'), v.encode('latin-1')))
                 else:
-                    # Fallback: если _list недоступен, используем обычное присваивание
+                    # Последний fallback: используем обычное присваивание
                     # (но регистр может быть нормализован)
                     resp.headers[k] = v
 
