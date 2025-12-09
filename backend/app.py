@@ -706,8 +706,16 @@ def ensure_migrations():
                 logger.warning(f"Error recreating foreign keys: {e}")
             
             # Миграция: добавляем поля для сохранения полной информации о проксированных запросах
+            # Выполняем миграцию для каждой колонки отдельно, чтобы не потерять прогресс при ошибке
+            logger.info("=" * 80)
+            logger.info("Starting migration for request_logs proxy fields")
+            logger.info("=" * 80)
+            
             request_logs_proxy_fields = ['request_headers', 'request_body', 'response_headers', 'response_body']
+            migration_results = {}
+            
             for field in request_logs_proxy_fields:
+                logger.info(f"[MIGRATION] Checking column request_logs.{field}...")
                 field_exists = conn.execute(
                     text(f"""
                         SELECT column_name
@@ -715,19 +723,49 @@ def ensure_migrations():
                         WHERE table_name = 'request_logs' AND column_name = '{field}'
                     """)
                 ).fetchone()
-                if not field_exists:
+                
+                if field_exists:
+                    logger.info(f"[MIGRATION] ✓ Column request_logs.{field} already exists, skipping")
+                    migration_results[field] = "already_exists"
+                else:
                     try:
-                        logger.info(f"Migrating: Adding column request_logs.{field}")
+                        logger.info(f"[MIGRATION] → Adding column request_logs.{field}...")
                         conn.execute(text(f"ALTER TABLE request_logs ADD COLUMN {field} JSON NULL"))
-                        logger.info(f"Successfully added column request_logs.{field}")
+                        logger.info(f"[MIGRATION] ✓ Successfully added column request_logs.{field}")
+                        migration_results[field] = "added"
                     except Exception as e:
                         error_msg = str(e).lower()
                         if "already exists" in error_msg or "duplicate" in error_msg:
-                            logger.info(f"Column request_logs.{field} already exists, skipping")
+                            logger.info(f"[MIGRATION] ✓ Column request_logs.{field} already exists (detected via exception), skipping")
+                            migration_results[field] = "already_exists"
                         else:
-                            logger.error(f"Error adding request_logs.{field}: {e}", exc_info=True)
-                            # Не пробрасываем ошибку, продолжаем миграцию других колонок
-                            # Транзакция будет откачена автоматически при выходе из блока, если будет ошибка
+                            logger.error(f"[MIGRATION] ✗ Error adding request_logs.{field}: {e}", exc_info=True)
+                            migration_results[field] = f"error: {str(e)}"
+            
+            # Выводим итоговый отчет о миграции
+            logger.info("=" * 80)
+            logger.info("Migration summary for request_logs proxy fields:")
+            for field, result in migration_results.items():
+                status_icon = "✓" if result == "added" or result == "already_exists" else "✗"
+                logger.info(f"  {status_icon} {field}: {result}")
+            logger.info("=" * 80)
+            
+            # Проверяем финальное состояние колонок
+            final_check = conn.execute(
+                text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'request_logs' 
+                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                """)
+            ).fetchall()
+            final_columns = [row[0] for row in final_check]
+            logger.info(f"[MIGRATION] Final check: Found {len(final_columns)} proxy columns: {final_columns}")
+            
+            if len(final_columns) == 4:
+                logger.info("[MIGRATION] ✓ All proxy fields are available in the database")
+            else:
+                logger.warning(f"[MIGRATION] ⚠ Only {len(final_columns)}/4 proxy fields are available. Missing: {set(request_logs_proxy_fields) - set(final_columns)}")
             
             # Проверяем существование колонок одним запросом для оптимизации
             existing_columns = conn.execute(
@@ -937,9 +975,40 @@ def ensure_migrations():
                 else:
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
         
+        # Финальная проверка миграций для request_logs proxy fields
+        logger.info("=" * 80)
+        logger.info("Final verification of request_logs proxy fields migration")
+        logger.info("=" * 80)
+        try:
+            with engine.begin() as conn:
+                final_check = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'request_logs' 
+                        AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                    """)
+                ).fetchall()
+                final_columns = [row[0] for row in final_check]
+                logger.info(f"Final verification: Found {len(final_columns)}/4 proxy columns in request_logs table")
+                logger.info(f"Columns found: {final_columns}")
+                
+                if len(final_columns) == 4:
+                    logger.info("✓ All proxy fields migration completed successfully")
+                else:
+                    missing = set(['request_headers', 'request_body', 'response_headers', 'response_body']) - set(final_columns)
+                    logger.warning(f"⚠ Some proxy fields are missing: {missing}")
+                    logger.warning("Application will continue, but 'create mock from proxy' feature may not work")
+        except Exception as e:
+            logger.error(f"Error during final verification: {e}", exc_info=True)
+        
+        logger.info("=" * 80)
         logger.info("Migrations completed successfully")
+        logger.info("=" * 80)
     except Exception as e:
+        logger.error("=" * 80)
         logger.error(f"Error during migrations: {e}", exc_info=True)
+        logger.error("=" * 80)
         # Не прерываем запуск приложения, если миграция не удалась
         # Приложение будет работать с базовыми полями, если колонки не добавлены
         # Это позволяет приложению работать даже если миграция не выполнилась
@@ -4422,12 +4491,16 @@ def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
     затем обнуляет соответствующие метрики Prometheus.
     """
     try:
+        logger.debug(f"Clearing Prometheus metrics for folder: {folder_name}")
+        
         # Используем прямой SQL запрос для обхода проблемы с отсутствующими колонками
         logs_result = db.execute(text("""
             SELECT method, path, is_proxied, status_code
             FROM request_logs 
             WHERE folder_name = :folder_name
         """), {"folder_name": folder_name}).fetchall()
+        
+        logger.debug(f"Found {len(logs_result)} log entries for folder {folder_name}")
         
         # Собираем уникальные комбинации method/path
         method_path_combinations = set()
@@ -4442,6 +4515,8 @@ def _clear_prometheus_metrics_for_folder(folder_name: str, db: Session):
                 outcomes.add('proxied')
             else:
                 outcomes.add('mock_hit')
+        
+        logger.debug(f"Found {len(method_path_combinations)} unique method/path combinations for folder {folder_name}")
         
         # Обнуляем детальные метрики для всех комбинаций
         for method, path in method_path_combinations:
@@ -4563,22 +4638,86 @@ def clear_request_logs(
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
     if folder_name:
+        logger.info(f"Clearing Prometheus metrics for folder: {folder_name}")
         _clear_prometheus_metrics_for_folder(folder_name, db)
     else:
         # Если папка не указана, очищаем метрики для всех папок
+        logger.info("Clearing Prometheus metrics for all folders")
         # Получаем список всех уникальных папок из request_logs через прямой SQL
         all_folders_result = db.execute(text("SELECT DISTINCT folder_name FROM request_logs")).fetchall()
+        logger.info(f"Found {len(all_folders_result)} folders to clear metrics for")
         for (fname,) in all_folders_result:
+            logger.debug(f"Clearing metrics for folder: {fname}")
             _clear_prometheus_metrics_for_folder(fname, db)
+        
+        # Также очищаем глобальные метрики (метрики без указания папки)
+        logger.info("Clearing global Prometheus metrics")
+        try:
+            # Очищаем все метрики, которые не привязаны к конкретной папке
+            # Это включает метрики для всех комбинаций method/path/outcome
+            # Получаем все уникальные комбинации из request_logs
+            all_methods_paths = db.execute(text("""
+                SELECT DISTINCT method, path 
+                FROM request_logs
+            """)).fetchall()
+            
+            outcomes = ['mock_hit', 'proxied', 'not_found', 'cache_hit']
+            status_codes = ['200', '400', '404', '500']
+            
+            for method, path in all_methods_paths:
+                for outcome in outcomes:
+                    for status_code in status_codes:
+                        try:
+                            REQUEST_DETAILED.labels(
+                                method=method,
+                                path=path,
+                                folder="",
+                                outcome=outcome,
+                                status_code=status_code
+                            )._value._value = 0
+                        except Exception:
+                            pass
+                        
+                        try:
+                            REQUESTS_TOTAL.labels(
+                                method=method,
+                                path=path,
+                                folder="",
+                                outcome=outcome
+                            )._value._value = 0
+                        except Exception:
+                            pass
+                        
+                        try:
+                            RESPONSE_TIME_DETAILED.labels(
+                                method=method,
+                                path=path,
+                                folder="",
+                                outcome=outcome
+                            )._sum._value = 0
+                            RESPONSE_TIME_DETAILED.labels(
+                                method=method,
+                                path=path,
+                                folder="",
+                                outcome=outcome
+                            )._count._value = 0
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning(f"Error clearing global Prometheus metrics: {e}")
     
     # Получаем количество записей для удаления
     count_query = text(f"SELECT COUNT(*) FROM request_logs {folder_filter}")
     count = db.execute(count_query, params).scalar()
     
+    logger.info(f"Deleting {count} request log entries")
+    
     # Удаляем записи
     delete_query = text(f"DELETE FROM request_logs {folder_filter}")
     db.execute(delete_query, params)
     db.commit()
+    
+    logger.info(f"Successfully deleted {count} request log entries")
     
     return {"message": f"Удалено {count} записей", "deleted_count": count}
 
