@@ -4519,35 +4519,70 @@ def generate_mock_from_proxy(
         # 1. JSON строкой (если это был JSON ответ) - нужно распарсить в объект
         # 2. Обычной текстовой строкой - оставляем как строку
         # 3. Base64 строкой (если это были бинарные данные) - сохраняем в структуре __file__
+        # КРИТИЧЕСКИ ВАЖНО: Используем content-type из заголовков ответа для правильной обработки!
         response_body = log.response_body
+        
+        # Определяем content-type из заголовков ответа
+        content_type = None
+        if log.response_headers:
+            for k, v in log.response_headers.items():
+                if k.lower() == "content-type":
+                    content_type = v.split(';')[0].strip().lower() if v else None
+                    break
+        
         if response_body:
             # Проверяем, является ли это строкой
             if isinstance(response_body, str):
-                # Сначала пытаемся распарсить как JSON (самый частый случай для JSON ответов)
-                try:
-                    parsed = json.loads(response_body)
-                    # Если успешно распарсили, используем как JSON объект
-                    response_body = parsed
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    # Если не JSON, проверяем, не является ли это base64
+                # Если content-type указывает на JSON, обрабатываем как JSON
+                if content_type in ("application/json", "text/json"):
+                    try:
+                        parsed = json.loads(response_body)
+                        # Если успешно распарсили, используем как JSON объект
+                        response_body = parsed
+                    except (json.JSONDecodeError, TypeError, ValueError) as e:
+                        # Если не удалось распарсить JSON, логируем предупреждение и сохраняем как строку
+                        logger.warning(f"Failed to parse JSON response body despite content-type={content_type}: {e}")
+                        response_body = response_body
+                # Если content-type указывает на текст (но не JSON), сохраняем как строку
+                elif content_type and content_type.startswith("text/"):
+                    # Это текстовый контент, сохраняем как строку
+                    response_body = response_body
+                # Если content-type указывает на бинарные данные или application/octet-stream
+                elif content_type and (content_type in ("application/octet-stream", "application/pdf") or 
+                                       content_type.startswith("image/") or 
+                                       content_type.startswith("video/") or 
+                                       content_type.startswith("audio/")):
+                    # Проверяем, не является ли это уже base64 строкой
                     try:
                         # Пытаемся декодировать base64
                         decoded_bytes = base64.b64decode(response_body)
-                        # Пытаемся распарсить декодированные данные как JSON
+                        # Если успешно декодировали, это base64 - сохраняем в структуре __file__
+                        response_body = {
+                            "__file__": True,
+                            "data_base64": response_body,
+                            "mime_type": content_type or "application/octet-stream"
+                        }
+                    except Exception:
+                        # Если не base64, кодируем в base64
                         try:
-                            decoded_str = decoded_bytes.decode("utf-8", errors='strict')
-                            parsed = json.loads(decoded_str)
-                            response_body = parsed
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            # Если декодированные данные не JSON, это бинарные данные
-                            # Сохраняем как base64 в структуре __file__
+                            encoded = base64.b64encode(response_body.encode('utf-8', errors='replace')).decode('ascii')
                             response_body = {
                                 "__file__": True,
-                                "data_base64": response_body,
-                                "mime_type": "application/octet-stream"
+                                "data_base64": encoded,
+                                "mime_type": content_type or "application/octet-stream"
                             }
-                    except Exception:
-                        # Если не base64, проверяем, не является ли это бинарными данными
+                        except Exception:
+                            # Если не получилось, сохраняем как текст
+                            response_body = response_body
+                else:
+                    # content-type не указан или неизвестен - пытаемся определить автоматически
+                    # Сначала пытаемся распарсить как JSON (самый частый случай для JSON ответов)
+                    try:
+                        parsed = json.loads(response_body)
+                        # Если успешно распарсили, используем как JSON объект
+                        response_body = parsed
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        # Если не JSON, проверяем, не является ли это бинарными данными
                         has_binary = '\x00' in response_body or any(ord(c) < 32 and c not in '\n\r\t' for c in response_body[:100])
                         if has_binary:
                             # Это бинарные данные, кодируем в base64
@@ -4563,7 +4598,6 @@ def generate_mock_from_proxy(
                                 response_body = response_body
                         else:
                             # Это обычный текст, сохраняем как строку
-                            # В системе моков текстовые ответы обрабатываются отдельно (см. mock_handler)
                             response_body = response_body
             # Если response_body уже является dict или list (уже распарсен), оставляем как есть
             elif isinstance(response_body, (dict, list)):
