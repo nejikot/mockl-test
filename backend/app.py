@@ -470,7 +470,7 @@ class MockEntry(BaseModel):
 
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": "d7f9f6b4-6c86-4d3b-a8d2-0b8c2e1e1234",
                 "folder": "auth",
@@ -2744,86 +2744,6 @@ def list_folders(db: Session = Depends(get_db)):
         "- multipart/form-data — поле `entry` с JSON `MockEntry` и отдельное поле `file` с бинарным файлом ответа.\n"
         "Во втором случае файл хранится в моках, а JSON не содержит base64‑данных файла."
     ),
-    response_model_examples={
-        "create": {
-            "summary": "Создание нового мока",
-            "description": "Пример создания нового мока для GET запроса",
-            "value": {
-                "message": "mock saved",
-                "mock": {
-                    "id": "550e8400-e29b-41d4-a716-446655440000",
-                    "folder": "api",
-                    "name": "Получить пользователя",
-                    "request_condition": {
-                        "method": "GET",
-                        "path": "/api/users/123",
-                        "headers": {},
-                        "body_contains": None,
-                        "body_contains_required": True
-                    },
-                    "response_config": {
-                        "status_code": 200,
-                        "headers": {"Content-Type": "application/json"},
-                        "body": {
-                            "id": 123,
-                            "name": "Иван Иванов",
-                            "email": "ivan@example.com"
-                        }
-                    },
-                    "active": True,
-                    "delay_ms": 0,
-                    "delay_range_min_ms": None,
-                    "delay_range_max_ms": None,
-                    "cache_enabled": False,
-                    "cache_ttl_seconds": None,
-                    "error_simulation_enabled": False,
-                    "error_simulation_probability": None,
-                    "error_simulation_status_code": None,
-                    "error_simulation_body": None,
-                    "error_simulation_delay_ms": None
-                }
-            }
-        },
-        "update": {
-            "summary": "Обновление существующего мока",
-            "description": "Пример обновления мока с указанием id",
-            "value": {
-                "message": "mock saved",
-                "mock": {
-                    "id": "4f590593-bde9-4594-9299-c157a883f5ba",
-                    "folder": "crm|nikita",
-                    "name": "Мягкий чек",
-                    "request_condition": {
-                        "method": "GET",
-                        "path": "/set-kit/softcheques/999900002500/shop/3001",
-                        "headers": {},
-                        "body_contains": None,
-                        "body_contains_required": True
-                    },
-                    "response_config": {
-                        "status_code": 200,
-                        "headers": {},
-                        "body": {
-                            "guid": "999900002500",
-                            "shopNumber": 501,
-                            "status": "COMPLETED"
-                        }
-                    },
-                    "active": True,
-                    "delay_ms": 0,
-                    "delay_range_min_ms": None,
-                    "delay_range_max_ms": None,
-                    "cache_enabled": False,
-                    "cache_ttl_seconds": None,
-                    "error_simulation_enabled": False,
-                    "error_simulation_probability": None,
-                    "error_simulation_status_code": None,
-                    "error_simulation_body": None,
-                    "error_simulation_delay_ms": None
-                }
-            }
-        }
-    },
     openapi_extra={
         "requestBody": {
             "content": {
