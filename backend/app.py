@@ -717,10 +717,16 @@ def ensure_migrations():
                 ).fetchone()
                 if not field_exists:
                     try:
+                        logger.info(f"Migrating: Adding column request_logs.{field}")
                         conn.execute(text(f"ALTER TABLE request_logs ADD COLUMN {field} JSON NULL"))
-                        logger.info(f"Added column request_logs.{field}")
+                        logger.info(f"Successfully added column request_logs.{field}")
                     except Exception as e:
-                        logger.warning(f"Error adding request_logs.{field}: {e}")
+                        error_msg = str(e).lower()
+                        if "already exists" in error_msg or "duplicate" in error_msg:
+                            logger.info(f"Column request_logs.{field} already exists, skipping")
+                        else:
+                            logger.error(f"Error adding request_logs.{field}: {e}", exc_info=True)
+                            raise  # Пробрасываем ошибку, чтобы транзакция откатилась
             
             # Проверяем существование колонок одним запросом для оптимизации
             existing_columns = conn.execute(
@@ -933,7 +939,8 @@ def ensure_migrations():
         logger.info("Migrations completed successfully")
     except Exception as e:
         logger.error(f"Error during migrations: {e}", exc_info=True)
-        # Не прерываем запуск приложения, но логируем ошибку
+        # Прерываем запуск приложения, если миграция не удалась
+        # Это важно, чтобы не запускать приложение с несовместимой схемой БД
         raise
 
 
@@ -4245,6 +4252,8 @@ def get_request_logs(
         # Нормализуем parent_folder: None -> '' для корневых папок
         normalized_parent = folder_parent if folder_parent else ''
         
+        logger.debug(f"get_request_logs: folder={folder}, folder_name={folder_name}, normalized_parent={normalized_parent}")
+        
         # Фильтруем по folder_name и folder_parent
         if normalized_parent == '':
             # Для корневых папок ищем записи с folder_parent = '' или NULL (для обратной совместимости)
@@ -4258,6 +4267,7 @@ def get_request_logs(
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
+    logger.debug(f"get_request_logs: total={total}, logs_count={len(logs)}")
     
     return {
         "total": total,
@@ -5152,10 +5162,12 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             
             # Логируем вызов в БД
             try:
+                # Нормализуем folder_parent: None -> '' для корневых папок
+                normalized_folder_parent = folder_parent if folder_parent else ''
                 request_log = RequestLog(
                     timestamp=datetime.utcnow().isoformat() + "Z",
                     folder_name=folder_name,
-                    folder_parent=folder_parent,
+                    folder_parent=normalized_folder_parent,
                     method=request.method,
                     path=full_inner.split('?')[0],
                     is_proxied=False,
@@ -5285,10 +5297,13 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         
         # Логируем проксированный вызов в БД с полной информацией о запросе и ответе
         try:
+            # Нормализуем folder_parent: None -> '' для корневых папок
+            normalized_folder_parent = folder_parent if folder_parent else ''
+            logger.debug(f"Creating RequestLog: folder_name={folder_name}, folder_parent={normalized_folder_parent}, is_proxied=True")
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
                 folder_name=folder_name,
-                folder_parent=folder_parent,
+                folder_parent=normalized_folder_parent,
                 method=request.method,
                 path=full_inner.split('?')[0],
                 is_proxied=True,
