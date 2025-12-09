@@ -3941,7 +3941,7 @@ export default function App() {
                                           const result = await response.json();
                                           message.success('Мок успешно создан');
                                           // Обновляем список моков
-                                          loadMocks();
+                                          fetchMocks();
                                         } catch (error) {
                                           message.error(`Ошибка создания мока: ${error.message}`);
                                         }

@@ -3385,7 +3385,7 @@ def create_mock_from_proxy(
     # Очищаем имя от недопустимых символов
     mock_name = re.sub(r'[^\w\-/]', '_', mock_name)
     
-    # Парсим заголовки запроса
+    # Парсим заголовки запроса (сохраняем оригинальный регистр)
     request_headers = None
     if request_log.request_headers:
         try:
@@ -3407,7 +3407,7 @@ def create_mock_from_proxy(
             # Если не JSON, используем как есть
             body_contains = request_log.request_body[:1000]  # Ограничиваем длину
     
-    # Парсим заголовки ответа
+    # Парсим заголовки ответа (сохраняем оригинальный регистр)
     response_headers = None
     if request_log.response_headers:
         try:
@@ -3421,17 +3421,46 @@ def create_mock_from_proxy(
     # Парсим тело ответа
     response_body = None
     if request_log.response_body:
+        # Сначала пытаемся распарсить как JSON
         try:
-            # Пытаемся распарсить как JSON
             response_body = json.loads(request_log.response_body)
-        except:
-            # Если не JSON, используем как строку
-            response_body = request_log.response_body
+        except json.JSONDecodeError:
+            # Если не JSON, проверяем, не является ли это base64
+            # Base64 строки обычно длинные и содержат только base64 символы
+            is_likely_base64 = (
+                len(request_log.response_body) > 50 and 
+                all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in request_log.response_body)
+            )
+            
+            if is_likely_base64:
+                try:
+                    # Пытаемся декодировать base64
+                    decoded_bytes = base64.b64decode(request_log.response_body, validate=True)
+                    # Пытаемся декодировать как UTF-8
+                    decoded_str = decoded_bytes.decode('utf-8')
+                    # Пытаемся распарсить как JSON
+                    try:
+                        response_body = json.loads(decoded_str)
+                    except json.JSONDecodeError:
+                        # Если не JSON после декодирования, используем как строку
+                        response_body = decoded_str
+                except Exception:
+                    # Если не удалось декодировать base64, используем как строку
+                    response_body = request_log.response_body
+            else:
+                # Если не похоже на base64, используем как строку
+                response_body = request_log.response_body
     
-    # Определяем Content-Type из заголовков ответа
+    # Определяем Content-Type из заголовков ответа (сохраняем оригинальный регистр ключа)
     content_type = None
+    content_type_key = None
     if response_headers:
-        content_type = response_headers.get("Content-Type") or response_headers.get("content-type")
+        # Ищем Content-Type с сохранением оригинального регистра
+        for key in response_headers.keys():
+            if key.lower() == "content-type":
+                content_type = response_headers[key]
+                content_type_key = key
+                break
     
     # Если Content-Type не указан, пытаемся определить по содержимому
     if not content_type and response_body:
@@ -3442,13 +3471,18 @@ def create_mock_from_proxy(
                 json.loads(response_body)
                 content_type = "application/json"
             except:
-                content_type = "text/plain"
+                content_type = "text/plain; charset=utf-8"
     
-    # Устанавливаем Content-Type в заголовки ответа, если его нет
-    if content_type and response_headers:
-        response_headers["Content-Type"] = content_type
-    elif content_type:
-        response_headers = {"Content-Type": content_type}
+    # Устанавливаем Content-Type в заголовки ответа, если его нет (сохраняем оригинальный регистр)
+    if content_type:
+        if response_headers is None:
+            response_headers = {}
+        if content_type_key:
+            # Используем оригинальный ключ, если он был найден
+            response_headers[content_type_key] = content_type
+        else:
+            # Используем стандартный регистр, если ключа не было
+            response_headers["Content-Type"] = content_type
     
     # Создаём MockEntry
     mock_entry = MockEntry(
@@ -5301,8 +5335,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         # Сохраняем данные запроса для логирования
         request_body_bytes = await request.body()
         request_headers_dict = dict(request.headers)
-        # Исключаем системные заголовки из запроса
-        system_request_headers = {"host", "connection", "content-length", "transfer-encoding", "upgrade"}
+        # Исключаем системные заголовки из запроса (сохраняем оригинальный регистр ключей)
+        system_request_headers = {"host", "connection", "content-length", "transfer-encoding", "upgrade", "keep-alive", "te", "trailer"}
         filtered_request_headers = {k: v for k, v in request_headers_dict.items() if k.lower() not in system_request_headers}
         
         try:
@@ -5318,9 +5352,24 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
         # Сохраняем данные ответа для логирования
         response_body_bytes = proxied.content
-        response_headers_dict = dict(proxied.headers)
-        # Исключаем системные заголовки из ответа
-        system_response_headers = {"content-length", "transfer-encoding", "connection", "upgrade"}
+        # Сохраняем заголовки с оригинальным регистром (httpx может нормализовать регистр)
+        # Используем raw_headers для получения оригинальных заголовков
+        response_headers_dict = {}
+        if hasattr(proxied, 'headers') and hasattr(proxied.headers, 'raw'):
+            # httpx возвращает raw headers как список кортежей (name, value) в байтах
+            for name_bytes, value_bytes in proxied.headers.raw:
+                try:
+                    name = name_bytes.decode('utf-8', errors='replace')
+                    value = value_bytes.decode('utf-8', errors='replace')
+                    response_headers_dict[name] = value
+                except:
+                    pass
+        else:
+            # Fallback: используем обычные заголовки
+            response_headers_dict = dict(proxied.headers)
+        
+        # Исключаем системные заголовки из ответа (сохраняем оригинальный регистр ключей)
+        system_response_headers = {"content-length", "transfer-encoding", "connection", "upgrade", "keep-alive", "te", "trailer", "date", "server", "content-encoding"}
         filtered_response_headers = {k: v for k, v in response_headers_dict.items() if k.lower() not in system_response_headers}
 
         resp = Response(content=response_body_bytes, status_code=proxied.status_code)
@@ -5392,18 +5441,52 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             # Преобразуем тело ответа в строку
             response_body_str = None
             if response_body_bytes:
-                try:
-                    # Пытаемся декодировать как UTF-8
-                    response_body_str = response_body_bytes.decode('utf-8')
+                # Определяем кодировку из Content-Type заголовка (ищем с учетом регистра)
+                content_type_header = ""
+                for key, value in response_headers_dict.items():
+                    if key.lower() == "content-type":
+                        content_type_header = value
+                        break
+                charset = "utf-8"
+                if "charset=" in content_type_header.lower():
+                    try:
+                        charset = content_type_header.lower().split("charset=")[1].split(";")[0].strip()
+                    except:
+                        pass
+                
+                # Пытаемся декодировать с правильной кодировкой
+                decoded_successfully = False
+                for encoding in [charset, 'utf-8', 'utf-8-sig', 'latin-1', 'cp1251']:
+                    try:
+                        response_body_str = response_body_bytes.decode(encoding)
+                        decoded_successfully = True
+                        break
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+                
+                if not decoded_successfully:
+                    # Если не удалось декодировать с указанными кодировками, пробуем еще раз с более широким набором
+                    for encoding in ['utf-8', 'latin-1', 'cp1251', 'iso-8859-1']:
+                        try:
+                            response_body_str = response_body_bytes.decode(encoding, errors='replace')
+                            decoded_successfully = True
+                            break
+                        except (UnicodeDecodeError, LookupError):
+                            continue
+                    
+                    if not decoded_successfully:
+                        # Только в крайнем случае сохраняем как base64
+                        logger.warning(f"Could not decode response body with any encoding, saving as base64. Size: {len(response_body_bytes)} bytes")
+                        response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
+                
+                if decoded_successfully:
                     # Пытаемся распарсить как JSON для форматирования
                     try:
                         response_body_json = json.loads(response_body_str)
                         response_body_str = json.dumps(response_body_json, ensure_ascii=False)
-                    except:
-                        pass  # Если не JSON, оставляем как есть
-                except:
-                    # Если не удалось декодировать, сохраняем как base64
-                    response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
+                    except json.JSONDecodeError:
+                        # Если не JSON, оставляем как есть (это может быть текст, HTML и т.д.)
+                        pass
             
             request_log = RequestLog(
                 timestamp=datetime.utcnow().isoformat() + "Z",
