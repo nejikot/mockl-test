@@ -4135,8 +4135,7 @@ export default function App() {
                       </Col>
                     </Row>
                   </div>
-                  
-                  {allMethodsPaths.length > 0 ? (
+
                   {/* Детальная история вызовов */}
                   <div style={{ 
                     background: theme === "dark" ? "#262626" : "#fff",

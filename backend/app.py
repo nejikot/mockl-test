@@ -709,7 +709,7 @@ def ensure_migrations():
             existing_columns = conn.execute(
                 text("""
                     SELECT table_name, column_name 
-                    FROM information_schema.columns 
+                    FROM information_schema.columns
                     WHERE table_name IN ('folders', 'mocks')
                     AND column_name IN ('proxy_enabled', 'proxy_base_url', 'order', 'delay_ms', 'name', 
                                         'delay_range_min_ms', 'delay_range_max_ms', 'cache_enabled', 
@@ -720,6 +720,21 @@ def ensure_migrations():
             ).fetchall()
             
             existing_set = {(row[0], row[1]) for row in existing_columns}
+            
+            # Проверяем существование колонок request_logs ДО операций с mocks, чтобы избежать проблем с транзакциями
+            try:
+                request_logs_columns = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns
+                        WHERE table_name = 'request_logs'
+                        AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+                    """)
+                ).fetchall()
+                existing_request_logs_columns = {row[0] for row in request_logs_columns}
+            except Exception as e:
+                logger.warning(f"Error checking request_logs columns: {e}")
+                existing_request_logs_columns = set()
             
         # Новые поля в folders
             if ('folders', 'proxy_enabled') not in existing_set:
@@ -914,44 +929,46 @@ def ensure_migrations():
                     logger.debug(f"Column mocks.{col_name} already exists, skipping")
             
             # Новые поля в request_logs для хранения данных запроса и ответа
-            request_logs_columns = conn.execute(
-                text("""
-                    SELECT column_name 
-                    FROM information_schema.columns
-                    WHERE table_name = 'request_logs'
-                    AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
-                """)
-            ).fetchall()
-            
-            existing_request_logs_columns = {row[0] for row in request_logs_columns}
-            
+            # Используем уже проверенные колонки из начала функции
             if 'request_headers' not in existing_request_logs_columns:
                 try:
                     conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_headers JSON NULL"))
                     logger.info("Added column request_logs.request_headers")
                 except Exception as e:
-                    logger.warning(f"Error adding request_logs.request_headers: {e}")
+                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.info("Column request_logs.request_headers already exists, skipping")
+                    else:
+                        logger.warning(f"Error adding request_logs.request_headers: {e}")
             
             if 'request_body' not in existing_request_logs_columns:
                 try:
                     conn.execute(text("ALTER TABLE request_logs ADD COLUMN request_body TEXT NULL"))
                     logger.info("Added column request_logs.request_body")
                 except Exception as e:
-                    logger.warning(f"Error adding request_logs.request_body: {e}")
+                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.info("Column request_logs.request_body already exists, skipping")
+                    else:
+                        logger.warning(f"Error adding request_logs.request_body: {e}")
             
             if 'response_headers' not in existing_request_logs_columns:
                 try:
                     conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_headers JSON NULL"))
                     logger.info("Added column request_logs.response_headers")
                 except Exception as e:
-                    logger.warning(f"Error adding request_logs.response_headers: {e}")
+                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.info("Column request_logs.response_headers already exists, skipping")
+                    else:
+                        logger.warning(f"Error adding request_logs.response_headers: {e}")
             
             if 'response_body' not in existing_request_logs_columns:
                 try:
                     conn.execute(text("ALTER TABLE request_logs ADD COLUMN response_body TEXT NULL"))
                     logger.info("Added column request_logs.response_body")
                 except Exception as e:
-                    logger.warning(f"Error adding request_logs.response_body: {e}")
+                    if "already exists" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.info("Column request_logs.response_body already exists, skipping")
+                    else:
+                        logger.warning(f"Error adding request_logs.response_body: {e}")
         
         logger.info("Migrations completed successfully")
     except Exception as e:
