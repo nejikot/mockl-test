@@ -21,7 +21,7 @@ const { useBreakpoint } = Grid;
 
 const METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
 
-// Коды ошибок для имитации с примерами JSON-тел
+// Коды ошибок для имитации с примерами JSON
 const ERROR_STATUS_CODES = [
   { value: 400, label: "400 - Bad Request", body: { error: "Bad Request", message: "Invalid request parameters", code: "INVALID_REQUEST" } },
   { value: 401, label: "401 - Unauthorized", body: { error: "Unauthorized", message: "Authentication required", code: "AUTH_REQUIRED" } },
