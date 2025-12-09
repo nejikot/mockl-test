@@ -3422,12 +3422,15 @@ def create_mock_from_proxy(
             response_headers = None
     
     # Парсим тело ответа
-    # ВАЖНО: Сохраняем тело ответа таким, каким мы его получили (JSON/текст), а не base64
+    # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Сохраняем тело ответа как JSON объект, если это JSON!
+    # Тело ответа должно быть сохранено как JSON/текст, а не base64
     response_body = None
     if request_log.response_body:
         # Сначала пытаемся распарсить как JSON (тело ответа должно быть сохранено как JSON/текст, а не base64)
         try:
+            # ИСПРАВЛЕНИЕ: Парсим JSON и сохраняем как объект (dict/list), а не строку
             response_body = json.loads(request_log.response_body)
+            # Теперь response_body - это объект Python (dict или list), который будет сохранен в БД как JSON
         except json.JSONDecodeError:
             # Если не JSON, проверяем, не является ли это base64 (на случай старых записей)
             # Base64 строки обычно длинные и содержат только base64 символы
@@ -3444,6 +3447,7 @@ def create_mock_from_proxy(
                     decoded_str = decoded_bytes.decode('utf-8')
                     # Пытаемся распарсить как JSON
                     try:
+                        # ИСПРАВЛЕНИЕ: Парсим JSON и сохраняем как объект
                         response_body = json.loads(decoded_str)
                     except json.JSONDecodeError:
                         # Если не JSON после декодирования, используем как строку
@@ -5425,7 +5429,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         # httpx автоматически распаковывает сжатые ответы (br, gzip), поэтому proxied.content уже содержит распакованные данные
         response_body_bytes = proxied.content
         
-        # Сохраняем заголовки с оригинальным регистром (ВАЖНО: сохраняем регистр!)
+        # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 2: Сохраняем заголовки с оригинальным регистром
         # httpx нормализует заголовки, но мы можем получить их через _headers (внутренний словарь)
         # или через raw headers, если доступны
         response_headers_dict = {}
@@ -5433,30 +5437,46 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         if hasattr(proxied, 'headers'):
             # httpx хранит заголовки в _headers как словарь с нормализованными ключами
             # Но мы можем получить оригинальные через _raw_headers, если они доступны
+            raw_headers_found = False
             if hasattr(proxied.headers, '_raw_headers'):
                 # _raw_headers содержит список кортежей (name, value) в байтах
-                for name_bytes, value_bytes in proxied.headers._raw_headers:
-                    try:
-                        name = name_bytes.decode('latin-1', errors='replace')
-                        value = value_bytes.decode('latin-1', errors='replace')
-                        # Сохраняем заголовок с оригинальным регистром
-                        response_headers_dict[name] = value
-                    except:
-                        pass
+                try:
+                    for name_bytes, value_bytes in proxied.headers._raw_headers:
+                        try:
+                            name = name_bytes.decode('latin-1', errors='replace')
+                            value = value_bytes.decode('latin-1', errors='replace')
+                            # Сохраняем заголовок с оригинальным регистром
+                            response_headers_dict[name] = value
+                            raw_headers_found = True
+                        except:
+                            pass
+                except:
+                    pass
             elif hasattr(proxied.headers, 'raw'):
                 # Альтернативный способ через raw
-                for name_bytes, value_bytes in proxied.headers.raw:
-                    try:
-                        name = name_bytes.decode('latin-1', errors='replace')
-                        value = value_bytes.decode('latin-1', errors='replace')
-                        response_headers_dict[name] = value
-                    except:
-                        pass
-            else:
-                # Fallback: используем обычные заголовки (но регистр может быть потерян)
-                # В этом случае сохраняем как есть, но с предупреждением
-                response_headers_dict = dict(proxied.headers)
-                logger.warning("Could not get raw headers from httpx response, headers may be normalized")
+                try:
+                    for name_bytes, value_bytes in proxied.headers.raw:
+                        try:
+                            name = name_bytes.decode('latin-1', errors='replace')
+                            value = value_bytes.decode('latin-1', errors='replace')
+                            response_headers_dict[name] = value
+                            raw_headers_found = True
+                        except:
+                            pass
+                except:
+                    pass
+            
+            # ИСПРАВЛЕНИЕ: Если raw headers недоступны, используем заголовки как есть
+            # но сохраняем их с оригинальным регистром из proxied.headers
+            # httpx может нормализовать ключи, но мы сохраняем то, что получили
+            if not raw_headers_found:
+                # Используем заголовки из proxied.headers, но сохраняем их как есть
+                # ВАЖНО: httpx может нормализовать ключи, но мы сохраняем то, что есть
+                for k, v in proxied.headers.items():
+                    # Сохраняем заголовок с ключом как есть (может быть нормализован httpx)
+                    # Но это лучше, чем ничего
+                    response_headers_dict[k] = v
+                logger.debug("Using normalized headers from httpx (raw headers not available)")
         
         # Исключаем системные заголовки из ответа (сохраняем оригинальный регистр ключей!)
         # ВАЖНО: Сохраняем регистр заголовков - что получили, то и сохраняем
@@ -5468,9 +5488,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 filtered_response_headers[k] = v
 
         resp = Response(content=response_body_bytes, status_code=proxied.status_code)
-        # Копируем заголовки, исключая hop-by-hop;
+        # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 3: Копируем заголовки с сохранением оригинального регистра
+        # Исключаем hop-by-hop заголовки;
         # При редиректах переписываем Location на текущий хост (умная обработка редиректов).
-        for k, v in proxied.headers.items():
+        for k, v in response_headers_dict.items():
             kl = k.lower()
             if kl in {"content-length", "transfer-encoding", "connection"}:
                 continue
@@ -5486,7 +5507,19 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         v = new_loc
                 except Exception:
                     pass
-            resp.headers[k] = v
+            # ИСПРАВЛЕНИЕ: Устанавливаем заголовок с оригинальным регистром через _list
+            # Это важно для сохранения регистра заголовков
+            if hasattr(resp.headers, '_list'):
+                # Удаляем нормализованную версию, если она есть
+                resp.headers._list = [
+                    (hname, hvalue) for hname, hvalue in resp.headers._list
+                    if hname.decode('latin-1', errors='replace').lower() != kl
+                ]
+                # Добавляем заголовок с оригинальным регистром
+                resp.headers._list.append((k.encode('latin-1'), str(v).encode('latin-1')))
+            else:
+                # Fallback: используем обычное присваивание (регистр может быть нормализован)
+                resp.headers[k] = v
 
         response_time = time.time() - start_time
         status_code = proxied.status_code
@@ -5538,7 +5571,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             # Преобразуем тело ответа в строку
             # ВАЖНО: httpx автоматически распаковывает сжатые ответы (br, gzip), 
             # поэтому response_body_bytes уже содержит распакованные данные
-            # Сохраняем тело ответа как JSON/текст, НЕ base64!
+            # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Сохраняем тело ответа как JSON объект, если это JSON!
             response_body_str = None
             if response_body_bytes:
                 # Определяем Content-Type из заголовков ответа
@@ -5580,12 +5613,19 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     # Удаляем NUL символы (0x00), которые PostgreSQL не может сохранить
                     decoded_str = decoded_str.replace('\x00', '')
                     
-                    # Пытаемся распарсить как JSON (независимо от Content-Type)
-                    # ВАЖНО: Если это JSON, сохраняем как JSON строку, а не base64!
+                    # ИСПРАВЛЕНИЕ ПРОБЛЕМЫ 1: Пытаемся распарсить как JSON
+                    # Если это JSON и Content-Type указывает на JSON, сохраняем как JSON строку
+                    # Это позволит при создании мока распарсить его обратно в объект
+                    is_json_content = (
+                        "application/json" in content_type_header or
+                        "application/vnd.api+json" in content_type_header or
+                        "text/json" in content_type_header
+                    )
+                    
                     try:
                         response_body_json = json.loads(decoded_str)
-                        # Если это валидный JSON, сохраняем как отформатированный JSON строку
-                        # Это важно - сохраняем как строку JSON, а не как объект
+                        # Если это валидный JSON, сохраняем как отформатированную JSON строку
+                        # При создании мока из прокси эта строка будет распарсена обратно в объект
                         response_body_str = json.dumps(response_body_json, ensure_ascii=False)
                     except (json.JSONDecodeError, ValueError):
                         # Если не JSON, проверяем, не является ли это base64 строкой
@@ -5601,7 +5641,7 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                                 decoded_bytes = base64.b64decode(decoded_str, validate=True)
                                 decoded_inner = decoded_bytes.decode('utf-8')
                                 try:
-                                    # Если внутри base64 был JSON, сохраняем как JSON
+                                    # Если внутри base64 был JSON, сохраняем как JSON строку
                                     response_body_json = json.loads(decoded_inner)
                                     response_body_str = json.dumps(response_body_json, ensure_ascii=False)
                                 except:
@@ -5616,7 +5656,6 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 else:
                     # Если не удалось декодировать, это бинарные данные
                     # Сохраняем как base64 только в крайнем случае для бинарных данных
-                    # Но сначала проверяем, не является ли это уже закодированным JSON
                     logger.warning(f"Could not decode response body as text, saving as base64. Size: {len(response_body_bytes)} bytes, Content-Type: {content_type_header}")
                     response_body_str = base64.b64encode(response_body_bytes).decode('utf-8')
             
