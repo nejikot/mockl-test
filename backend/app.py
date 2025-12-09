@@ -4239,30 +4239,102 @@ def get_request_logs(
     db: Session = Depends(get_db),
 ):
     """Возвращает историю вызовов с возможностью фильтрации по папке."""
-    query = db.query(RequestLog)
+    # Сначала проверяем, существуют ли новые колонки для проксированных запросов
+    # Используем прямой SQL запрос для проверки
+    try:
+        check_columns = db.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'request_logs' 
+            AND column_name IN ('request_headers', 'request_body', 'response_headers', 'response_body')
+        """)).fetchall()
+        has_proxy_fields = len(check_columns) == 4
+    except Exception as e:
+        logger.warning(f"Error checking proxy fields existence: {e}")
+        has_proxy_fields = False
+    
+    # Подготавливаем параметры фильтрации
+    folder_filter = ""
+    params = {}
     if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок
         folder_name = folder.strip()
         folder_parent = None
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
             folder_parent = parts[1] if parts[1] else None
+        normalized_parent = folder_parent if folder_parent else ''
+        params = {"folder_name": folder_name}
+        if normalized_parent == '':
+            folder_filter = "WHERE folder_name = :folder_name AND (folder_parent = '' OR folder_parent IS NULL)"
+        else:
+            folder_filter = "WHERE folder_name = :folder_name AND folder_parent = :folder_parent"
+            params["folder_parent"] = normalized_parent
+    
+    # Используем прямые SQL запросы для обхода проблемы с отсутствующими колонками в модели
+    if not has_proxy_fields:
+        # Получаем общее количество
+        count_query = text(f"SELECT COUNT(*) FROM request_logs {folder_filter}")
+        total = db.execute(count_query, params).scalar()
         
-        # Нормализуем parent_folder: None -> '' для корневых папок
+        # Получаем логи (только базовые поля)
+        logs_query = text(f"""
+            SELECT id, timestamp, folder_name, folder_parent, method, path, is_proxied, 
+                   response_time_ms, status_code, cache_ttl_seconds, cache_key
+            FROM request_logs 
+            {folder_filter}
+            ORDER BY timestamp DESC 
+            LIMIT :limit OFFSET :offset
+        """)
+        params.update({"limit": limit, "offset": offset})
+        result = db.execute(logs_query, params)
+        
+        logs_data = []
+        for row in result:
+            logs_data.append({
+                "id": row.id,
+                "timestamp": row.timestamp,
+                "folder_name": row.folder_name,
+                "method": row.method,
+                "path": row.path,
+                "is_proxied": row.is_proxied,
+                "response_time_ms": row.response_time_ms,
+                "status_code": row.status_code,
+                "cache_ttl_seconds": row.cache_ttl_seconds,
+                "cache_key": row.cache_key,
+                "request_headers": None,
+                "request_body": None,
+                "response_headers": None,
+                "response_body": None
+            })
+        
+        logger.debug(f"get_request_logs (basic fields only): total={total}, logs_count={len(logs_data)}")
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "logs": logs_data
+        }
+    
+    # Если колонки есть, используем полный запрос через ORM
+    query = db.query(RequestLog)
+    if folder:
+        folder_name = folder.strip()
+        folder_parent = None
+        if '|' in folder_name:
+            parts = folder_name.split('|', 1)
+            folder_name = parts[0]
+            folder_parent = parts[1] if parts[1] else None
         normalized_parent = folder_parent if folder_parent else ''
         
         logger.debug(f"get_request_logs: folder={folder}, folder_name={folder_name}, normalized_parent={normalized_parent}")
         
-        # Фильтруем по folder_name и folder_parent
         if normalized_parent == '':
-            # Для корневых папок ищем записи с folder_parent = '' или NULL (для обратной совместимости)
             query = query.filter(
                 RequestLog.folder_name == folder_name,
                 (RequestLog.folder_parent == '') | (RequestLog.folder_parent.is_(None))
             )
         else:
-            # Для подпапок ищем записи с точным совпадением folder_parent
             query = query.filter_by(folder_name=folder_name, folder_parent=normalized_parent)
     
     total = query.count()
