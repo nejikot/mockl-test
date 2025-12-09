@@ -4535,14 +4535,28 @@ def generate_mock_from_proxy(
             if isinstance(response_body, str):
                 # Если content-type указывает на JSON, обрабатываем как JSON
                 if content_type in ("application/json", "text/json"):
+                    # Сначала пытаемся распарсить как JSON строку (наиболее частый случай)
                     try:
                         parsed = json.loads(response_body)
                         # Если успешно распарсили, используем как JSON объект
                         response_body = parsed
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
-                        # Если не удалось распарсить JSON, логируем предупреждение и сохраняем как строку
-                        logger.warning(f"Failed to parse JSON response body despite content-type={content_type}: {e}")
-                        response_body = response_body
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        # Если не удалось распарсить как JSON, возможно это base64 строка
+                        # (если при сохранении в request_logs возникла ошибка декодирования)
+                        try:
+                            # Пытаемся декодировать base64
+                            decoded_bytes = base64.b64decode(response_body)
+                            # Декодируем в UTF-8
+                            decoded_str = decoded_bytes.decode("utf-8", errors='strict')
+                            # Пытаемся распарсить как JSON
+                            parsed = json.loads(decoded_str)
+                            # Если успешно, используем распарсенный JSON
+                            response_body = parsed
+                            logger.info(f"Successfully decoded base64 and parsed JSON for content-type={content_type}")
+                        except (Exception, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
+                            # Если не base64 или не JSON, логируем предупреждение и сохраняем как строку
+                            logger.warning(f"Failed to parse JSON response body despite content-type={content_type}: tried as JSON string and base64, error={e}")
+                            response_body = response_body
                 # Если content-type указывает на текст (но не JSON), сохраняем как строку
                 elif content_type and content_type.startswith("text/"):
                     # Это текстовый контент, сохраняем как строку
@@ -5552,6 +5566,8 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         
         # Сохраняем тело ответа для логирования
         # ВАЖНО: Сохраняем как JSON объект, если это JSON, иначе как строку или base64
+        # ВАЖНО: httpx автоматически декодирует сжатые ответы (gzip, br, deflate), 
+        # поэтому proxied.content уже содержит декодированные данные
         response_body_str = None
         if proxied.content:
             # Проверяем Content-Type для определения способа сохранения
@@ -5566,16 +5582,19 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 content_type = content_type_header.split(';')[0].strip().lower()
             
             # Если это JSON, пытаемся сохранить как JSON строку (для последующего парсинга в JSON объект)
-            if content_type in ("application/json", "application/json; charset=utf-8", "text/json"):
+            if content_type in ("application/json", "text/json"):
                 try:
-                    decoded = proxied.content.decode("utf-8", errors='strict')
+                    # httpx автоматически декодирует сжатые ответы, поэтому proxied.content уже декодирован
+                    # Пытаемся декодировать как UTF-8 (используем errors='replace' для более мягкой обработки)
+                    decoded = proxied.content.decode("utf-8", errors='replace')
                     # Проверяем, что это валидный JSON и парсим его
                     parsed_json = json.loads(decoded)
                     # Сохраняем как JSON строку (нормализованную) для последующего парсинга
                     response_body_str = json.dumps(parsed_json, ensure_ascii=False)
                     response_body_str = _remove_nul_chars(response_body_str)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    # Если не валидный JSON или не UTF-8, сохраняем как base64
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
+                    # Если не валидный JSON или не UTF-8, логируем ошибку и сохраняем как base64
+                    logger.warning(f"Failed to decode/save JSON response body as JSON string (content-type={content_type}): {e}, saving as base64")
                     response_body_str = base64.b64encode(proxied.content).decode("ascii")
             else:
                 # Для других типов контента пытаемся декодировать как UTF-8
