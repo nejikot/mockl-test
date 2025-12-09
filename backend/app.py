@@ -1977,6 +1977,32 @@ def _restore_header_case(header_name: str) -> str:
     return "-".join(part.capitalize() for part in parts)
 
 
+def _remove_system_headers(resp: Response) -> None:
+    """Удаляет системные заголовки из ответа мока, которые не должны попадать в ответ.
+    
+    Удаляет заголовки Cloudflare (cf-*), Render (rndr-*), Content-Encoding, CF-RAY,
+    alt-svc, cache-status и другие системные заголовки.
+    """
+    headers_to_remove = []
+    system_header_prefixes = ["cf-", "rndr-"]
+    system_headers = {
+        "content-encoding", "cf-ray", "alt-svc", "cf-cache-status", 
+        "cache-status", "vary", "x-render-origin-server"
+    }
+    
+    for header_name in resp.headers.keys():
+        hl = header_name.lower()
+        # Удаляем заголовки с точным совпадением
+        if hl in system_headers:
+            headers_to_remove.append(header_name)
+        # Удаляем заголовки с префиксами
+        elif any(hl.startswith(prefix) for prefix in system_header_prefixes):
+            headers_to_remove.append(header_name)
+    
+    for header_name in headers_to_remove:
+        resp.headers.pop(header_name, None)
+
+
 def _remove_nul_chars(text: str) -> str:
     """Удаляет NUL (0x00) символы из строки, так как PostgreSQL не может их сохранить."""
     if text is None:
@@ -5278,6 +5304,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         except Exception as e:
                             logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока из кэша: {e}", exc_info=True)
                         
+                        # Удаляем системные заголовки из ответа из кэша
+                        _remove_system_headers(resp)
+                        
                         return resp
                     else:
                         logger.info(f"Cache EXPIRED for mock {m.id}: expires_at={expires_at}, current_time={current_time}")
@@ -5321,6 +5350,9 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     )
                 except Exception as e:
                     logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока с имитацией ошибки: {e}", exc_info=True)
+                
+                # Удаляем системные заголовки из ответа с имитацией ошибки
+                _remove_system_headers(resp)
                 
                 return resp
 
@@ -5372,14 +5404,23 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
 
 
             # Заголовки ответа с подстановками
-            # Игнорируем системные заголовки, которые вычисляются автоматически
+            # Игнорируем системные заголовки, которые вычисляются автоматически или не должны попадать в ответ
             system_headers = {
                 "content-length", "connection", "date", "server", 
-                "transfer-encoding", "content-encoding", "date","server","postman-token", "host", "user-agent","render-proxy-ttl"
+                "transfer-encoding", "content-encoding", "postman-token", "host", "user-agent", "render-proxy-ttl",
+                "vary", "alt-svc", "x-render-origin-server", "cf-cache-status", "cache-status", "cf-ray"
             }
+            # Проверяем префиксы для cf-* и rndr-*
+            system_header_prefixes = ["cf-", "rndr-"]
+            
             for k, v in (m.response_headers or {}).items():
-                if k.lower() in system_headers:
-                    continue  # Пропускаем системные заголовки
+                kl = k.lower()
+                # Пропускаем системные заголовки (точное совпадение)
+                if kl in system_headers:
+                    continue
+                # Пропускаем заголовки с префиксами cf-* и rndr-*
+                if any(kl.startswith(prefix) for prefix in system_header_prefixes):
+                    continue
                 if isinstance(v, str):
                     v = _apply_templates(v, request, full_inner)
                 resp.headers[k] = v
@@ -5484,6 +5525,10 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 )
             except Exception as e:
                 logger.warning(f"[ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Ошибка при логировании вызова мока: {e}", exc_info=True)
+            
+            # Удаляем системные заголовки из ответа, если они были добавлены автоматически
+            # (Cloudflare, Render или другие прокси могут добавлять эти заголовки)
+            _remove_system_headers(resp)
             
             return resp
 
