@@ -5259,24 +5259,29 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 headers_to_set.append((k, str(v)))
             
             # Устанавливаем заголовки с сохранением оригинального регистра
-            # Starlette/FastAPI может нормализовать заголовки при установке через resp.headers[k] = v
-            # Поэтому используем прямой доступ к raw_headers для сохранения регистра
+            # Starlette/FastAPI нормализует заголовки при установке через resp.headers[k] = v
+            # Используем прямой доступ к внутреннему списку заголовков _list для сохранения регистра
             for k, v in headers_to_set:
                 normalized_key = k.lower()
                 # Удаляем нормализованную версию, если она уже есть
                 if normalized_key in resp.headers:
-                    del resp.headers[normalized_key]
+                    # Находим и удаляем нормализованную версию из _list
+                    if hasattr(resp.headers, '_list'):
+                        resp.headers._list = [
+                            (hname, hvalue) for hname, hvalue in resp.headers._list
+                            if hname.decode('latin-1').lower() != normalized_key
+                        ]
+                    else:
+                        del resp.headers[normalized_key]
                 
-                # Устанавливаем заголовок с оригинальным регистром через raw_headers
-                # raw_headers - это список кортежей (bytes, bytes), который сохраняет регистр
-                if hasattr(resp, 'raw_headers'):
-                    # Добавляем заголовок с оригинальным регистром в raw_headers
-                    resp.raw_headers.append((k.encode('latin-1'), v.encode('latin-1')))
-                elif hasattr(resp.headers, '_list'):
-                    # Fallback: используем _list, если raw_headers недоступен
+                # Устанавливаем заголовок с оригинальным регистром через прямой доступ к _list
+                # Starlette хранит заголовки в _list как список кортежей (bytes, bytes)
+                # Это позволяет сохранить оригинальный регистр заголовка
+                if hasattr(resp.headers, '_list'):
+                    # Добавляем заголовок с оригинальным регистром в _list
                     resp.headers._list.append((k.encode('latin-1'), v.encode('latin-1')))
                 else:
-                    # Последний fallback: используем обычное присваивание
+                    # Fallback: если _list недоступен, используем обычное присваивание
                     # (но регистр может быть нормализован)
                     resp.headers[k] = v
 
