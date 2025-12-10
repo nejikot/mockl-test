@@ -4268,18 +4268,94 @@ async def get_global_metrics():
 @app.get(
     "/api/request-logs",
     summary="Получить историю вызовов",
-    description="Возвращает детальную историю всех вызовов методов с информацией о методе, пути, времени ответа, статусе, проксировании и кэше.",
+    description=(
+        "Возвращает детальную историю всех вызовов методов с информацией о методе, пути, времени ответа, статусе, проксировании и кэше.\n\n"
+        "Поддерживает фильтрацию по следующим параметрам:\n"
+        "- `folder` - имя папки (формат: `name` или `name|parent_folder` для подпапок). Для обратной совместимости.\n"
+        "- `folder_name` - имя папки для фильтрации\n"
+        "- `folder_parent` - имя родительской папки для фильтрации (для подпапок)\n"
+        "- `method` - HTTP метод для фильтрации (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)\n\n"
+        "Параметры фильтрации можно комбинировать. Если указаны `folder_name` или `folder_parent`, они имеют приоритет над параметром `folder`.\n\n"
+        "Примеры использования:\n"
+        "- `/api/request-logs?folder_name=crm` - все запросы в папке 'crm'\n"
+        "- `/api/request-logs?folder_name=sub&folder_parent=parent` - все запросы в подпапке 'sub' папки 'parent'\n"
+        "- `/api/request-logs?method=GET` - все GET запросы\n"
+        "- `/api/request-logs?folder_name=crm&method=POST` - все POST запросы в папке 'crm'"
+    ),
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "folder",
+                "in": "query",
+                "description": "Имя папки для фильтрации (формат: `name` или `name|parent_folder`). Для обратной совместимости.",
+                "required": False,
+                "schema": {"type": "string"},
+                "example": "crm"
+            },
+            {
+                "name": "folder_name",
+                "in": "query",
+                "description": "Имя папки для фильтрации",
+                "required": False,
+                "schema": {"type": "string"},
+                "example": "crm"
+            },
+            {
+                "name": "folder_parent",
+                "in": "query",
+                "description": "Имя родительской папки для фильтрации (для подпапок)",
+                "required": False,
+                "schema": {"type": "string"},
+                "example": "parent"
+            },
+            {
+                "name": "method",
+                "in": "query",
+                "description": "HTTP метод для фильтрации (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)",
+                "required": False,
+                "schema": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]},
+                "example": "GET"
+            },
+            {
+                "name": "limit",
+                "in": "query",
+                "description": "Максимальное количество записей для возврата",
+                "required": False,
+                "schema": {"type": "integer", "minimum": 1, "maximum": 10000},
+                "example": 1000
+            },
+            {
+                "name": "offset",
+                "in": "query",
+                "description": "Смещение для пагинации",
+                "required": False,
+                "schema": {"type": "integer", "minimum": 0},
+                "example": 0
+            }
+        ]
+    }
 )
 def get_request_logs(
-    folder: Optional[str] = Query(None, description="Имя папки для фильтрации. Если не указано, возвращаются все вызовы."),
+    folder: Optional[str] = Query(None, description="Имя папки для фильтрации (формат: `name` или `name|parent_folder`). Для обратной совместимости. Если указаны `folder_name` или `folder_parent`, этот параметр игнорируется."),
+    folder_name: Optional[str] = Query(None, description="Имя папки для фильтрации. Можно использовать отдельно или в комбинации с `folder_parent`."),
+    folder_parent: Optional[str] = Query(None, description="Имя родительской папки для фильтрации (для подпапок). Используется в комбинации с `folder_name`."),
+    method: Optional[str] = Query(None, description="HTTP метод для фильтрации (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS). Регистр не важен."),
     limit: int = Query(1000, description="Максимальное количество записей для возврата", ge=1, le=10000),
     offset: int = Query(0, description="Смещение для пагинации", ge=0),
     db: Session = Depends(get_db),
 ):
-    """Возвращает историю вызовов с возможностью фильтрации по папке."""
+    """Возвращает историю вызовов с возможностью фильтрации по папке, методу и другим параметрам."""
     query = db.query(RequestLog)
-    if folder:
-        # Поддерживаем формат "name|parent_folder" для подпапок
+    
+    # Приоритет: folder_name/folder_parent > folder
+    if folder_name is not None or folder_parent is not None:
+        # Используем отдельные параметры folder_name и folder_parent
+        if folder_name is not None:
+            query = query.filter_by(folder_name=folder_name)
+        if folder_parent is not None:
+            query = query.filter_by(folder_parent=folder_parent)
+    elif folder:
+        # Для обратной совместимости поддерживаем формат "name|parent_folder"
         folder_name = folder.strip()
         folder_parent = ''
         if '|' in folder_name:
@@ -4288,6 +4364,10 @@ def get_request_logs(
             folder_parent = parts[1] if len(parts) > 1 else ''
         # Фильтруем по folder_name и folder_parent для правильной работы с подпапками
         query = query.filter_by(folder_name=folder_name, folder_parent=folder_parent)
+    
+    # Фильтрация по методу
+    if method:
+        query = query.filter_by(method=method.upper())
     
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
