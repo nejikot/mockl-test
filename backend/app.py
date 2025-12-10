@@ -4301,6 +4301,7 @@ def get_request_logs(
                 "id": log.id,
                 "timestamp": log.timestamp,
                 "folder_name": log.folder_name,
+                "folder_parent": log.folder_parent,
                 "method": log.method,
                 "path": log.path,
                 "is_proxied": log.is_proxied,
@@ -4437,14 +4438,17 @@ def clear_request_logs(
     """Очищает историю вызовов и метрики Prometheus."""
     query = db.query(RequestLog)
     folder_name = None
+    folder_parent = None
     if folder:
         # Поддерживаем формат "name|parent_folder" для подпапок
-        # В request_logs хранится только folder_name (без parent_folder)
         folder_name = folder.strip()
+        folder_parent = ''
         if '|' in folder_name:
             parts = folder_name.split('|', 1)
             folder_name = parts[0]
-        query = query.filter_by(folder_name=folder_name)
+            folder_parent = parts[1] if len(parts) > 1 else ''
+        # Фильтруем по folder_name и folder_parent для правильной работы с подпапками
+        query = query.filter_by(folder_name=folder_name, folder_parent=folder_parent)
     
     # Очищаем метрики Prometheus ПЕРЕД удалением записей (чтобы использовать данные из логов)
     if folder_name:
@@ -5280,7 +5284,68 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                         )
                         for k, v in cached_payload.get("headers", {}).items():
                             resp.headers[k] = v
-                        RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+                        response_time = time.time() - start_time
+                        RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
+                        
+                        # Логируем кэшированный запрос в БД
+                        try:
+                            # Сохраняем заголовки запроса
+                            request_headers_dict = {}
+                            for k, v in request.headers.items():
+                                clean_key = _remove_nul_chars(k) if k else k
+                                clean_value = _remove_nul_chars(v) if v else v
+                                request_headers_dict[clean_key] = clean_value
+                            
+                            # Сохраняем тело запроса
+                            request_body_str = None
+                            if body_bytes:
+                                try:
+                                    request_body_str = body_bytes.decode("utf-8", errors='replace')
+                                    request_body_str = _remove_nul_chars(request_body_str)
+                                except Exception:
+                                    request_body_str = base64.b64encode(body_bytes).decode("ascii")
+                                    request_body_str = _remove_nul_chars(request_body_str)
+                            
+                            # Сохраняем заголовки ответа
+                            response_headers_dict = {}
+                            for k, v in resp.headers.items():
+                                clean_key = _remove_nul_chars(k) if k else k
+                                clean_value = _remove_nul_chars(v) if v else v
+                                response_headers_dict[clean_key] = clean_value
+                            
+                            # Сохраняем тело ответа
+                            response_body_bytes = cached_payload.get("content", b"")
+                            response_body_str = None
+                            if response_body_bytes:
+                                try:
+                                    # Пытаемся декодировать как UTF-8
+                                    response_body_str = response_body_bytes.decode("utf-8", errors='replace')
+                                    response_body_str = _remove_nul_chars(response_body_str)
+                                except Exception:
+                                    response_body_str = base64.b64encode(response_body_bytes).decode("ascii")
+                                    response_body_str = _remove_nul_chars(response_body_str)
+                            
+                            request_log = RequestLog(
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                                folder_name=folder_name,
+                                folder_parent=folder_parent,
+                                method=request.method,
+                                path=full_inner.split('?')[0],
+                                is_proxied=False,
+                                response_time_ms=int(response_time * 1000),
+                                status_code=resp.status_code,
+                                cache_ttl_seconds=ttl if ttl > 0 else None,
+                                cache_key=cache_key,
+                                request_headers=request_headers_dict,
+                                request_body=request_body_str,
+                                response_headers=response_headers_dict,
+                                response_body=response_body_str
+                            )
+                            db.add(request_log)
+                            db.commit()
+                        except Exception as e:
+                            logger.error(f"Error logging cached request: {e}", exc_info=True)
+                            db.rollback()
                         
                         # [ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Логируем вызов мока из кэша
                         try:
@@ -5326,9 +5391,66 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     await asyncio.sleep(err_cfg["delay_ms"] / 1000.0)
                 resp_body = _apply_templates(err_cfg["body"], request, full_inner)
                 resp = JSONResponse(content=resp_body, status_code=err_cfg["status_code"])
-                RESPONSE_TIME.labels(folder=folder_name).observe(time.time() - start_time)
+                response_time = time.time() - start_time
+                RESPONSE_TIME.labels(folder=folder_name).observe(response_time)
                 REQUESTS_TOTAL.labels(method=request.method, path=request.url.path, folder=folder_name, outcome="error_simulated").inc()
                 MOCK_HITS.labels(folder=folder_name).inc()
+                
+                # Логируем запрос с имитацией ошибки в БД
+                try:
+                    # Сохраняем заголовки запроса
+                    request_headers_dict = {}
+                    for k, v in request.headers.items():
+                        clean_key = _remove_nul_chars(k) if k else k
+                        clean_value = _remove_nul_chars(v) if v else v
+                        request_headers_dict[clean_key] = clean_value
+                    
+                    # Сохраняем тело запроса
+                    request_body_str = None
+                    if body_bytes:
+                        try:
+                            request_body_str = body_bytes.decode("utf-8", errors='replace')
+                            request_body_str = _remove_nul_chars(request_body_str)
+                        except Exception:
+                            request_body_str = base64.b64encode(body_bytes).decode("ascii")
+                            request_body_str = _remove_nul_chars(request_body_str)
+                    
+                    # Сохраняем заголовки ответа
+                    response_headers_dict = {}
+                    for k, v in resp.headers.items():
+                        clean_key = _remove_nul_chars(k) if k else k
+                        clean_value = _remove_nul_chars(v) if v else v
+                        response_headers_dict[clean_key] = clean_value
+                    
+                    # Сохраняем тело ответа
+                    response_body_str = None
+                    if isinstance(resp_body, (dict, list)):
+                        response_body_str = json.dumps(resp_body, ensure_ascii=False)
+                    else:
+                        response_body_str = str(resp_body)
+                    response_body_str = _remove_nul_chars(response_body_str)
+                    
+                    request_log = RequestLog(
+                        timestamp=datetime.utcnow().isoformat() + "Z",
+                        folder_name=folder_name,
+                        folder_parent=folder_parent,
+                        method=request.method,
+                        path=full_inner.split('?')[0],
+                        is_proxied=False,
+                        response_time_ms=int(response_time * 1000),
+                        status_code=err_cfg["status_code"],
+                        cache_ttl_seconds=None,
+                        cache_key=None,
+                        request_headers=request_headers_dict,
+                        request_body=request_body_str,
+                        response_headers=response_headers_dict,
+                        response_body=response_body_str
+                    )
+                    db.add(request_log)
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"Error logging error simulation request: {e}", exc_info=True)
+                    db.rollback()
                 
                 # [ВРЕМЕННОЕ ЛОГИРОВАНИЕ] Логируем вызов мока с имитацией ошибки
                 try:
@@ -5495,8 +5617,49 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                 outcome="mock_hit"
             ).observe(response_time)
             
-            # Логируем вызов в БД
+            # Логируем вызов в БД с полной информацией
             try:
+                # Сохраняем заголовки запроса
+                request_headers_dict = {}
+                for k, v in request.headers.items():
+                    clean_key = _remove_nul_chars(k) if k else k
+                    clean_value = _remove_nul_chars(v) if v else v
+                    request_headers_dict[clean_key] = clean_value
+                
+                # Сохраняем тело запроса
+                request_body_str = None
+                if body_bytes:
+                    try:
+                        request_body_str = body_bytes.decode("utf-8", errors='replace')
+                        request_body_str = _remove_nul_chars(request_body_str)
+                    except Exception:
+                        request_body_str = base64.b64encode(body_bytes).decode("ascii")
+                        request_body_str = _remove_nul_chars(request_body_str)
+                
+                # Сохраняем заголовки ответа
+                response_headers_dict = {}
+                for k, v in resp.headers.items():
+                    clean_key = _remove_nul_chars(k) if k else k
+                    clean_value = _remove_nul_chars(v) if v else v
+                    response_headers_dict[clean_key] = clean_value
+                
+                # Сохраняем тело ответа
+                response_body_str = None
+                if is_file and raw is not None:
+                    # Для файловых ответов сохраняем как base64
+                    response_body_str = base64.b64encode(raw).decode("ascii")
+                elif isinstance(body, str):
+                    # Для текстовых ответов
+                    response_body_str = _remove_nul_chars(body)
+                else:
+                    # Для JSON ответов - сериализуем в JSON
+                    try:
+                        response_body_str = json.dumps(body, ensure_ascii=False)
+                        response_body_str = _remove_nul_chars(response_body_str)
+                    except (TypeError, ValueError):
+                        response_body_str = str(body)
+                        response_body_str = _remove_nul_chars(response_body_str)
+                
                 request_log = RequestLog(
                     timestamp=datetime.utcnow().isoformat() + "Z",
                     folder_name=folder_name,
@@ -5507,7 +5670,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
                     response_time_ms=int(response_time * 1000),
                     status_code=status_code,
                     cache_ttl_seconds=ttl if ttl > 0 else None,
-                    cache_key=cache_key
+                    cache_key=cache_key,
+                    request_headers=request_headers_dict,
+                    request_body=request_body_str,
+                    response_headers=response_headers_dict,
+                    response_body=response_body_str
                 )
                 db.add(request_log)
                 db.commit()
@@ -5927,8 +6094,32 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
         outcome="not_found"
     ).observe(response_time)
     
-    # Логируем не найденный запрос в БД
+    # Логируем не найденный запрос в БД с полной информацией
     try:
+        # Сохраняем заголовки запроса
+        request_headers_dict = {}
+        for k, v in request.headers.items():
+            clean_key = _remove_nul_chars(k) if k else k
+            clean_value = _remove_nul_chars(v) if v else v
+            request_headers_dict[clean_key] = clean_value
+        
+        # Сохраняем тело запроса
+        request_body_str = None
+        if body_bytes:
+            try:
+                # Пытаемся декодировать как UTF-8, если не получается - сохраняем как base64
+                request_body_str = body_bytes.decode("utf-8", errors='replace')
+                # Удаляем NUL символы из декодированной строки
+                request_body_str = _remove_nul_chars(request_body_str)
+            except Exception:
+                request_body_str = base64.b64encode(body_bytes).decode("ascii")
+                request_body_str = _remove_nul_chars(request_body_str)
+        
+        # Формируем ответ 404 для логирования
+        error_response = {"error": "No matching mock found", "path": full_inner.split('?')[0], "method": request.method}
+        response_body_str = json.dumps(error_response, ensure_ascii=False)
+        response_headers_dict = {"Content-Type": "application/json"}
+        
         request_log = RequestLog(
             timestamp=datetime.utcnow().isoformat() + "Z",
             folder_name=folder_name,
@@ -5939,7 +6130,11 @@ async def mock_handler(request: Request, full_path: str, db: Session = Depends(g
             response_time_ms=int(response_time * 1000),
             status_code=404,
             cache_ttl_seconds=None,
-            cache_key=None
+            cache_key=None,
+            request_headers=request_headers_dict,
+            request_body=request_body_str,
+            response_headers=response_headers_dict,
+            response_body=response_body_str
         )
         db.add(request_log)
         db.commit()
