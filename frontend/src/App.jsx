@@ -366,7 +366,7 @@ const FolderWithSubfolders = ({ rootFolder, subFolders, rootIndex, moveFolder, s
             <DraggableFolder
               key={`${subFolder.name}|${subFolder.parent_folder}`}
               folder={subFolder.name}
-              index={rootIndex + 1 + subIndex}
+              index={subIndex}
               moveFolder={moveFolder}
               selectedFolder={selectedFolder}
               setSelectedFolder={setSelectedFolder}
@@ -394,8 +394,9 @@ const DraggableFolder = ({ folder, index, moveFolder, selectedFolder, setSelecte
     accept: 'folder',
     hover: (item, monitor) => {
       if (!monitor.isOver({ shallow: true })) return;
-      if (item.index !== index && item.folder !== "default") {
-        moveFolder(item.index, index);
+      if (item.index !== index && item.folder !== "default" && folder !== "default") {
+        // Передаем полную информацию о папках
+        moveFolder(item.index, item, index, { index, folder, parentFolder });
         item.index = index;
       }
     },
@@ -967,36 +968,105 @@ export default function App() {
     });
   };
 
-  const moveFolder = (from, to) => {
-    // Работаем только с корневыми папками (без подпапок)
-    // Сортируем по order для согласованности с рендерингом
-    const rootFolders = foldersData
-      .filter(f => (!f.parent_folder || f.parent_folder === '') && f.name !== "default")
+  const moveFolder = async (from, fromItem, to, toItem) => {
+    // fromItem и toItem содержат { index, folder, parentFolder }
+    // Если они не переданы, используем старую логику для обратной совместимости
+    if (!fromItem || !toItem) {
+      // Старая логика для корневых папок
+      const rootFolders = foldersData
+        .filter(f => (!f.parent_folder || f.parent_folder === '') && f.name !== "default")
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+      
+      if (from === 0 || to === 0) return;
+      
+      const adjustedFrom = from - 1;
+      const adjustedTo = to - 1;
+      
+      if (adjustedFrom < 0 || adjustedTo < 0 || adjustedFrom >= rootFolders.length || adjustedTo >= rootFolders.length) {
+        return;
+      }
+      
+      const [m] = rootFolders.splice(adjustedFrom, 1);
+      rootFolders.splice(adjustedTo, 0, m);
+      
+      const updatedFoldersData = foldersData.map(f => {
+        if ((!f.parent_folder || f.parent_folder === '') && f.name !== "default") {
+          const newIndex = rootFolders.findIndex(rf => rf.name === f.name);
+          if (newIndex !== -1) {
+            return { ...f, order: newIndex + 1 };
+          }
+        }
+        return f;
+      });
+      
+      setFoldersData(updatedFoldersData);
+      const defaultFolder = foldersData.find(f => f.name === "default");
+      const newFolders = defaultFolder ? [defaultFolder.name, ...rootFolders.map(f => f.name)] : rootFolders.map(f => f.name);
+      setFolders(newFolders);
+      
+      // Сохраняем порядок на сервере
+      try {
+        const folderNames = rootFolders.map(f => f.name);
+        await fetch(`${host}/api/folders/reorder`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folder_names: folderNames, parent_folder: null })
+        });
+      } catch (e) {
+        message.error("Ошибка сохранения порядка папок");
+        fetchFolders();
+      }
+      return;
+    }
+    
+    // Новая логика с поддержкой подпапок
+    const fromFolder = foldersData.find(f => 
+      f.name === fromItem.folder && 
+      (f.parent_folder || '') === (fromItem.parentFolder || '')
+    );
+    const toFolder = foldersData.find(f => 
+      f.name === toItem.folder && 
+      (f.parent_folder || '') === (toItem.parentFolder || '')
+    );
+    
+    if (!fromFolder || !toFolder || fromFolder.name === "default" || toFolder.name === "default") {
+      return;
+    }
+    
+    // Определяем, работаем ли мы с корневыми папками или подпапками
+    const fromParent = fromFolder.parent_folder || '';
+    const toParent = toFolder.parent_folder || '';
+    
+    // Можно перемещать только папки одного уровня (обе корневые или обе подпапки одного родителя)
+    if (fromParent !== toParent) {
+      return;
+    }
+    
+    // Получаем все папки того же уровня
+    const sameLevelFolders = foldersData
+      .filter(f => 
+        (f.parent_folder || '') === fromParent && 
+        f.name !== "default"
+      )
       .sort((a, b) => (a.order || 0) - (b.order || 0));
-    const defaultFolder = foldersData.find(f => f.name === "default");
     
-    // Исключаем default из перетаскивания (индекс 0)
-    if (from === 0 || to === 0) return;
+    const fromIndex = sameLevelFolders.findIndex(f => f.name === fromFolder.name);
+    const toIndex = sameLevelFolders.findIndex(f => f.name === toFolder.name);
     
-    // Корректируем индексы, так как default не участвует в перетаскивании
-    const adjustedFrom = from - 1;
-    const adjustedTo = to - 1;
-    
-    if (adjustedFrom < 0 || adjustedTo < 0 || adjustedFrom >= rootFolders.length || adjustedTo >= rootFolders.length) {
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
       return;
     }
     
     // Перемещаем папку
-    const [m] = rootFolders.splice(adjustedFrom, 1);
-    rootFolders.splice(adjustedTo, 0, m);
+    const [moved] = sameLevelFolders.splice(fromIndex, 1);
+    sameLevelFolders.splice(toIndex, 0, moved);
     
-    // Обновляем order для всех корневых папок
+    // Обновляем order для всех папок этого уровня
     const updatedFoldersData = foldersData.map(f => {
-      // Обновляем order только для корневых папок (не подпапок)
-      if ((!f.parent_folder || f.parent_folder === '') && f.name !== "default") {
-        const newIndex = rootFolders.findIndex(rf => rf.name === f.name);
+      if ((f.parent_folder || '') === fromParent && f.name !== "default") {
+        const newIndex = sameLevelFolders.findIndex(rf => rf.name === f.name);
         if (newIndex !== -1) {
-          return { ...f, order: newIndex + 1 }; // +1 потому что default имеет order 0
+          return { ...f, order: newIndex };
         }
       }
       return f;
@@ -1004,9 +1074,21 @@ export default function App() {
     
     setFoldersData(updatedFoldersData);
     
-    // Обновляем массив folders для обратной совместимости
-    const newFolders = defaultFolder ? [defaultFolder.name, ...rootFolders.map(f => f.name)] : rootFolders.map(f => f.name);
-    setFolders(newFolders);
+    // Сохраняем порядок на сервере
+    try {
+      const folderNames = sameLevelFolders.map(f => f.name);
+      await fetch(`${host}/api/folders/reorder`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          folder_names: folderNames, 
+          parent_folder: fromParent || null
+        })
+      });
+    } catch (e) {
+      message.error("Ошибка сохранения порядка папок");
+      fetchFolders();
+    }
   };
 
   const moveMock = async (from, to) => {
@@ -2313,7 +2395,8 @@ export default function App() {
                     });
                     
                     return rootFolders.map((rootFolder, rootIndex) => {
-                      const subFolders = foldersByParent[rootFolder.name] || [];
+                      const subFolders = (foldersByParent[rootFolder.name] || [])
+                        .sort((a, b) => (a.order || 0) - (b.order || 0));
                       const hasSubfolders = subFolders.length > 0;
                       
                       if (rootFolder.name === "default") {

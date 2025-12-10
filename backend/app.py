@@ -2837,6 +2837,77 @@ def update_folder_settings(
     return {"message": "Настройки папки обновлены"}
 
 
+class FolderReorderPayload(BaseModel):
+    """Payload для изменения порядка папок."""
+    folder_names: List[str] = Field(..., description="Список имен папок в новом порядке")
+    parent_folder: Optional[str] = Field(None, description="Имя родительской папки (для подпапок). Если None или пустая строка - корневые папки.")
+
+
+@app.patch(
+    "/api/folders/reorder",
+    summary="Изменить порядок папок",
+    description=(
+        "Изменяет порядок папок или подпапок. Принимает список имен папок в новом порядке.\n\n"
+        "Параметры:\n"
+        "- `folder_names` - список имен папок в новом порядке\n"
+        "- `parent_folder` - имя родительской папки (для подпапок). Если не указано или пустая строка - работаем с корневыми папками.\n\n"
+        "Примеры:\n"
+        "- Изменение порядка корневых папок: `{\"folder_names\": [\"api\", \"auth\", \"users\"], \"parent_folder\": null}`\n"
+        "- Изменение порядка подпапок: `{\"folder_names\": [\"sub1\", \"sub2\"], \"parent_folder\": \"api\"}`"
+    ),
+)
+def reorder_folders(
+    payload: FolderReorderPayload = Body(
+        ...,
+        examples={
+            "reorder_root": {
+                "summary": "Изменение порядка корневых папок",
+                "description": "Пример изменения порядка корневых папок",
+                "value": {
+                    "folder_names": ["api", "auth", "users"],
+                    "parent_folder": None
+                }
+            },
+            "reorder_subfolders": {
+                "summary": "Изменение порядка подпапок",
+                "description": "Пример изменения порядка подпапок в папке 'api'",
+                "value": {
+                    "folder_names": ["sub1", "sub2"],
+                    "parent_folder": "api"
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db),
+):
+    """Изменяет порядок папок или подпапок."""
+    parent_folder = payload.parent_folder if payload.parent_folder else ''
+    
+    # Получаем все папки указанного уровня
+    folders = db.query(Folder).filter(
+        Folder.parent_folder == parent_folder,
+        Folder.name != "default"
+    ).all()
+    
+    # Проверяем, что все указанные папки существуют и принадлежат указанному уровню
+    folder_dict = {f.name: f for f in folders}
+    for folder_name in payload.folder_names:
+        if folder_name not in folder_dict:
+            raise HTTPException(400, f"Папка '{folder_name}' не найдена на указанном уровне")
+    
+    # Проверяем, что количество папок совпадает
+    if len(payload.folder_names) != len(folders):
+        raise HTTPException(400, "Количество папок в списке не совпадает с количеством папок на указанном уровне")
+    
+    # Обновляем порядок согласно новому списку
+    for order, folder_name in enumerate(payload.folder_names):
+        if folder_name in folder_dict:
+            folder_dict[folder_name].order = order
+    
+    db.commit()
+    return {"message": "Порядок папок обновлен"}
+
+
 class FolderInfo(BaseModel):
     """Информация о папке."""
     name: str
@@ -4372,6 +4443,23 @@ def get_request_logs(
     total = query.count()
     logs = query.order_by(RequestLog.timestamp.desc()).limit(limit).offset(offset).all()
     
+    def parse_json_if_possible(value: Optional[str]) -> Any:
+        """Пытается распарсить строку как JSON. Если не получается, возвращает строку как есть."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        # Пустая строка не является валидным JSON, возвращаем как есть
+        if not value.strip():
+            return value
+        # Пытаемся распарсить как JSON
+        try:
+            parsed = json.loads(value)
+            return parsed
+        except (json.JSONDecodeError, ValueError, TypeError):
+            # Если не JSON, возвращаем как строку
+            return value
+    
     return {
         "total": total,
         "limit": limit,
@@ -4390,9 +4478,9 @@ def get_request_logs(
                 "cache_ttl_seconds": log.cache_ttl_seconds,
                 "cache_key": log.cache_key,
                 "request_headers": log.request_headers,
-                "request_body": log.request_body,
+                "request_body": parse_json_if_possible(log.request_body),
                 "response_headers": log.response_headers,
-                "response_body": log.response_body
+                "response_body": parse_json_if_possible(log.response_body)
             }
             for log in logs
         ]
